@@ -23,3 +23,26 @@ Choose the next unused version rather than copying the example blindly. The repo
 If packaging or validation fails, no public release is created. Fix the source through a PR and use a new version tag. A failure during attachment can retain a draft; inspect and remove only that incomplete draft before rerunning the same workflow. Publication deliberately refuses to overwrite an existing release or its assets. A main CI run still in progress can be allowed to finish before retrying preflight.
 
 This path publishes development previews, not a signed product release or automatic update channel. Signing, genuine interactive consent, reboot recovery, and signed update evidence remain governed by [Installation and release](./installation-and-release.md) and [Testing](./testing.md).
+
+## Latest package rehearsal (2026-10-19)
+
+[Build-only run 39339451091](https://github.com/goforj/harbor/actions/runs/39339451091) passed on merged main commit `03e6c52759f65178cdcfb0bc103ac5e6cedb2a7a`, using rehearsal version `0.1.0-beta.1`. The macOS 26 Apple-silicon PKG and Ubuntu 24.04 amd64 DEB both passed clean native installation, packaged daemon/CLI networking setup, three generated GoForj v0.34.0 projects with distinct system-trusted HTTPS responses, terminal networking cleanup, and native package removal. Ubuntu preserved a foreign package sentinel. macOS additionally preserved a mismatched fixed helper and foreign administrator trust, and restored its temporary authorization policy.
+
+Asset assembly verified the exact tested package digests and retained `Harbor-prerelease-publication` with both packages, their checksums, `SHA256SUMS`, source/run provenance, and preview notes. The publish job was skipped. No Harbor tag or release was created. Artifacts have finite Actions retention; the run remains the source of evidence rather than a public download channel.
+
+Artifact review found that macOS retained its lifecycle summary but omitted `package-uninstall.txt`: its uninstall step referenced an environment variable scoped to an earlier step, and the job log contains a failed write to `/package-uninstall.txt` despite the green step. The workflow now writes that receipt through `GITHUB_WORKSPACE`, enables strict unset-variable handling, and explicitly rejects a receipt-write failure. Shell syntax, successful writing with the earlier variable absent, and failure rejection with an unavailable destination were checked using an isolated package fixture. The downloaded run predates that correction; its uninstall assertions are recorded in the job log, not in a retained uninstall receipt. A future native package run must verify receipt retention before publication.
+
+The same main commit passed [push CI](https://github.com/goforj/harbor/actions/runs/39338522521), including root-run macOS and Linux bootstrap idempotency/runtime-preservation tests. Focused local installer, release-bundle, install-path, bootstrap, and release-mode macOS desktop daemon-prerequisite tests also passed. These results do not close the installed desktop gates below.
+
+## Installed desktop gates before a public beta
+
+The package acceptance jobs install native packages and launch their packaged daemon and CLI directly. They prove that boundary independently of the desktop. A green job does not establish the complete install, open-app, create, reopen, and uninstall experience.
+
+The 2026-10-19 source audit found two concrete gaps:
+
+- Ubuntu has a desktop shortcut, but `desktop/internal/daemonprerequisite/platform_other.go` returns an unavailable adapter on Linux. The installed desktop cannot start its daemon on a clean machine through that boundary.
+- A release macOS desktop creates `~/Library/LaunchAgents/com.goforj.harbor.daemon.plist`. The current `cmd/installer` uninstall transaction verifies and removes system package paths, but does not stop or remove that per-user daemon registration. The package test starts the daemon directly and therefore does not exercise this path.
+
+Before advertising an end-to-end installed desktop beta, implement and natively verify daemon activation and ownership-aware cleanup through these paths. Preserve the user's durable data, checkouts, container volumes, and foreign service definitions. Do not install or uninstall the package over an active source-development installation to substitute for a disposable-machine proof.
+
+The privileged bootstrap tests already run on macOS and Linux CI and verify repeated helper installation preserves fixture runtime data. This is narrower than repairing a complete installed product with active projects. The package lifecycle verifies checkout preservation before its own explicit test-workspace cleanup; it does not exercise real Docker-volume preservation across uninstall. Genuine interactive consent, installed GUI onboarding, reboot, and signed updates remain separate gates.

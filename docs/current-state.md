@@ -1,12 +1,18 @@
 # Current Implementation State
 
+## Native package rehearsal (2026-10-19)
+
+The [build-only package rehearsal](https://github.com/goforj/harbor/actions/runs/39339451091) passed on merged main `03e6c52759f65178cdcfb0bc103ac5e6cedb2a7a`. Both macOS Apple-silicon PKG and Ubuntu 24.04 amd64 DEB passed native installation, packaged daemon/CLI setup, three generated projects over system-trusted HTTPS, ownership-aware cleanup, and package removal. Exact tested packages, checksums, and provenance were retained; publication was skipped and no Harbor tag or release was created.
+
+Artifact inspection exposed a missing macOS uninstall receipt caused by a step-scoped environment variable. Its path and unset-variable handling are corrected locally, with focused shell/receipt verification; the hosted rehearsal predates this correction. Full installed GUI onboarding remains unproved: Linux lacks an installed daemon activation adapter, and macOS uninstall does not remove the per-user LaunchAgent created by desktop first launch. See [the release evidence and remaining gates](./releases.md#latest-package-rehearsal-2026-10-19). Reboot, signed updates, and real Docker-volume preservation across package repair/uninstall remain separate work.
+
 ## Released CLI and native creation lifecycle (2026-10-19)
 
 GoForj PR #251 is merged as `4553ef30446b798a896ab2bb91bb1927caa428a1`, published as v0.34.0, and installed locally from that published module. CI, hosted lifecycle jobs, development package checks, and generated-project acceptance now select that CLI release. Existing project config metadata and Harbor's framework module dependencies are independent of this tool pin.
 
 A real macOS Wails window used the production SPA and bindings against the running daemon to create a minimal Vue/web API project through the wizard with the released CLI. Start reached Ready and normal system trust accepted HTTPS with status 200. After Stop and native desktop process exit, a fresh process found the same stopped registration, started it again through the UI, reached Ready, and served trusted HTTPS 200 before stopping. The temporary proof extended the opt-in native creation harness in an isolated checkout; no fixture bridge or fake daemon was used. The normal project registration cleanup preserves the generated checkout beneath `/tmp`. This is desktop close/reopen evidence with the existing daemon, not an OS reboot or fresh installer proof.
 
-The CI fixes preserve the helper's forbidden authority imports while reviewing the pure pool-policy package, and use native temporary paths for Windows creation fixtures. Local focused checks pass. A deterministic regression and focused race checks also cover a runtime session ending between a service-change notification and its fresh observation; only typed runtime-not-running ends the watcher silently, while genuine observation failures remain visible. CI for these final integration fixes is tracked on Harbor PR #11.
+The CI fixes preserve the helper's forbidden authority imports while reviewing the pure pool-policy package, and use native temporary paths for Windows creation fixtures. Local focused checks pass. A deterministic regression and focused race checks also cover a runtime session ending between a service-change notification and its fresh observation; only typed runtime-not-running ends the watcher silently, while genuine observation failures remain visible. Harbor PR #11 merged as `03e6c52759f65178cdcfb0bc103ac5e6cedb2a7a` after 41 successful checks. Push CI, CodeQL, the platform-network API gate, and hosted Linux, macOS, and Windows trusted-HTTPS workflows also passed for that exact main commit.
 
 ## Hosted capacity gate (2026-10-19)
 

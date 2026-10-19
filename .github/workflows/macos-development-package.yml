@@ -447,6 +447,7 @@ jobs:
 
       - name: Exercise ownership-aware package uninstall
         run: |
+          set -euo pipefail
           installed_helper="/Library/PrivilegedHelperTools/com.goforj.harbor.helper"
           immutable_helper="/Library/Application Support/GoForj/Harbor/current/libexec/com.goforj.harbor.helper"
           printf '%s\n' "foreign helper ${GITHUB_RUN_ID}" |
@@ -511,7 +512,7 @@ jobs:
           test "$(sudo -n cat "$foreign_sentinel")" = "foreign package state ${GITHUB_RUN_ID}"
           sudo -n security verify-cert -c "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE" -p ssl
 
-          evidence="${HARBOR_PHASE1_EVIDENCE_DIRECTORY}/package-uninstall.txt"
+          evidence="${GITHUB_WORKSPACE}/harbor-packaged-macos-evidence/package-uninstall.txt"
           {
             printf 'package_sha256=%s\n' "$(shasum -a 256 "$HARBOR_PACKAGE_PATH" | awk '{print $1}')"
             printf 'package_receipt=absent\n'
@@ -520,7 +521,7 @@ jobs:
             printf 'mismatched_fixed_helper=preserved\n'
             printf 'foreign_package_sentinel=preserved\n'
             printf 'foreign_administrator_trust=preserved\n'
-          } > "$evidence"
+          } > "$evidence" || exit 1
 
           sudo -n rm -f "$foreign_sentinel"
           sudo -n rmdir "$foreign_parent"
