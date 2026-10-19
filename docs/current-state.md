@@ -6,7 +6,7 @@ GoForj PR #251 is merged as `4553ef30446b798a896ab2bb91bb1927caa428a1`, publishe
 
 A real macOS Wails window used the production SPA and bindings against the running daemon to create a minimal Vue/web API project through the wizard with the released CLI. Start reached Ready and normal system trust accepted HTTPS with status 200. After Stop and native desktop process exit, a fresh process found the same stopped registration, started it again through the UI, reached Ready, and served trusted HTTPS 200 before stopping. The temporary proof extended the opt-in native creation harness in an isolated checkout; no fixture bridge or fake daemon was used. The normal project registration cleanup preserves the generated checkout beneath `/tmp`. This is desktop close/reopen evidence with the existing daemon, not an OS reboot or fresh installer proof.
 
-The CI fixes preserve the helper's forbidden authority imports while reviewing the pure pool-policy package, and use native temporary paths for Windows creation fixtures. Local focused checks pass. CI for these final integration fixes still needs to pass before merge.
+The CI fixes preserve the helper's forbidden authority imports while reviewing the pure pool-policy package, and use native temporary paths for Windows creation fixtures. Local focused checks pass. A deterministic regression and focused race checks also cover a runtime session ending between a service-change notification and its fresh observation; only typed runtime-not-running ends the watcher silently, while genuine observation failures remain visible. CI for these final integration fixes is tracked on Harbor PR #11.
 
 ## Hosted capacity gate (2026-10-19)
 

@@ -958,3 +958,36 @@ func TestObserveServicesWithRetryKeepsNonTransientFailureTerminal(t *testing.T) 
 		t.Fatalf("ObserveServices() calls = %d, want one terminal attempt", supervisor.ObserveCalls())
 	}
 }
+
+// TestWatchReadyServicesStopsWhenSessionEndsAfterWake keeps normal teardown distinct from observation failures.
+func TestWatchReadyServicesStopsWhenSessionEndsAfterWake(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		cause     error
+		wantError bool
+	}{
+		{name: "session ended", cause: fmt.Errorf("read retired runtime: %w", projectruntime.ErrNotRunning)},
+		{name: "observation failed", cause: errors.New("invalid native service observation"), wantError: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			project := projectActivityTestProject()
+			project.Project.State = domain.ProjectReady
+			session := projectActivityTestSession()
+			source := &projectServiceRefreshTestState{project: project, session: session}
+			supervisor := &projectServiceRefreshTestSupervisor{observationErrors: []error{scenario.cause}}
+			routes := new(projectServiceRefreshTestRoutes)
+			coordinator := &ProjectLifecycleCoordinator{state: source, runtimeCapabilities: supervisor, routes: routes, now: time.Now}
+			coordinator.watchReadyServices(t.Context(), project, session)
+			if supervisor.waitCalls != 1 || supervisor.ObserveCalls() != 1 || len(source.Refreshes()) != 0 || len(source.RuntimeRefreshes()) != 0 || routes.Calls() != 0 {
+				t.Fatal("an ended or failed observation published stale services or kept watching")
+			}
+			if scenario.wantError {
+				if !errors.Is(coordinator.Err(), scenario.cause) {
+					t.Fatal("observation failure was hidden", coordinator.Err())
+				}
+			} else if coordinator.Err() != nil {
+				t.Fatal("normal session teardown became a cleanup error", coordinator.Err())
+			}
+		})
+	}
+}
