@@ -47,7 +47,7 @@ describe('TerminalModel', () => {
 
     const [line] = terminal.renderLines()
     expect(line?.runs).toEqual([
-      { text: '<script>', style: { color: '#df8a85', fontWeight: '700' } },
+      { text: '<script>', style: { color: '#e98b85', fontWeight: '700' } },
       { text: ' ready', style: {} },
     ])
     expect(terminal.text()).toBe('<script> ready')
@@ -61,7 +61,7 @@ describe('TerminalModel', () => {
       {
         text: 'warning',
         style: {
-          backgroundColor: '#8aaed1',
+          backgroundColor: '#7eb1e2',
           color: 'rgb(255 175 0)',
           fontWeight: '700',
           textDecorationLine: 'underline',

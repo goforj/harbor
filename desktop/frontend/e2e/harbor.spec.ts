@@ -202,7 +202,8 @@ test('shows live output from the current project session', async ({ page }) => {
     const row = element.firstElementChild!
     return { lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight), rowHeight: row.getBoundingClientRect().height }
   })
-  expect(grid.lineHeight).toBeLessThanOrEqual(15)
+  expect(grid.lineHeight).toBeGreaterThanOrEqual(15)
+  expect(grid.lineHeight).toBeLessThanOrEqual(16)
   expect(grid.rowHeight).toBeCloseTo(grid.lineHeight, 1)
 
 })

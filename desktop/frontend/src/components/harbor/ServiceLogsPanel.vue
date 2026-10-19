@@ -161,7 +161,7 @@ async function copyOutput() {
       <p v-if="truncated" class="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">Earlier logs are no longer retained. The live stream continues from the newest visible output.</p>
       <div
         ref="viewport"
-        :class="fill ? 'min-h-0 flex-1 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none' : 'max-h-[30rem] min-h-72 overflow-auto bg-zinc-950 px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none'"
+        :class="fill ? 'min-h-0 flex-1 overflow-auto harbor-log-viewport px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none' : 'max-h-[30rem] min-h-72 overflow-auto harbor-log-viewport px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none'"
         tabindex="0"
         :aria-label="`${serviceName} service logs`"
         @scroll="updateFollow"

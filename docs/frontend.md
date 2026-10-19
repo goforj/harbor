@@ -147,7 +147,7 @@ Atmospheric scenes are local transparent assets under `src/assets/illustrations/
 
 ## Terminal presentation
 
-`terminalTheme.ts` centralizes the dark neutral surface and restrained ANSI palette shared by streamed logs and the interactive shell. Explicit 256-color and RGB process output remains faithful. `TerminalOutput` uses Menlo with platform monospace fallbacks, a 1.2 line height, and rows with exactly the same minimum height; do not add independent row padding or a larger minimum height, which separates vertical box-drawing glyphs. Wrapping and safe links still use the bounded incremental terminal model, and copied text remains unstyled.
+`terminalTheme.ts` centralizes the dark neutral surface and restrained ANSI palette shared by streamed logs and the interactive shell. Explicit 256-color and RGB process output remains faithful. `TerminalOutput` uses 13-pixel Menlo with platform monospace fallbacks, a 1.2 line height, and rows with exactly the same minimum height; do not add independent row padding or a larger minimum height, which separates vertical box-drawing glyphs. Wrapping and safe links still use the bounded incremental terminal model, and copied text remains unstyled.
 
 ## State flow
 

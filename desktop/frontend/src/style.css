@@ -507,9 +507,10 @@
   background: color-mix(in srgb, var(--muted) 35%, var(--background));
 }
 
-.project-log-viewport {
+.project-log-viewport,
+.harbor-log-viewport {
   background: #101010;
-  color: #d4d4d4;
+  color: #e2e2e2;
   font-size: 12px;
 }
 
@@ -643,7 +644,7 @@
 /* Terminal rows use a tight cell grid so box-drawing glyphs join between lines. */
 .harbor-terminal-output {
   font-family: Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.2;
   font-variant-ligatures: none;
   letter-spacing: 0;
