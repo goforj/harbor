@@ -1011,7 +1011,8 @@ func (coordinator *ProjectLifecycleCoordinator) watchReadyServicesWithRuntime(
 
 		observation, err := coordinator.observeServicesWithRetry(ctx, session.ProjectID, session.ID)
 		if err != nil {
-			if ctx.Err() != nil {
+			// A session may end after the wake hint; its process watcher owns exit state.
+			if ctx.Err() != nil || errors.Is(err, projectruntime.ErrNotRunning) {
 				return
 			}
 			coordinator.recordAsyncError(fmt.Errorf("observe project %q services after host change: %w", session.ProjectID, err))

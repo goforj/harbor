@@ -36,6 +36,7 @@ import ProjectEnvironmentPanel from '@/components/harbor/ProjectEnvironmentPanel
 import ResourceFavicon from '@/components/harbor/ResourceFavicon.vue'
 import ProjectIcon from '@/components/harbor/ProjectIcon.vue'
 import KindIcon from '@/components/harbor/KindIcon.vue'
+import ServiceIcon from '@/components/harbor/ServiceIcon.vue'
 import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
 import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
 import { copyText } from '@/bridge/clipboard'
@@ -336,9 +337,11 @@ const lifecycleProblemCode = computed(() => store.projectLifecycleProblemCodes[p
 const checkoutMissing = computed(() => lifecycleProblemCode.value === 'project.checkout.missing')
 const needsNetworkSetup = computed(() => lifecycleProblemCode.value === 'project.network.setup_required'
   || lifecycleProblemCode.value === 'project.network.full_setup_required'
-  || lifecycleProblemCode.value === 'project.network.identity_unavailable')
+  || lifecycleProblemCode.value === 'project.network.identity_unavailable'
+  || lifecycleProblemCode.value === 'project.network.repair_required')
 const needsFullNetworkSetup = computed(() => lifecycleProblemCode.value === 'project.network.full_setup_required')
-const needsNetworkRepair = computed(() => lifecycleProblemCode.value === 'project.network.identity_unavailable')
+const needsNetworkRepair = computed(() => lifecycleProblemCode.value === 'project.network.identity_unavailable'
+  || lifecycleProblemCode.value === 'project.network.repair_required')
 const recoveryRequired = computed(() => lifecycleProblemCode.value === 'project.recovery.ambiguous_launch')
 const runtimeRepairNotice = computed(() => store.projectRuntimeRepairNotice(projectId.value))
 const lifecycleInFlight = computed(() => store.projectLifecycleBusyFor(projectId.value))
@@ -705,7 +708,7 @@ async function setupNetworkAndStartProject() {
           <AlertTitle>{{ recoveryRequired ? 'Ready to start again' : needsNetworkRepair ? 'Harbor networking needs repair' : needsNetworkSetup ? 'Secure networking is not ready' : checkoutMissing ? 'Project folder is missing' : 'Project action failed' }}</AlertTitle>
           <AlertDescription class="space-y-3">
             <p v-if="recoveryRequired">Starting again will reconcile the previous runtime and launch a fresh process.</p>
-            <p v-else-if="needsNetworkRepair">macOS no longer has Harbor's assigned loopback addresses. Repair the existing Harbor-owned addresses, then start this project.</p>
+            <p v-else-if="needsNetworkRepair">Harbor's required loopback addresses are missing. Approve restoring the existing Harbor-owned addresses, then start this project.</p>
             <p v-else-if="needsFullNetworkSetup">Harbor's DNS foundation is active, but secure, trusted local ingress is not ready. Set up networking to finish HTTPS and ingress, then start this project.</p>
             <p v-else-if="needsNetworkSetup">Set up Harbor's secure, trusted local DNS, HTTPS, and ingress before starting this project.</p>
             <p v-else-if="lifecycleError">{{ lifecycleError }}</p>
@@ -740,7 +743,7 @@ async function setupNetworkAndStartProject() {
         </TabsList>
 
         <div class="project-tab-body" :class="selectedDetailTab === 'output' || selectedDetailTab === 'terminal' || selectedDetailTab === 'environment' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
-        <StartupTimeline v-if="projectActivitySession?.startup && (selectedDetailTab === 'overview' || selectedDetailTab === 'output')" :progress="projectActivitySession.startup" :settled="project.state !== 'starting' && project.state !== 'rebuilding'" />
+        <StartupTimeline v-if="projectActivitySession?.startup && (selectedDetailTab === 'overview' || selectedDetailTab === 'output')" :key="`${project.id}:${selectedDetailTab}`" :compact="selectedDetailTab === 'output'" :progress="projectActivitySession.startup" :settled="project.state !== 'starting' && project.state !== 'rebuilding'" />
         <Alert v-if="project.state === 'failed' && projectActivitySession?.diagnostics?.port_conflicts.length" variant="destructive">
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>A service port is already in use</AlertTitle>
@@ -824,7 +827,7 @@ async function setupNetworkAndStartProject() {
             <CardContent class="p-0">
               <div v-if="project.services.length" class="divide-y">
                 <button v-for="service in project.services.slice(0, 6)" :key="service.id" type="button" class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50" :aria-label="`View ${service.name} service`" @click="selectedServiceId = service.id; selectedDetailTab = 'services'">
-                  <KindIcon :kind="service.kind" compact />
+                  <ServiceIcon :service="service" compact />
                   <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{{ service.name }}</p><p class="text-xs text-muted-foreground">{{ service.kind }}</p></div>
                   <StatusBadge :status="service.state" />
                 </button>
@@ -980,7 +983,7 @@ async function setupNetworkAndStartProject() {
                   }"
                   aria-hidden="true"
                 />
-                {{ service.name }}
+                <ServiceIcon :service="service" inline />{{ service.name }}
               </TabsTrigger>
             </TabsList>
 

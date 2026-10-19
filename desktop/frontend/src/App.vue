@@ -4,6 +4,8 @@ import { RouterView, useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import ContextPane from '@/components/harbor/ContextPane.vue'
 import HarborCommandMenu from '@/components/harbor/HarborCommandMenu.vue'
+import NewProjectDialog from '@/components/harbor/NewProjectDialog.vue'
+import { newProjectDialogOpen } from '@/lib/projectCreationDialog'
 import HarborIllustration from '@/components/harbor/HarborIllustration.vue'
 import HarborMobileNav from '@/components/harbor/HarborMobileNav.vue'
 import HarborRail from '@/components/harbor/HarborRail.vue'
@@ -15,6 +17,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useHarborStore } from '@/stores/harbor'
 import harborBackground from '@/assets/illustrations/harbor-background.png'
+import { terminalCSSVariables, terminalMode } from '@/lib/terminalAppearance'
 
 const route = useRoute()
 const harbor = useHarborStore()
@@ -48,7 +51,7 @@ const hasDetail = computed(() => {
       && route.params.serviceId.length > 0
   }
 
-  return route.name === 'system'
+  return route.name === 'settings'
 })
 
 const keydownHandler = (event: KeyboardEvent) => {
@@ -75,7 +78,7 @@ onBeforeUnmount(() => {
 
 <template>
   <TooltipProvider :delay-duration="300">
-    <div class="harbor-workspace" :data-has-detail="hasDetail">
+    <div class="harbor-workspace" :data-has-detail="hasDetail" :data-terminal-mode="terminalMode" :style="terminalCSSVariables">
       <HarborIllustration v-if="route.name === 'overview'" :image="harborBackground" size="wide" fade="soft" />
 
       <Badge
@@ -107,7 +110,7 @@ onBeforeUnmount(() => {
 
           <div class="min-h-0 flex-1">
             <div
-              v-if="!harbor.snapshot"
+              v-if="!harbor.snapshot && route.name !== 'settings'"
               class="flex h-full items-center justify-center p-6"
               :role="harbor.error ? 'alert' : 'status'"
             >
@@ -136,6 +139,7 @@ onBeforeUnmount(() => {
     </div>
 
     <HarborCommandMenu v-model:open="commandOpen" />
+    <NewProjectDialog v-model:open="newProjectDialogOpen" />
     <Toaster rich-colors position="bottom-right" />
   </TooltipProvider>
 </template>

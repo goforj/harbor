@@ -20,6 +20,8 @@ const (
 	CapabilityDaemonControlV1 rpc.Capability = "control.daemon-control.v1"
 	// CapabilityNetworkSetupV1 identifies machine-global network setup initiation and approval.
 	CapabilityNetworkSetupV1 rpc.Capability = "control.network-setup.v1"
+	// CapabilityNetworkSetupRecoveryV1 negotiates durable confirmation receipts and unprivileged resumption.
+	CapabilityNetworkSetupRecoveryV1 rpc.Capability = "control.network-setup-recovery.v1"
 	// CapabilityNetworkResolverSetupV1 identifies machine-global resolver setup initiation and approval.
 	CapabilityNetworkResolverSetupV1 rpc.Capability = "control.network-resolver-setup.v1"
 	// CapabilityNetworkResolverPolicyMigrationV1 identifies legacy machine-global resolver-policy retirement initiation and approval.
@@ -318,6 +320,7 @@ func capabilities() []rpc.Capability {
 		CapabilityNetworkReleaseTrustApprovalV1,
 		CapabilityNetworkResolverPolicyMigrationV1,
 		CapabilityNetworkResolverSetupV1,
+		CapabilityNetworkSetupRecoveryV1,
 		CapabilityNetworkSetupV1,
 		CapabilityProjectActivityWaitV1,
 		CapabilityProjectActivityV1,

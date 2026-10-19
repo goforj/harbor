@@ -4,9 +4,9 @@ import { useRoute } from 'vue-router'
 import {
   Activity,
   Folder,
+  FolderPlus,
   RefreshCw,
   Search,
-  Server,
   Star,
   TriangleAlert,
 } from '@lucide/vue'
@@ -17,10 +17,12 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { serviceOwnerLabel } from '@/lib/servicePresentation'
 import { useHarborStore } from '@/stores/harbor'
+import { showNewProjectDialog } from '@/lib/projectCreationDialog'
 import EntityRow from './EntityRow.vue'
 import ProjectIcon from './ProjectIcon.vue'
 import KindIcon from './KindIcon.vue'
-import { destinationFromPath, harborNavigation } from './navigation'
+import ServiceIcon from './ServiceIcon.vue'
+import { destinationFromPath, harborNavigation, harborSettingsNavigation } from './navigation'
 
 const route = useRoute()
 const store = useHarborStore()
@@ -92,10 +94,12 @@ function refresh() {
     <header class="flex h-16 shrink-0 items-center gap-2 px-4">
       <component :is="navigationItem.icon" aria-hidden="true" class="size-4 text-muted-foreground" />
       <h1 class="min-w-0 flex-1 truncate text-sm font-semibold">{{ navigationItem.label }}</h1>
-      <Badge v-if="store.snapshot" variant="outline" class="h-5 min-w-5 rounded-md px-1.5 text-[0.6875rem] text-muted-foreground shadow-none">
+      <Badge v-if="store.snapshot && destination !== 'system'" variant="outline" class="h-5 min-w-5 rounded-md px-1.5 text-[0.6875rem] text-muted-foreground shadow-none">
         {{ resultCount }}
       </Badge>
+      <Button v-if="destination === 'projects'" variant="ghost" size="icon-sm" aria-label="New project" :disabled="store.connectionState !== 'connected'" @click="showNewProjectDialog"><FolderPlus class="size-3.5" /></Button>
       <Button
+        v-if="destination !== 'system'"
         variant="ghost"
         size="icon-sm"
         :disabled="store.refreshing"
@@ -107,7 +111,7 @@ function refresh() {
       </Button>
     </header>
 
-    <div class="relative px-3 pb-4">
+    <div v-if="destination !== 'system'" class="relative px-3 pb-4">
       <Search aria-hidden="true" class="pointer-events-none absolute top-2.5 left-5.5 size-3.5 text-muted-foreground" />
       <Input
         :model-value="query"
@@ -122,7 +126,13 @@ function refresh() {
 
     <Separator />
 
-    <div v-if="!store.snapshot" class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-5 text-center">
+    <nav v-if="destination === 'system'" class="space-y-1 p-2" aria-label="Settings sections">
+      <EntityRow v-for="item in harborSettingsNavigation" :key="item.section" :label="item.label" :description="item.description" :to="item.path" :selected="route.params.section === item.section">
+        <template #leading><component :is="item.icon" /></template>
+      </EntityRow>
+    </nav>
+
+    <div v-else-if="!store.snapshot" class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-5 text-center">
       <RefreshCw v-if="store.loading" aria-hidden="true" class="size-4 animate-spin text-muted-foreground" />
       <p class="text-xs font-medium">{{ store.connectionMessage }}</p>
       <p v-if="store.error && store.error !== store.connectionMessage" class="text-xs text-muted-foreground">{{ store.error }}</p>
@@ -225,22 +235,9 @@ function refresh() {
               :selected="selectedProjectId === service.project_id && selectedServiceId === service.id"
               :to="`/services/${encodeURIComponent(service.project_id)}/${encodeURIComponent(service.id)}`"
             >
-              <template #leading><KindIcon :kind="service.kind" compact /></template>
+              <template #leading><ServiceIcon :service="service" compact /></template>
             </EntityRow>
           </div>
-        </section>
-
-        <section v-else-if="destination === 'system' && store.daemonStatus" aria-labelledby="daemon-heading">
-          <h2 id="daemon-heading" class="sr-only">Daemon</h2>
-          <EntityRow
-            label="Harbor daemon"
-            :description="`Version ${store.daemonStatus.build.version} · sequence ${store.daemonStatus.sequence}`"
-            :status="store.daemonStatus.state"
-            selected
-            to="/system"
-          >
-            <template #leading><Server /></template>
-          </EntityRow>
         </section>
 
         <div v-if="resultCount === 0" class="flex min-h-40 flex-col items-center justify-center gap-2 px-6 text-center">

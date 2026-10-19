@@ -101,7 +101,7 @@ The DNS server answers only registered exact names. A certificate may contain se
 
 ## Address leases
 
-Harbor selects an unused private portion of IPv4 loopback during setup and stores that pool as machine-local state. It does not assume an example range is free merely because it belongs to `127.0.0.0/8`. Full mode must prove capacity for at least the documented concurrent-project limit plus secondary same-port identities; V1's minimum acceptance capacity is three full projects and one secondary identity per project.
+Harbor selects an unused private portion of IPv4 loopback during setup and stores that pool as machine-local state. It does not assume an example range is free merely because it belongs to `127.0.0.0/8`. New setup uses a complete `/24` with 256 identities, providing capacity for at least 100 project primary identities and remaining secondary same-port identities. Each secondary identity consumes an additional slot. Existing `/29` installations require explicit approved expansion to the containing `/24`; growth preserves every retained project address. Native release acceptance must record the supported capacity and reboot restoration time. The earlier three-project acceptance gate remains a minimum lifecycle proof, not a product capacity limit.
 
 Creating or persisting those addresses is an elevated host mutation on platforms such as macOS and commonly Linux; Windows also requires an approved native configuration path. The unprivileged daemon requests `EnsureLoopbackIdentity` from the one-shot helper. The helper runs as root/Administrator, verifies that the address and installation ownership are safe, applies only that operation, returns evidence, and exits. The daemon then independently proves it can bind the address before committing the lease.
 
@@ -123,7 +123,7 @@ Harbor checks the complete address before assignment:
 - Harbor state from a previous installation;
 - an actual bind probe on the candidate address and every required port.
 
-Pool exhaustion is deterministic: registration remains uncommitted, shows the required and available identity counts, and never reuses an active or quarantined lease. The release support profile records the proven capacity and reboot restoration time.
+Pool exhaustion is deterministic: registration remains uncommitted, shows the required and available identity counts, and never reuses an active lease or a quarantine whose teardown and cooldown are incomplete. The release support profile records the proven capacity and reboot restoration time.
 
 IPv6 is not published in the first release. DNS returns A records only, and the ingress does not create an intermittent AAAA path it cannot support equivalently. IPv6 requires its own stable lease, loopback binding, firewall, Docker, and test design before enablement.
 

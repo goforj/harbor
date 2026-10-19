@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"io"
 	"net/netip"
 	"slices"
@@ -54,9 +55,10 @@ type PoolPlan struct {
 	Mode              PoolMode
 	Ownership         ownership.Record
 	Pool              identity.Pool
+	PreviousPool      string
 }
 
-// Validate rejects pool plans whose ownership and exact-eight address authority disagree.
+// Validate rejects pool plans whose ownership and complete address authority disagree.
 func (plan PoolPlan) Validate() error {
 	if err := plan.OperationID.Validate(); err != nil {
 		return err
@@ -98,6 +100,16 @@ func (plan PoolPlan) Validate() error {
 	}
 	if plan.Ownership.LoopbackPoolPrefix != prefix.String() {
 		return fmt.Errorf("helper pool approval ownership prefix does not match its exact pool")
+	}
+	if plan.PreviousPool != "" {
+		source := plan.Ownership
+		source.LoopbackPoolPrefix = plan.PreviousPool
+		if plan.Mode != PoolModeRepair || operation != helper.OperationEnsureLoopbackPool {
+			return fmt.Errorf("pool expansion requires established ensure authority")
+		}
+		if err := ownership.ValidatePoolExpansion(source, plan.Ownership); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -453,6 +465,15 @@ func (service *PoolService) buildTicket(
 		Nonce:     hex.EncodeToString(nonce),
 		ExpiresAt: now.Add(helper.MaxTicketLifetime),
 	}
+	if plan.PreviousPool != "" {
+		source := plan.Ownership
+		source.LoopbackPoolPrefix = plan.PreviousPool
+		ticket.PreviousPool = plan.PreviousPool
+		ticket.ExpectedOwnershipFingerprint, err = source.Fingerprint()
+		if err != nil {
+			return helper.Ticket{}, err
+		}
+	}
 	if err := ticket.Validate(now); err != nil {
 		return helper.Ticket{}, fmt.Errorf("issue helper pool ticket: constructed ticket is invalid: %w", err)
 	}
@@ -499,7 +520,7 @@ func (service *PoolService) observePoolPreAssignment(
 	}, nil
 }
 
-// validateExactPool returns the canonical complete /29 address list used by both plans and tickets.
+// validateExactPool returns the canonical complete address list used by both plans and tickets.
 func validateExactPool(pool identity.Pool) (netip.Prefix, []netip.Addr, error) {
 	if err := pool.Validate(); err != nil {
 		return netip.Prefix{}, nil, fmt.Errorf("helper pool approval pool is invalid: %w", err)
@@ -509,8 +530,8 @@ func validateExactPool(pool identity.Pool) (netip.Prefix, []netip.Addr, error) {
 		return netip.Prefix{}, nil, fmt.Errorf("helper pool approval: %w", err)
 	}
 	addresses := pool.Candidates()
-	if len(addresses) != poolIdentityCount {
-		return netip.Prefix{}, nil, fmt.Errorf("helper pool approval must contain exactly eight identities")
+	if len(addresses) != 1<<(32-prefix.Bits()) {
+		return netip.Prefix{}, nil, fmt.Errorf("helper pool approval must enumerate every identity in the approved pool")
 	}
 	expected := prefix.Addr()
 	for _, address := range addresses {
@@ -522,10 +543,10 @@ func validateExactPool(pool identity.Pool) (netip.Prefix, []netip.Addr, error) {
 	return prefix, addresses, nil
 }
 
-// validateExactPrefix confines aggregate setup authority to one canonical IPv4-loopback /29.
+// validateExactPrefix confines aggregate setup authority to one supported canonical IPv4 loopback pool.
 func validateExactPrefix(prefix netip.Prefix) error {
-	if !prefix.IsValid() || !prefix.Addr().Is4() || prefix.Addr() != prefix.Addr().Unmap() || !prefix.Addr().IsLoopback() || prefix.Bits() != 29 || prefix != prefix.Masked() {
-		return fmt.Errorf("pool is not a canonical IPv4-loopback /29")
+	if !prefix.IsValid() || !prefix.Addr().Is4() || prefix.Addr() != prefix.Addr().Unmap() || !prefix.Addr().IsLoopback() || (prefix.Bits() != 29 && prefix.Bits() != poolpolicy.PrefixBits) || prefix != prefix.Masked() {
+		return fmt.Errorf("pool is not a canonical IPv4-loopback /29 or /24")
 	}
 	return nil
 }
@@ -548,6 +569,7 @@ func samePoolPlan(left PoolPlan, right PoolPlan) bool {
 		left.OperationState == right.OperationState &&
 		left.operation() == right.operation() &&
 		left.Mode == right.Mode &&
+		left.PreviousPool == right.PreviousPool &&
 		left.Ownership == right.Ownership &&
 		left.Pool.Prefix() == right.Pool.Prefix() &&
 		slices.Equal(left.Pool.Candidates(), right.Pool.Candidates())

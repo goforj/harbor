@@ -537,3 +537,46 @@ func TestSetupCommandKongSurface(t *testing.T) {
 
 // setupCommandContextKey keeps context identity assertions isolated from other command tests.
 type setupCommandContextKey struct{}
+
+// TestSetupCommandResumesExpansionAfterConcurrentUpdates preserves the approved intent across a failed native completion.
+func TestSetupCommandResumesExpansionAfterConcurrentUpdates(t *testing.T) {
+	setup := setupCommandTestOperation(t, domain.OperationRequiresApproval, 7)
+	confirmation := setupCommandTestConfirmation(t, setup)
+	confirmation.Repair = true
+	confirmation.Expanded = true
+	confirmation.Pool = "127.77.0.0/24"
+	confirmation.ApprovalRevision = 7
+	confirmation.NetworkRevision = 15
+	confirmation.Revision = 16
+	runner := &setupApprovalRunnerStub{outcome: networksetupapproval.Outcome{State: networksetupapproval.Succeeded, Confirmation: &confirmation}}
+	command, connection, _ := newSetupCommandFixture(setup, runner)
+	command.ExpandPool = true
+	connection.snapshot.Operations = []domain.Operation{setup.Operation}
+	if err := command.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(connection.networkSetupRequests) != 1 || connection.networkSetupRequests[0].IntentID != setup.Operation.IntentID || !connection.networkSetupRequests[0].ExpandPool {
+		t.Fatal("lost pending expansion")
+	}
+}
+
+// TestSetupCommandResumesRetainedConfirmation avoids another helper attempt after interrupted completion.
+func TestSetupCommandResumesRetainedConfirmation(t *testing.T) {
+	setup := setupCommandTestOperation(t, domain.OperationRequiresApproval, 7)
+	confirmation := setupCommandTestConfirmation(t, setup)
+	runner := &setupApprovalRunnerStub{outcome: networksetupapproval.Outcome{State: networksetupapproval.Succeeded, Confirmation: &confirmation}}
+	command, client, _ := newSetupCommandFixture(setup, runner)
+	command.Resume = true
+	client.snapshot.Operations = []domain.Operation{setup.Operation}
+	client.snapshot.NetworkSetup = &domain.NetworkSetupSnapshot{Pending: &domain.NetworkSetupRecovery{OperationID: setup.Operation.ID, IntentID: setup.Operation.IntentID, OperationRevision: 7, Kind: "setup", Phase: "confirmation"}}
+	if err := command.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.requests) != 1 || !runner.requests[0].Resume {
+		t.Fatal("CLI reopened helper approval")
+	}
+	client.snapshot.Operations = nil
+	if err := command.Run(t.Context()); err == nil {
+		t.Fatal("resume invented a new operation")
+	}
+}

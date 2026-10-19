@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Check, Ellipsis, Monitor, Moon, Search, Settings, Sun } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { setThemePreference, themePreference, type ThemePreference } from '@/lib/theme'
+import { setThemePreference, currentThemePreference, type ThemePreference } from '@/lib/theme'
 import { destinationFromPath, harborNavigation } from './navigation'
 
 const emit = defineEmits<{
@@ -20,7 +20,7 @@ const emit = defineEmits<{
 
 const route = useRoute()
 const router = useRouter()
-const preference = ref<ThemePreference>(themePreference())
+const preference = currentThemePreference
 const activeDestination = computed(() => destinationFromPath(route.path))
 const primaryDestinations = harborNavigation.filter((item) => item.destination !== 'system')
 
@@ -39,7 +39,6 @@ function openCommandMenu() {
 }
 
 function chooseTheme(value: ThemePreference) {
-  preference.value = value
   setThemePreference(value)
 }
 </script>
@@ -78,9 +77,9 @@ function chooseTheme(value: ThemePreference) {
       </DropdownMenuTrigger>
 
       <DropdownMenuContent side="top" align="end" :side-offset="8" class="w-52">
-        <DropdownMenuItem @select="navigate('/system')">
+        <DropdownMenuItem @select="navigate('/settings/appearance')">
           <Settings aria-hidden="true" />
-          <span>System</span>
+          <span>Settings</span>
           <Check v-if="activeDestination === 'system'" aria-hidden="true" class="ml-auto text-primary" />
         </DropdownMenuItem>
         <DropdownMenuItem @select="openCommandMenu">

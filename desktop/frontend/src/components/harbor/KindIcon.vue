@@ -8,6 +8,6 @@ const presentation = computed(() => presentationIcon(props.kind))
 
 <template>
   <span class="kind-icon inline-flex shrink-0 items-center justify-center rounded-lg border" :class="compact ? 'size-7' : 'size-9'" :data-tone="presentation.tone" aria-hidden="true">
-    <component :is="presentation.icon" :class="compact ? 'size-3.5' : 'size-4.5'" />
+    <component :is="presentation.icon" class="text-inherit" :class="compact ? 'size-3.5' : 'size-4.5'" />
   </span>
 </template>

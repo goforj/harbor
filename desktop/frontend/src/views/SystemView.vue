@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import NetworkSetupRecoveryCard from '@/components/harbor/NetworkSetupRecoveryCard.vue'
 import { computed } from 'vue'
-import { Activity, Database, RefreshCw, Server } from '@lucide/vue'
+import { Activity, Database, Network, RefreshCw, Server } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,13 +18,25 @@ const capturedAt = computed(() => store.snapshot?.captured_at
   <main class="h-full min-w-0 overflow-y-auto" aria-labelledby="system-title">
     <header class="flex items-start justify-between gap-4 border-b px-5 py-4 lg:px-7">
       <div class="min-w-0">
-        <div class="flex items-center gap-2"><h1 id="system-title" class="truncate text-base font-semibold tracking-tight">System</h1><StatusBadge v-if="store.daemonStatus" :status="store.daemonStatus.state" /></div>
-        <p class="mt-1 text-xs text-muted-foreground">Facts available through the current Harbor control connection</p>
+        <div class="flex items-center gap-2"><h1 id="system-title" class="truncate text-base font-semibold tracking-tight">Daemon</h1><StatusBadge v-if="store.daemonStatus" :status="store.daemonStatus.state" /></div>
+        <p class="mt-1 text-xs text-muted-foreground">Harbor connection and snapshot details</p>
       </div>
       <Button variant="outline" size="sm" :disabled="store.loading" @click="store.refresh"><RefreshCw :class="['size-3.5', store.loading && 'animate-spin']" />Refresh</Button>
     </header>
 
     <div class="space-y-5 p-5 lg:p-7">
+      <NetworkSetupRecoveryCard />
+      <Card v-if="store.snapshot?.network_capacity" class="gap-0 rounded-lg py-0 shadow-none">
+        <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Network class="size-4 text-sky-400" /><CardTitle class="text-sm">Project networking</CardTitle></div></CardHeader>
+        <CardContent class="space-y-3 p-4">
+          <p class="text-sm"><strong>{{ store.snapshot.network_capacity }}</strong> network identities</p>
+          <p v-if="store.networkSetupRecovery?.kind === 'expansion'" class="text-xs text-muted-foreground">Upgrade pending. Resume setup to finish confirming the larger network pool.</p>
+          <p v-else-if="store.snapshot.network_capacity < 256" class="text-xs text-muted-foreground">Expand the legacy pool to 256 identities, with room for 100 projects and secondary endpoints. Existing project addresses stay the same.</p>
+          <p v-else class="text-xs text-muted-foreground">Room for 100 projects and secondary endpoints.</p>
+          <Button v-if="store.snapshot.network_capacity < 256 && !store.networkSetupRecovery" size="sm" :disabled="store.settingUpNetwork || store.projectLifecycleBusy || store.snapshotStale || store.connectionState !== 'connected'" @click="store.expandNetwork"><Network class="size-3.5" />{{ store.settingUpNetwork ? 'Expanding networking…' : 'Expand network capacity' }}</Button>
+          <p v-if="store.networkSetupError && !store.networkSetupRecovery" role="alert" class="text-xs text-destructive">{{ store.networkSetupError }}</p>
+        </CardContent>
+      </Card>
       <Card class="gap-0 rounded-lg py-0 shadow-none">
         <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Server class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Daemon status</CardTitle></div></CardHeader>
         <CardContent class="p-0">

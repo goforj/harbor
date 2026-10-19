@@ -250,6 +250,11 @@ func (*projectLifecycleBlockingLeaseState) Network(context.Context) (state.Netwo
 	return state.NetworkRecord{}, false, errors.New("unexpected network read after blocked project admission")
 }
 
+// ReusableNetworkAddresses is unreachable because cancelled admission cannot plan address reuse.
+func (*projectLifecycleBlockingLeaseState) ReusableNetworkAddresses(context.Context, domain.Sequence, time.Time) ([]state.NetworkAddressReuse, error) {
+	return nil, errors.New("unexpected address reuse read after blocked project admission")
+}
+
 // ReplaceProjectNetwork is unreachable because cancelled admission cannot persist a lease.
 func (*projectLifecycleBlockingLeaseState) ReplaceProjectNetwork(
 	context.Context,

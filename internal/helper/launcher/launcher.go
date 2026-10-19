@@ -425,7 +425,7 @@ func matchPoolLaunchTicket(ticket PoolLaunchTicket) resultMatcher {
 			return false
 		}
 		identities := result.PoolEvidence.Identities
-		if len(identities) != 8 {
+		if len(identities) != 1<<(32-ticket.pool.Bits()) {
 			return false
 		}
 		address := ticket.pool.Addr()

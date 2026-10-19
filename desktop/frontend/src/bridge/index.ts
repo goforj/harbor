@@ -14,6 +14,13 @@ function createUnavailableBridge(): HarborBridge {
 
   return {
     addProject: unavailable,
+    getProjectCreationProviders: unavailable,
+    startProjectCreation: unavailable,
+    getProjectCreationProgress: unavailable,
+    retryProjectRegistration: unavailable,
+    getProjectCreationSchema: unavailable,
+    chooseProjectParent: unavailable,
+    createProject: unavailable,
     approveProjectRemoval: unavailable,
     confirmProjectRuntimeRepair: unavailable,
     getStatus: unavailable,
@@ -31,6 +38,8 @@ function createUnavailableBridge(): HarborBridge {
     removeProject: unavailable,
     removeOldNetworking: unavailable,
     repairNetwork: unavailable,
+    expandNetwork: unavailable,
+    resumeNetworkSetup: unavailable,
     setupNetwork: unavailable,
     startProject: unavailable,
     stopProject: unavailable,

@@ -68,6 +68,8 @@ type NetworkDataPlaneSetupApprovalRunner interface {
 
 // SetupCmd completes the first-run network foundation through the unprivileged Harbor daemon client.
 type SetupCmd struct {
+	Resume            bool `name:"resume" help:"Continue the retained network setup from its last verified phase"`
+	ExpandPool        bool `name:"expand-pool" help:"Approve expanding a legacy pool to 256 identities while retaining project addresses"`
 	client            *DaemonClient
 	approval          NetworkSetupApprovalRunner
 	resolverApproval  NetworkResolverSetupApprovalRunner
@@ -125,8 +127,34 @@ func (command *SetupCmd) Run(ctx context.Context) error {
 	}
 
 	intentID := networkSetupIntentID
+	resumeConfirmation := false
+	if command.ExpandPool || command.Resume {
+		snapshot, err := command.client.Snapshot(ctx)
+		if err != nil {
+			return fmt.Errorf("read pending network setup: %w", err)
+		}
+		pending, err := control.PendingNetworkSetupIntent(snapshot)
+		if err != nil {
+			return fmt.Errorf("select pending network setup: %w", err)
+		}
+		if command.Resume && pending == "" {
+			return fmt.Errorf("Harbor has no pending network setup to resume")
+		}
+		if pending != "" {
+			intentID = pending
+			if snapshot.NetworkSetup != nil && snapshot.NetworkSetup.Pending != nil {
+				resumeConfirmation = snapshot.NetworkSetup.Pending.IntentID == pending && snapshot.NetworkSetup.Pending.Phase == "confirmation"
+			}
+		} else {
+			intentID, err = newNetworkSetupRetryIntent(networkSetupIntentID)
+			if err != nil {
+				return fmt.Errorf("create pool expansion intent: %w", err)
+			}
+		}
+	}
 	setup, err := command.client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{
-		IntentID: intentID,
+		IntentID:   intentID,
+		ExpandPool: command.ExpandPool,
 	})
 	if err == nil {
 		err = validateNetworkSetupStart(setup, intentID)
@@ -138,7 +166,8 @@ func (command *SetupCmd) Run(ctx context.Context) error {
 		}
 		intentID = intent
 		setup, err = command.client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{
-			IntentID: intentID,
+			IntentID:   intentID,
+			ExpandPool: command.ExpandPool,
 		})
 		if err == nil {
 			err = validateNetworkSetupStart(setup, intentID)
@@ -156,7 +185,7 @@ func (command *SetupCmd) Run(ctx context.Context) error {
 			return fmt.Errorf("network setup succeeded in unsupported phase %q", setup.Operation.Phase)
 		}
 	case domain.OperationRequiresApproval:
-		if err := command.approve(ctx, setup); err != nil {
+		if err := command.approve(ctx, setup, resumeConfirmation); err != nil {
 			return err
 		}
 		if !command.fullSetup {
@@ -429,10 +458,11 @@ func networkDataPlaneApprovalError(phase string, state networkdataplaneapproval.
 }
 
 // approve delegates the exact optimistic revision without constructing or launching a privileged command.
-func (command *SetupCmd) approve(ctx context.Context, setup control.NetworkSetupOperation) error {
+func (command *SetupCmd) approve(ctx context.Context, setup control.NetworkSetupOperation, resume bool) error {
 	outcome, err := command.approval.Execute(ctx, networksetupapproval.Request{
 		OperationID:               setup.Operation.ID,
 		ExpectedOperationRevision: setup.Revision,
+		Resume:                    resume,
 	})
 	if err != nil {
 		return fmt.Errorf("approve network setup: %w", err)
@@ -447,14 +477,12 @@ func (command *SetupCmd) approve(ctx context.Context, setup control.NetworkSetup
 		return fmt.Errorf("approve network setup: succeeded outcome contains a helper failure")
 	}
 	confirmation := *outcome.Confirmation
-	if err := confirmation.Validate(); err != nil {
+	if err := confirmation.ValidateApproval(setup.Operation.ID, setup.Revision); err != nil {
 		return fmt.Errorf("approve network setup: validate confirmation: %w", err)
 	}
 	if confirmation.Operation.ID != setup.Operation.ID ||
 		confirmation.Operation.IntentID != setup.Operation.IntentID ||
-		confirmation.Operation.Phase != "completed" ||
-		confirmation.NetworkRevision != setup.Revision+2 ||
-		confirmation.Revision != setup.Revision+3 {
+		confirmation.Operation.Phase != "completed" {
 		return fmt.Errorf("approve network setup: confirmation crossed the selected operation revision")
 	}
 

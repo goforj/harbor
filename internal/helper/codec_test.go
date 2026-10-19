@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -694,5 +695,35 @@ func validTestFailureResponse() Response {
 			Code:    ErrorCodeMutationFailed,
 			Message: "helper operation failed",
 		},
+	}
+}
+
+// TestLargePoolResponseAndReleaseFitBound proves setup and cleanup carry all 256 identities through strict decoding.
+func TestLargePoolResponseAndReleaseFitBound(t *testing.T) {
+	for _, operation := range []Operation{OperationEnsureLoopbackPool, OperationReleaseLoopbackPool} {
+		response := validTestPoolSuccessResponse()
+		response.Result.Operation = operation
+		evidence := response.Result.PoolEvidence
+		evidence.Pool = "127.77.0.0/24"
+		prototype := evidence.Identities[0]
+		evidence.Identities = nil
+		address := netip.MustParseAddr("127.77.0.0")
+		for range 256 {
+			item := prototype
+			item.Address = address.String()
+			if operation == OperationReleaseLoopbackPool {
+				item.Observation.State = ObservationAbsent
+			}
+			evidence.Identities = append(evidence.Identities, item)
+			address = address.Next()
+		}
+		var output bytes.Buffer
+		if err := WriteResponse(&output, response); err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := DecodeResponse(bytes.NewReader(output.Bytes()))
+		if err != nil || len(decoded.Result.PoolEvidence.Identities) != 256 {
+			t.Fatalf("large response: %v", err)
+		}
 	}
 }

@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  HARBOR_PACKAGED_FORJ_COMMIT: v0.30.0
+  HARBOR_PACKAGED_FORJ_COMMIT: v0.34.0
 
 jobs:
   package:
@@ -376,7 +376,7 @@ jobs:
         env:
           HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
           HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}/harbor-packaged-acceptance-bin/forj
-          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.30.0"
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.34.0"
           HARBOR_PHASE1_CLI_BINARY: /usr/local/bin/harbor
           HARBOR_PHASE1_DAEMON_BINARY: /Library/Application Support/GoForj/Harbor/daemon-launcher
           HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}/harbor-packaged-macos-evidence

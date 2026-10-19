@@ -2,6 +2,7 @@
 package wirefixture
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,12 +13,42 @@ import (
 	"github.com/goforj/harbor/desktop/internal/desktopwire"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/projectcreation"
 	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/rpc"
 )
 
+// projectCreationSchemaJSON is captured from the authoritative forj new --schema command.
+//
+//go:embed project-creation.schema.json
+var projectCreationSchemaJSON []byte
+
+// fixtureProjectCreationSchema decodes the producer capture before generating browser examples.
+func fixtureProjectCreationSchema() projectcreation.Schema {
+	var captured struct {
+		SchemaVersion int                     `json:"schema_version"`
+		GoForjVersion string                  `json:"goforj_version"`
+		Fields        []projectcreation.Field `json:"fields"`
+	}
+	if err := json.Unmarshal(projectCreationSchemaJSON, &captured); err != nil {
+		panic(err)
+	}
+	schema := projectcreation.Schema{SchemaVersion: captured.SchemaVersion, ProviderID: projectcreation.GoForj.ID, Version: captured.GoForjVersion, Fields: captured.Fields}
+	if err := schema.Validate(); err != nil {
+		panic(err)
+	}
+	return schema
+}
+
 // MethodMetadata records the generated Wails method names consumed by the bridge.
 type MethodMetadata struct {
+	ProjectCreationProviders    string `json:"project_creation_providers"`
+	StartProjectCreation        string `json:"start_project_creation"`
+	ProjectCreationProgress     string `json:"project_creation_progress"`
+	RetryProjectRegistration    string `json:"retry_project_registration"`
+	ProjectCreationSchema       string `json:"project_creation_schema"`
+	ChooseProjectParent         string `json:"choose_project_parent"`
+	CreateProject               string `json:"create_project"`
 	AddProject                  string `json:"add_project"`
 	ApproveProjectRemoval       string `json:"approve_project_removal"`
 	ConfirmProjectRuntimeRepair string `json:"confirm_project_runtime_repair"`
@@ -34,6 +65,8 @@ type MethodMetadata struct {
 	RemoveProject               string `json:"remove_project"`
 	RemoveOldNetworking         string `json:"remove_old_networking"`
 	RepairNetwork               string `json:"repair_network"`
+	ExpandNetwork               string `json:"expand_network"`
+	ResumeNetworkSetup          string `json:"resume_network_setup"`
 	SetupNetwork                string `json:"setup_network"`
 	Snapshot                    string `json:"snapshot"`
 	StartProject                string `json:"start_project"`
@@ -63,6 +96,7 @@ type ConnectionPayloads struct {
 
 // Document is the complete frontend contract fixture as encoded by production Go wire types.
 type Document struct {
+	ProjectCreationSchema             projectcreation.Schema                          `json:"project_creation_schema"`
 	Methods                           MethodMetadata                                  `json:"methods"`
 	Events                            EventMetadata                                   `json:"events"`
 	ConnectionPayloads                ConnectionPayloads                              `json:"connection_payloads"`
@@ -104,8 +138,16 @@ func Fixture() Document {
 	projectOutput := "· Building app: web\n  Built web in 482ms\n✔ migrations complete (0)\n"
 
 	return Document{
+		ProjectCreationSchema: fixtureProjectCreationSchema(),
 		Methods: MethodMetadata{
 			AddProject:                  desktopwire.MethodAddProject,
+			ProjectCreationProviders:    desktopwire.MethodProjectCreationProviders,
+			StartProjectCreation:        desktopwire.MethodStartProjectCreation,
+			ProjectCreationProgress:     desktopwire.MethodProjectCreationProgress,
+			RetryProjectRegistration:    desktopwire.MethodRetryProjectRegistration,
+			ProjectCreationSchema:       desktopwire.MethodProjectCreationSchema,
+			ChooseProjectParent:         desktopwire.MethodChooseProjectParent,
+			CreateProject:               desktopwire.MethodCreateProject,
 			ApproveProjectRemoval:       desktopwire.MethodApproveProjectRemoval,
 			ConfirmProjectRuntimeRepair: desktopwire.MethodConfirmProjectRuntimeRepair,
 			InspectProjectRuntimeRepair: desktopwire.MethodInspectProjectRuntimeRepair,
@@ -121,6 +163,8 @@ func Fixture() Document {
 			RemoveProject:               desktopwire.MethodRemoveProject,
 			RemoveOldNetworking:         desktopwire.MethodRemoveOldNetworking,
 			RepairNetwork:               desktopwire.MethodRepairNetwork,
+			ExpandNetwork:               desktopwire.MethodExpandNetwork,
+			ResumeNetworkSetup:          desktopwire.MethodResumeNetworkSetup,
 			SetupNetwork:                desktopwire.MethodSetupNetwork,
 			Snapshot:                    desktopwire.MethodSnapshot,
 			StartProject:                desktopwire.MethodStartProject,
@@ -166,9 +210,11 @@ func Fixture() Document {
 			Sequence:              42,
 		},
 		Snapshot: domain.Snapshot{
-			SchemaVersion: domain.SnapshotSchemaVersion,
-			Sequence:      42,
-			CapturedAt:    capturedAt,
+			NetworkSetup:    &domain.NetworkSetupSnapshot{Configured: false},
+			NetworkCapacity: 8,
+			SchemaVersion:   domain.SnapshotSchemaVersion,
+			Sequence:        42,
+			CapturedAt:      capturedAt,
 			Projects: []domain.ProjectSnapshot{
 				{
 					ID:        "orders-api",
@@ -506,7 +552,17 @@ func fixtureProjectRuntimeRepairConfirmation() control.ProjectRuntimeRepairConfi
 
 // Validate proves every generated example is legal before TypeScript sees the artifact.
 func (document Document) Validate() error {
+	if err := document.ProjectCreationSchema.Validate(); err != nil {
+		return err
+	}
 	methods := map[string]string{
+		desktopwire.MethodProjectCreationProviders:    document.Methods.ProjectCreationProviders,
+		desktopwire.MethodStartProjectCreation:        document.Methods.StartProjectCreation,
+		desktopwire.MethodProjectCreationProgress:     document.Methods.ProjectCreationProgress,
+		desktopwire.MethodRetryProjectRegistration:    document.Methods.RetryProjectRegistration,
+		desktopwire.MethodProjectCreationSchema:       document.Methods.ProjectCreationSchema,
+		desktopwire.MethodChooseProjectParent:         document.Methods.ChooseProjectParent,
+		desktopwire.MethodCreateProject:               document.Methods.CreateProject,
 		desktopwire.MethodAddProject:                  document.Methods.AddProject,
 		desktopwire.MethodApproveProjectRemoval:       document.Methods.ApproveProjectRemoval,
 		desktopwire.MethodConfirmProjectRuntimeRepair: document.Methods.ConfirmProjectRuntimeRepair,
@@ -523,6 +579,8 @@ func (document Document) Validate() error {
 		desktopwire.MethodRemoveProject:               document.Methods.RemoveProject,
 		desktopwire.MethodRemoveOldNetworking:         document.Methods.RemoveOldNetworking,
 		desktopwire.MethodRepairNetwork:               document.Methods.RepairNetwork,
+		desktopwire.MethodExpandNetwork:               document.Methods.ExpandNetwork,
+		desktopwire.MethodResumeNetworkSetup:          document.Methods.ResumeNetworkSetup,
 		desktopwire.MethodSetupNetwork:                document.Methods.SetupNetwork,
 		desktopwire.MethodSnapshot:                    document.Methods.Snapshot,
 		desktopwire.MethodStartProject:                document.Methods.StartProject,
@@ -672,7 +730,7 @@ func TypeScript() ([]byte, error) {
 		return nil, err
 	}
 
-	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, ProjectActivity, ProjectEnvironment, ProjectEnvironmentFile, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
+	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { ProjectCreationProvider, ProjectCreationProgress, ProjectCreationSchema, ProjectCreationRequest, ProjectCreationResult, AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, ProjectActivity, ProjectEnvironment, ProjectEnvironmentFile, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
 	generated = append(generated, declarations...)
 	generated = append(generated, []byte("\nexport const harborWireFixture = ")...)
 	generated = append(generated, payload...)
@@ -768,6 +826,16 @@ func typeScriptMethodResult(contract desktopwire.MethodContract) (string, error)
 // typeScriptType maps only the reviewed Go wire types allowed to cross the desktop boundary.
 func typeScriptType(goType reflect.Type) (string, error) {
 	switch goType {
+	case reflect.TypeFor[[]projectcreation.ProviderInfo]():
+		return "ProjectCreationProvider[]", nil
+	case reflect.TypeFor[desktopwire.ProjectCreationProgress]():
+		return "ProjectCreationProgress", nil
+	case reflect.TypeFor[projectcreation.Schema]():
+		return "ProjectCreationSchema", nil
+	case reflect.TypeFor[projectcreation.Request]():
+		return "ProjectCreationRequest", nil
+	case reflect.TypeFor[desktopwire.ProjectCreationResult]():
+		return "ProjectCreationResult", nil
 	case reflect.TypeFor[string]():
 		return "string", nil
 	case reflect.TypeFor[bool]():

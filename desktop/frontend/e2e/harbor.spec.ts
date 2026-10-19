@@ -3,9 +3,15 @@ import { harborWireFixture } from '../src/bridge/harbor.fixture'
 
 test('shows typed startup steps without changing project readiness', async ({ page }) => {
   await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
-  const timeline = page.locator('details').filter({ hasText: 'Startup steps completed' })
+  await page.getByRole('tab', { name: 'Development output', exact: true }).click()
+  const compact = page.getByTestId('startup-timeline')
+  await expect(compact.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
+  await expect(compact.getByRole('list', { name: 'Development startup steps' })).toHaveCount(0)
+  await expect(compact.getByRole('button')).toContainText('3.4 s')
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+  const timeline = page.getByTestId('startup-timeline')
   await expect(timeline).toBeVisible()
-  await timeline.locator('summary').click()
+  await timeline.getByRole('button').click()
   await expect(timeline.getByRole('list', { name: 'Development startup steps' })).toBeVisible()
   await expect(timeline.getByText('Run Docker Compose', { exact: true })).toBeVisible()
   await expect(timeline).toContainText('1.2 s')
@@ -20,7 +26,7 @@ test('navigates from the Harbor overview to the project list', async ({ page }) 
   await expect(page.getByRole('button', { name: 'Overview', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Projects', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Services', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'System', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'Projects', exact: true }).click()
 
@@ -137,7 +143,7 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
               },
               revision,
             }
-            snapshot = { ...snapshot, sequence: revision }
+            snapshot = { ...snapshot, sequence: revision, network_setup: { configured: true } }
             status.sequence = revision
             return result
           },
@@ -170,7 +176,7 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
   await expect(page.getByText('This action is safe to run again.', { exact: false })).toBeVisible()
   await page.getByRole('button', { name: 'Set up secure networking', exact: true }).click()
 
-  await expect(page.getByText('Harbor’s secure, trusted local ingress is ready.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Set up secure networking', exact: true })).toHaveCount(0)
   await expect(page.getByText('Secure networking is ready', { exact: true })).toBeVisible()
   await expect(page.getByText('Harbor completed trusted local DNS, HTTPS, and ingress.', { exact: true })).toBeVisible()
   await expect.poll(() => page.evaluate(() => (window as typeof window & { networkSetupCalls: number }).networkSetupCalls)).toBe(1)
@@ -519,15 +525,81 @@ test('opens and closes the command menu with accessible keyboard focus', async (
   await expect(trigger).toBeFocused()
 })
 
-test('renders only status and snapshot facts on the system page', async ({ page }) => {
+test('preserves legacy daemon links separately from appearance settings', async ({ page }) => {
   await page.goto('/#/system', { waitUntil: 'domcontentloaded' })
 
-  await expect(page.locator('#system-title')).toBeVisible()
+  await expect(page).toHaveURL(/#\/settings\/daemon$/)
+  await expect(page.locator('#system-title')).toHaveText('Daemon')
+  await expect(page.getByRole('radiogroup', { name: 'Terminal appearance', exact: true })).toHaveCount(0)
   await expect(page.getByText('Daemon status')).toBeVisible()
   await expect(page.getByText('Snapshot', { exact: true })).toBeVisible()
   await expect(page.getByText('control.v1')).toBeVisible()
   await expect(page.getByText('DNS and ingress')).toHaveCount(0)
   await expect(page.getByText('HTTPS and trust')).toHaveCount(0)
+})
+
+test('opens appearance from the settings cog and keeps daemon diagnostics separate', async ({ page }) => {
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await expect(page).toHaveURL(/#\/settings\/appearance$/)
+  await expect(page.getByRole('heading', { name: 'Appearance', exact: true })).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'System app appearance', exact: true })).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'System terminal appearance', exact: true })).toBeVisible()
+  await expect(page.getByText('Daemon status', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('searchbox', { name: 'Search settings' })).toHaveCount(0)
+  await page.getByRole('radio', { name: 'Light app appearance', exact: true }).check()
+  await expect(page.locator('html')).not.toHaveClass(/dark/)
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('radio', { name: 'Light app appearance', exact: true })).toBeChecked()
+  await page.getByRole('link', { name: 'Daemon Connection and diagnostics' }).click()
+  await expect(page.getByText('Daemon status', { exact: true })).toBeVisible()
+  await page.getByRole('link', { name: 'Appearance App and terminal themes' }).click()
+  await expect(page.getByRole('radio', { name: 'Light app appearance', exact: true })).toBeChecked()
+  await page.setViewportSize({ width: 430, height: 800 })
+  await expect(page.getByRole('heading', { name: 'Appearance', exact: true })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.getByRole('button', { name: 'More Harbor actions' }).click()
+  await page.getByRole('menuitem', { name: 'Settings', exact: true }).click()
+  await expect(page).toHaveURL(/#\/settings\/appearance$/)
+})
+
+test('persists terminal appearance and follows app appearance only when selected', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('theme')) localStorage.setItem('theme', 'dark')
+  })
+  await page.goto('/#/settings/appearance', { waitUntil: 'domcontentloaded' })
+  const workspace = page.locator('.harbor-workspace')
+  const preview = page.getByLabel('Terminal appearance preview')
+  await expect(page.getByRole('radio', { name: 'System terminal appearance', exact: true })).toBeChecked()
+  await expect(workspace).toHaveAttribute('data-terminal-mode', 'dark')
+  const retainedText = await preview.textContent()
+
+  await page.getByRole('radio', { name: 'Light terminal appearance', exact: true }).check()
+  await expect(workspace).toHaveAttribute('data-terminal-mode', 'light')
+  await expect(preview).toHaveCSS('background-color', 'rgb(246, 248, 250)')
+  await expect(preview).toHaveCSS('color', 'rgb(31, 35, 40)')
+  expect(await preview.textContent()).toBe(retainedText)
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('radio', { name: 'Light terminal appearance', exact: true })).toBeChecked()
+
+  await page.goto('/#/projects/orders-api')
+  await page.getByRole('tab', { name: 'Development output', exact: true }).click()
+  await expect(page.getByLabel('Current project development output')).toHaveCSS('background-color', 'rgb(246, 248, 250)')
+
+  await page.goto('/#/settings/appearance')
+  await page.getByRole('radio', { name: 'Dark terminal appearance', exact: true }).check()
+  await page.getByRole('button', { name: 'Change appearance', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Light', exact: true }).click()
+  await expect(workspace).toHaveAttribute('data-terminal-mode', 'dark')
+  await expect(preview).toHaveCSS('background-color', 'rgb(11, 11, 11)')
+
+  await page.getByRole('radio', { name: 'System terminal appearance', exact: true }).check()
+  await expect(workspace).toHaveAttribute('data-terminal-mode', 'light')
+  await page.getByRole('button', { name: 'Change appearance', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Dark', exact: true }).click()
+  await expect(workspace).toHaveAttribute('data-terminal-mode', 'dark')
+  await page.setViewportSize({ width: 430, height: 800 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
 
 test('fails closed for a production browser unless its fixture is explicitly requested', async ({ page }) => {
@@ -738,6 +810,11 @@ test('keeps a missing first snapshot in an explicit waiting state and announces 
   await expect(detail.getByRole('heading', { name: 'Overview' })).toHaveCount(0)
   await expect(page.getByText('No overview yet', { exact: true })).toHaveCount(0)
 
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await expect(page.getByRole('radio', { name: 'Light app appearance', exact: true })).toBeVisible()
+  await page.getByRole('radio', { name: 'Light app appearance', exact: true }).check()
+  await page.goto('/#/overview')
+
   await page.evaluate(() => {
     const testWindow = window as typeof window & {
       emitHarborConnection(payload: { state: 'connecting' | 'connected' | 'disconnected' }): void
@@ -784,7 +861,7 @@ test('keeps search and appearance reachable from mobile navigation', async ({ pa
   await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: 'More Harbor actions' }).click()
 
-  await expect(page.getByRole('menuitem', { name: 'System', exact: true })).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: 'Settings', exact: true })).toBeVisible()
   await expect(page.getByRole('menuitem', { name: 'Dark appearance' })).toBeVisible()
   await page.getByRole('menuitem', { name: 'Search Harbor' }).click()
 
@@ -822,4 +899,188 @@ test('reports resource-open failures without leaving an unhandled action', async
 
   await expect(page.getByText('Harbor could not open the resource', { exact: true })).toBeVisible()
   await expect(page.getByText('The browser rejected the request', { exact: true })).toBeVisible()
+})
+
+test('creates a project through schema-driven choices and keeps it stopped', async ({ page }) => {
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
+  await page.getByRole('button', { name: 'New project', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'New project' })
+  await expect(dialog.getByRole('img', { name: 'GoForj', exact: true })).toBeVisible()
+  await expect(dialog.getByTestId('selected-project-stack')).toContainText('GoForj')
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toHaveText('Project name is required.')
+  await dialog.getByLabel('Project name', { exact: true }).fill('Project Creation Demo')
+  await dialog.getByLabel('Go module', { exact: true }).fill('example.com/project-creation-demo')
+  await dialog.getByRole('button', { name: 'Choose project location' }).click()
+  await expect(dialog.getByLabel('Project directory', { exact: true })).toHaveValue('/workspace/apps/project-creation-demo')
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await dialog.getByRole('checkbox', { name: 'Mail', exact: true }).uncheck()
+  await expect(dialog.getByRole('checkbox', { name: 'Auth', exact: true })).not.toBeChecked()
+  await expect(dialog.getByRole('checkbox', { name: 'OAuth', exact: true })).not.toBeChecked()
+  await dialog.getByRole('checkbox', { name: 'OAuth', exact: true }).check()
+  await expect(dialog.getByRole('checkbox', { name: 'Mail', exact: true })).toBeChecked()
+  await expect(dialog.getByRole('checkbox', { name: 'Auth', exact: true })).toBeChecked()
+  await dialog.getByRole('checkbox', { name: 'Database (Postgres)', exact: true }).check()
+  await expect(dialog.getByRole('checkbox', { name: 'Database (MySQL)', exact: true })).not.toBeChecked()
+  await dialog.getByLabel('Starter kit', { exact: true }).selectOption('vue')
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await dialog.getByLabel('Atlas agent support', { exact: true }).selectOption('custom')
+  await expect(dialog.getByRole('group', { name: 'Agents', exact: true })).toBeVisible()
+  await expect(dialog.getByRole('checkbox', { name: 'MCP server config', exact: true })).toBeChecked()
+  await dialog.getByLabel('Atlas agent support', { exact: true }).selectOption('skip')
+  await expect(dialog.getByRole('group', { name: 'Agents', exact: true })).toBeHidden()
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await expect(dialog.getByText('Project Creation Demo', { exact: true })).toBeVisible()
+  await expect(dialog.getByText('Vue', { exact: true })).toBeVisible()
+  await dialog.getByRole('button', { name: 'Create project', exact: true }).click()
+  await expect(dialog.getByText('Creating project files', { exact: true })).toBeVisible()
+  await dialog.getByText('Command output', { exact: true }).click()
+  await expect(dialog.getByLabel('Creation output')).toContainText('Rendering project files')
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('heading', { name: 'Project Creation Demo', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Start project', exact: true })).toBeVisible()
+})
+
+test('previews CLI help formats from the project creator schema', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
+  await page.getByRole('button', { name: 'New project', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'New project' })
+  await dialog.getByLabel('Project name', { exact: true }).fill('Help Preview')
+  await dialog.getByLabel('Go module', { exact: true }).fill('example.com/help-preview')
+  await dialog.getByLabel('Project directory', { exact: true }).fill('/workspace/apps/help-preview')
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await expect(dialog.getByRole('region', { name: 'Starter kit preview' })).toHaveCount(0)
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  const preview = dialog.getByRole('region', { name: 'CLI help format preview' })
+  await expect(preview).toContainText('Application command surface')
+  await expect(preview.locator('.harbor-log-viewport')).toHaveCSS('background-color', 'rgb(246, 248, 250)')
+  await expect(preview).toContainText('make:migration')
+  await dialog.getByLabel('CLI help format', { exact: true }).selectOption('guided')
+  await expect(preview).toContainText('Examples')
+  await expect(preview).toContainText('Common commands')
+  await expect(preview).not.toContainText('make:migration')
+  await dialog.getByLabel('CLI help format', { exact: true }).selectOption('external_cli')
+  await expect(preview).toContainText('Commands')
+  await expect(preview).not.toContainText('Examples')
+  await page.setViewportSize({ width: 430, height: 800 })
+  await expect(preview).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await expect(dialog.getByText('External CLI', { exact: true })).toBeVisible()
+})
+
+test('retries registration without creating project files again', async ({ page }) => {
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
+  await page.evaluate(async () => {
+    const path = '/src/bridge/index.ts'
+    const { harborBridge } = await import(/* @vite-ignore */ path) as { harborBridge: import('../src/bridge/types').HarborBridge }
+    const start = harborBridge.startProjectCreation.bind(harborBridge)
+    const read = harborBridge.getProjectCreationProgress.bind(harborBridge)
+    const retry = harborBridge.retryProjectRegistration.bind(harborBridge)
+    let starts = 0
+    let retried = false
+    const observe = (window as typeof window & { creationStarts: number })
+    harborBridge.startProjectCreation = async request => { observe.creationStarts = ++starts; return start(request) }
+    harborBridge.getProjectCreationProgress = async (id, cursor) => {
+      const update = await read(id, cursor)
+      if (update.phase === 'completed' && !retried) {
+        return { ...update, phase: 'registration_failed', result: { path: update.path, output: '', registration_error: 'Files are ready. Harbor is temporarily unavailable.' } }
+      }
+      return update
+    }
+    harborBridge.retryProjectRegistration = async id => { retried = true; return retry(id) }
+  })
+  await page.getByRole('button', { name: 'New project', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'New project' })
+  await dialog.getByLabel('Project name', { exact: true }).fill('Retry Registration Demo')
+  await dialog.getByLabel('Go module', { exact: true }).fill('example.com/retry-demo')
+  await dialog.getByLabel('Project directory', { exact: true }).fill('/workspace/apps/retry-demo')
+  for (let i = 0; i < 3; i++) await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await dialog.getByRole('button', { name: 'Create project', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toContainText('Harbor is temporarily unavailable')
+  await dialog.getByRole('button', { name: 'Retry registration', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  expect(await page.evaluate(() => (window as typeof window & { creationStarts: number }).creationStarts)).toBe(1)
+  await expect(page.getByRole('heading', { name: 'Retry Registration Demo', exact: true })).toBeVisible()
+})
+
+test('keeps failed creation output and returns to editable choices', async ({ page }) => {
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
+  await page.evaluate(async () => {
+    const path = '/src/bridge/index.ts'
+    const { harborBridge } = await import(/* @vite-ignore */ path) as { harborBridge: import('../src/bridge/types').HarborBridge }
+    const read = harborBridge.getProjectCreationProgress.bind(harborBridge)
+    harborBridge.getProjectCreationProgress = async (id, cursor) => ({ ...await read(id, cursor), phase: 'failed', error: 'Dependency download failed. Files were kept. Choose a new or empty directory.', output: 'Registry temporarily unavailable.\n', result: undefined })
+  })
+  await page.getByRole('button', { name: 'New project', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'New project' })
+  await dialog.getByLabel('Project name', { exact: true }).fill('Failure Demo')
+  await dialog.getByLabel('Go module', { exact: true }).fill('example.com/failure')
+  await dialog.getByLabel('Project directory', { exact: true }).fill('/workspace/apps/failure')
+  for (let i = 0; i < 3; i++) await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await dialog.getByRole('button', { name: 'Create project', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toContainText('Files were kept')
+  await expect(dialog.getByLabel('Creation output')).toContainText('Registry temporarily unavailable')
+  await expect(dialog.getByRole('button', { name: 'Retry registration', exact: true })).toHaveCount(0)
+  await dialog.getByRole('button', { name: 'Review choices', exact: true }).click()
+  await expect(dialog.getByLabel('Project name', { exact: true })).toHaveValue('Failure Demo')
+  await dialog.getByLabel('Project directory', { exact: true }).fill('/workspace/apps/failure-retry')
+})
+
+test('keeps command search aligned with service branding and every current resource', async ({ page }) => {
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
+  await page.getByRole('button', { name: 'Open command menu' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Command Menu' })
+  const search = dialog.getByPlaceholder('Search projects, services, and Harbor…')
+  await search.fill('mysql')
+  await expect(dialog.locator('[data-service-brand="mysql"] img')).toBeVisible()
+  await dialog.getByRole('option').filter({ hasText: 'MySQL' }).first().click()
+  await expect(page).toHaveURL(/#\/services\/orders-api\/mysql$/)
+
+  const resource = harborWireFixture.snapshot.projects.flatMap(project => project.resources.map(resource => ({ ...resource, project_id: project.id })))[0]!
+  await page.evaluate(async resource => {
+    const path = '/src/stores/harbor.ts'
+    const { useHarborStore } = await import(/* @vite-ignore */ path) as { useHarborStore: typeof import('../src/stores/harbor').useHarborStore }
+    const store = useHarborStore()
+    store.snapshot = { ...store.snapshot!, recent_resource_ids: store.snapshot!.recent_resource_ids.filter(entry => entry.project_id !== resource.project_id || entry.resource_id !== resource.id) }
+  }, resource)
+  await page.getByRole('button', { name: 'Open command menu' }).click()
+  await search.fill(resource.url)
+  await expect(dialog.getByRole('group', { name: 'Resources', exact: true }).getByRole('option').filter({ hasText: resource.name })).toBeVisible()
+})
+
+test('opens shared creation and appearance controls from the command menu', async ({ page }) => {
+  await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
+  const trigger = page.getByRole('button', { name: 'Open command menu' })
+  const menu = page.getByRole('dialog', { name: 'Command Menu' })
+  await trigger.click()
+  await menu.getByPlaceholder('Search projects, services, and Harbor…').fill('New project')
+  await menu.getByRole('option', { name: 'New project', exact: true }).click()
+  const wizard = page.getByRole('dialog', { name: 'New project', exact: true })
+  await expect(wizard).toBeVisible()
+  await expect(menu).toBeHidden()
+  await expect(wizard.getByRole('img', { name: 'GoForj', exact: true })).toBeVisible()
+  await wizard.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await trigger.click()
+  await menu.getByPlaceholder('Search projects, services, and Harbor…').fill('terminal themes')
+  await menu.getByRole('option').filter({ hasText: 'Appearance' }).click()
+  await expect(page).toHaveURL(/#\/settings\/appearance$/)
+  await expect(page.getByRole('radiogroup', { name: 'Terminal appearance', exact: true })).toBeVisible()
+  await trigger.click()
+  await menu.getByPlaceholder('Search projects, services, and Harbor…').fill('Use light appearance')
+  await menu.getByRole('option').filter({ hasText: 'Use light appearance' }).click()
+  await expect(page.locator('html')).not.toHaveClass(/dark/)
+  await trigger.click()
+  await menu.getByPlaceholder('Search projects, services, and Harbor…').fill('Connection and diagnostics')
+  await menu.getByRole('option').filter({ hasText: 'Daemon' }).click()
+  await expect(page).toHaveURL(/#\/settings\/daemon$/)
+  await page.evaluate(async () => {
+    const path = '/src/stores/harbor.ts'
+    const { useHarborStore } = await import(/* @vite-ignore */ path) as { useHarborStore: typeof import('../src/stores/harbor').useHarborStore }
+    useHarborStore().connectionState = 'disconnected'
+  })
+  await trigger.click()
+  await menu.getByPlaceholder('Search projects, services, and Harbor…').fill('New project')
+  await expect(menu.getByRole('option', { name: 'New project', exact: true })).toHaveAttribute('data-disabled', '')
 })

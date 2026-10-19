@@ -104,6 +104,9 @@ func (client *Client) ConfirmNetworkSetupApproval(
 	if !containsCapability(client.peer.Session.Capabilities, CapabilityNetworkSetupV1) {
 		return NetworkSetupApprovalConfirmation{}, errors.New("Harbor daemon does not support network setup; upgrade or restart harbord")
 	}
+	if request.Resume && !containsCapability(client.peer.Session.Capabilities, CapabilityNetworkSetupRecoveryV1) {
+		return NetworkSetupApprovalConfirmation{}, errors.New("Harbor daemon does not support setup recovery; upgrade or restart harbord")
+	}
 	payload, err := client.session.Call(ctx, methodNetworkSetupApprovalConfirm, request)
 	if err != nil {
 		return NetworkSetupApprovalConfirmation{}, err
@@ -200,6 +203,9 @@ func (server *Server) networkSetupApprovalConfirmHandler(transportPeer local.Pee
 		if err != nil {
 			return nil, session.NewHandlerError(rpc.ErrorCodeInvalidRequest, err)
 		}
+		if approvalRequest.Resume && !containsCapability(caller.Session.Capabilities, CapabilityNetworkSetupRecoveryV1) {
+			return nil, session.NewHandlerError(rpc.ErrorCodePermissionDenied, errors.New("setup recovery capability was not negotiated"))
+		}
 		confirmation, err := server.config.Authority.ConfirmNetworkSetupApproval(ctx, caller, approvalRequest)
 		if err != nil {
 			return nil, authorityError(err)
@@ -239,14 +245,10 @@ func validateNetworkSetupApprovalConfirmationCorrelation(
 	request ConfirmNetworkSetupApprovalRequest,
 	confirmation NetworkSetupApprovalConfirmation,
 ) error {
-	expectedRevision := request.ExpectedOperationRevision + 3
-	if confirmation.Repair {
-		expectedRevision = request.ExpectedOperationRevision + 2
+	if err := confirmation.ValidateApproval(request.OperationID, request.ExpectedOperationRevision); err != nil {
+		return err
 	}
-	if confirmation.Operation.ID != request.OperationID ||
-		(!confirmation.Repair && confirmation.NetworkRevision != request.ExpectedOperationRevision+2) ||
-		confirmation.Revision != expectedRevision ||
-		confirmation.Pool != request.PoolEvidence.Pool {
+	if !request.Resume && confirmation.Pool != request.PoolEvidence.Pool {
 		return errors.New("network setup approval confirmation does not match the requested operation revision")
 	}
 	return nil
@@ -260,6 +262,7 @@ func decodeStartNetworkSetupRequest(payload []byte) (StartNetworkSetupRequest, e
 	}
 	var request StartNetworkSetupRequest
 	intentSeen := false
+	expandSeen := false
 	for decoder.More() {
 		fieldToken, err := decoder.Token()
 		if err != nil {
@@ -268,6 +271,18 @@ func decodeStartNetworkSetupRequest(payload []byte) (StartNetworkSetupRequest, e
 		field, ok := fieldToken.(string)
 		if !ok {
 			return StartNetworkSetupRequest{}, errors.New("network setup start field name must be a string")
+		}
+		if field == "expand_pool" {
+			if expandSeen {
+				return StartNetworkSetupRequest{}, errors.New("network setup start request contains duplicate field expand_pool")
+			}
+			var value *bool
+			if err := decoder.Decode(&value); err != nil || value == nil {
+				return StartNetworkSetupRequest{}, errors.New("network setup expand_pool must be a boolean")
+			}
+			request.ExpandPool = *value
+			expandSeen = true
+			continue
 		}
 		if field != "intent_id" {
 			return StartNetworkSetupRequest{}, fmt.Errorf("network setup start request contains unknown field %q", field)
@@ -354,6 +369,7 @@ func decodeConfirmNetworkSetupApprovalRequest(payload []byte) (ConfirmNetworkSet
 	operationSeen := false
 	revisionSeen := false
 	evidenceSeen := false
+	resumeSeen := false
 	for decoder.More() {
 		fieldToken, err := decoder.Token()
 		if err != nil {
@@ -380,6 +396,19 @@ func decodeConfirmNetworkSetupApprovalRequest(payload []byte) (ConfirmNetworkSet
 				return ConfirmNetworkSetupApprovalRequest{}, fmt.Errorf("decode network setup approval confirmation revision: %w", err)
 			}
 			revisionSeen = true
+		case "resume":
+			if resumeSeen {
+				return ConfirmNetworkSetupApprovalRequest{}, errors.New("duplicate resume flag")
+			}
+			var flag json.RawMessage
+			if err := decoder.Decode(&flag); err != nil {
+				return ConfirmNetworkSetupApprovalRequest{}, err
+			}
+			if string(flag) != "true" && string(flag) != "false" {
+				return ConfirmNetworkSetupApprovalRequest{}, errors.New("resume must be a JSON boolean")
+			}
+			request.Resume = string(flag) == "true"
+			resumeSeen = true
 		case "pool_evidence":
 			if evidenceSeen {
 				return ConfirmNetworkSetupApprovalRequest{}, fmt.Errorf("network setup approval confirmation request contains duplicate field %q", field)
@@ -395,13 +424,19 @@ func decodeConfirmNetworkSetupApprovalRequest(payload []byte) (ConfirmNetworkSet
 	if err := finishNetworkSetupRequestDecoder(decoder, "network setup approval confirmation"); err != nil {
 		return ConfirmNetworkSetupApprovalRequest{}, err
 	}
-	if !operationSeen || !revisionSeen || !evidenceSeen {
+	if !operationSeen || !revisionSeen || (!evidenceSeen && !request.Resume) {
 		return ConfirmNetworkSetupApprovalRequest{}, errors.New("network setup approval confirmation request requires operation_id, expected_operation_revision, and pool_evidence")
 	}
-	request.PoolEvidence, err = decodeNetworkSetupPoolEvidence(poolEvidenceJSON)
-	if err != nil {
-		return ConfirmNetworkSetupApprovalRequest{}, err
+	if request.Resume && evidenceSeen {
+		return ConfirmNetworkSetupApprovalRequest{}, errors.New("resumption cannot provide replacement helper evidence")
 	}
+	if evidenceSeen {
+		request.PoolEvidence, err = decodeNetworkSetupPoolEvidence(poolEvidenceJSON)
+		if err != nil {
+			return ConfirmNetworkSetupApprovalRequest{}, err
+		}
+	}
+
 	if err := request.Validate(); err != nil {
 		return ConfirmNetworkSetupApprovalRequest{}, err
 	}

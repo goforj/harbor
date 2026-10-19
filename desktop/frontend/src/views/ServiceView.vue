@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowUpRight, Database, ExternalLink, Server } from '@lucide
 import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
 import ServiceOwnership from '@/components/harbor/ServiceOwnership.vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
-import KindIcon from '@/components/harbor/KindIcon.vue'
+import ServiceIcon from '@/components/harbor/ServiceIcon.vue'
 import ProjectIcon from '@/components/harbor/ProjectIcon.vue'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -36,7 +36,7 @@ async function openResource(resourceId: string) {
           <Button variant="ghost" size="icon-sm" class="-ml-2 shrink-0 min-[1100px]:hidden" as-child>
             <RouterLink to="/services" aria-label="Back to services"><ArrowLeft class="size-4" /></RouterLink>
           </Button>
-          <KindIcon :kind="service.kind" />
+          <ServiceIcon :service="service" />
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2"><h1 id="service-title" class="truncate text-base font-semibold tracking-tight">{{ service.name }}</h1><StatusBadge :status="service.state" /></div>
             <p class="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><span>{{ service.project_name }} · {{ service.kind }}</span><span aria-hidden="true">·</span><ServiceOwnership :owner="service.owner" /></p>

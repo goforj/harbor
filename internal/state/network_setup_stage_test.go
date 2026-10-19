@@ -276,7 +276,7 @@ func TestStageNetworkSetupRequestValidationAndCancellation(t *testing.T) {
 			request.Ownership.InstallationID = ""
 		}, want: "installation ID"},
 		{name: "pool width", mutate: func(request *StageNetworkSetupRequest) {
-			request.Ownership.LoopbackPoolPrefix = "127.88.0.0/24"
+			request.Ownership.LoopbackPoolPrefix = "127.88.0.0/23"
 		}, want: "IPv4-loopback /29"},
 		{name: "pool alignment", mutate: func(request *StageNetworkSetupRequest) {
 			request.Ownership.LoopbackPoolPrefix = "127.88.0.9/29"
@@ -294,7 +294,7 @@ func TestStageNetworkSetupRequestValidationAndCancellation(t *testing.T) {
 
 	fixture := newNetworkSetupStageFixture(t)
 	invalid := valid
-	invalid.Ownership.LoopbackPoolPrefix = "127.88.0.0/24"
+	invalid.Ownership.LoopbackPoolPrefix = "127.88.0.0/23"
 	if _, err := fixture.journal.StageNetworkSetup(context.Background(), invalid); err == nil {
 		t.Fatal("StageNetworkSetup() accepted an invalid ownership pool")
 	}

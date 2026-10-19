@@ -91,7 +91,7 @@ onMounted(() => {
           <h2>{{ title }}</h2>
           <p>{{ description }}</p>
         </div>
-        <Command>
+        <Command v-if="open">
           <slot />
         </Command>
       </div>

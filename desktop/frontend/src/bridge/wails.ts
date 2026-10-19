@@ -20,6 +20,8 @@ interface AdditiveWailsAppBindings {
   ProjectEnvironment(projectId: string): ReturnType<HarborBridge['getProjectEnvironment']>
   RemoveOldNetworking(): ReturnType<HarborBridge['removeOldNetworking']>
   RepairNetwork(): ReturnType<HarborBridge['repairNetwork']>
+  ExpandNetwork(): ReturnType<HarborBridge['expandNetwork']>
+  ResumeNetworkSetup(): ReturnType<HarborBridge['resumeNetworkSetup']>
   ResizeProjectTerminal(sessionId: string, columns: number, rows: number): ReturnType<HarborBridge['resizeProjectTerminal']>
   ServiceLogs(projectId: string, sessionId: string, serviceId: string, cursor: number): ReturnType<HarborBridge['getServiceLogs']>
   StartProjectTerminal(projectId: string, columns: number, rows: number, useEnvironmentOverrides: boolean): ReturnType<HarborBridge['startProjectTerminal']>
@@ -88,6 +90,8 @@ export function createWailsBridge(): HarborBridge {
   const removeProject = app?.RemoveProject
   const removeOldNetworking = app?.RemoveOldNetworking
   const repairNetwork = app?.RepairNetwork
+  const expandNetwork = app?.ExpandNetwork
+  const resumeNetworkSetup = app?.ResumeNetworkSetup
   const setupNetwork = app?.SetupNetwork
   const startProject = app?.StartProject
   const stopProject = app?.StopProject
@@ -118,6 +122,13 @@ export function createWailsBridge(): HarborBridge {
   }
 
   return {
+    getProjectCreationProviders: () => app?.ProjectCreationProviders ? app.ProjectCreationProviders() : Promise.reject(new Error('Restart Harbor to enable project creation.')),
+    startProjectCreation: request => app?.StartProjectCreation ? app.StartProjectCreation(request) : Promise.reject(new Error('Restart Harbor to enable creation progress.')),
+    getProjectCreationProgress: (jobId, cursor) => app?.ProjectCreationProgress ? app.ProjectCreationProgress(jobId, cursor) : Promise.reject(new Error('Restart Harbor to enable creation progress.')),
+    retryProjectRegistration: jobId => app?.RetryProjectRegistration ? app.RetryProjectRegistration(jobId) : Promise.reject(new Error('Restart Harbor to enable registration retry.')),
+    getProjectCreationSchema: providerId => app?.ProjectCreationSchema ? app.ProjectCreationSchema(providerId) : Promise.reject(new Error('Restart Harbor to enable project creation.')),
+    chooseProjectParent: () => app?.ChooseProjectParent ? app.ChooseProjectParent() : Promise.reject(new Error('Restart Harbor to enable project creation.')),
+    createProject: (request) => app?.CreateProject ? app.CreateProject(request) : Promise.reject(new Error('Restart Harbor to enable project creation.')),
     addProject: () => addProject(),
     approveProjectRemoval: (projectId, intentId) => approveProjectRemoval(projectId, intentId),
     confirmProjectRuntimeRepair: (projectId, inspectionId, candidateFingerprint) => confirmProjectRuntimeRepair(projectId, inspectionId, candidateFingerprint),
@@ -148,6 +159,12 @@ export function createWailsBridge(): HarborBridge {
     repairNetwork: typeof repairNetwork === 'function'
       ? () => repairNetwork()
       : () => Promise.reject(new Error('Network repair bindings are not available in this desktop build.')),
+    expandNetwork: typeof expandNetwork === 'function'
+      ? () => expandNetwork()
+      : () => Promise.reject(new Error('Upgrade Harbor to expand network capacity.')),
+    resumeNetworkSetup: typeof resumeNetworkSetup === 'function'
+      ? () => resumeNetworkSetup()
+      : () => Promise.reject(new Error('Restart Harbor to load network setup recovery.')),
     setupNetwork: () => setupNetwork(),
     startProject: (projectId, intentId) => startProject(projectId, intentId),
     stopProject: (projectId, intentId) => stopProject(projectId, intentId),

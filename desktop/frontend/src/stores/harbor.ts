@@ -138,8 +138,16 @@ export const useHarborStore = defineStore('harbor', () => {
       && isActiveOperation(operation)))
   const projectRuntimeRepairBusy = computed(() => projectRuntimeRepairProjectId.value !== null)
   const projectRemovalApprovalBusy = computed(() => projectRemovalApprovalProjectId.value !== null)
+  const networkSetupRecovery = computed(() => snapshot.value?.network_setup?.pending ?? null)
+  const networkConfigured = computed(() => snapshot.value?.network_setup?.configured ?? (networkSetupResult.value !== null))
   const networkSetupOnboarding = computed(() => snapshot.value !== null
-    && daemonStatus.value?.capabilities.includes('control.network-setup.v1') === true)
+    && daemonStatus.value?.capabilities.includes('control.network-setup.v1') === true
+    && !networkSetupRecovery.value
+    && !networkConfigured.value
+    && (snapshot.value.network_setup?.configured === false
+      || networkSetupError.value !== null
+      || oldNetworkingRemovalError.value !== null
+      || Object.values(projectLifecycleProblemCodes.value).some(code => code === 'project.network.setup_required' || code === 'project.network.full_setup_required')))
   const oldNetworkingRemovalAvailable = computed(() => daemonStatus.value?.capabilities
     .includes('control.network-resolver-policy-migration.v1') === true
     && oldNetworkingRemovalUnsupportedEpoch.value !== connectionEpoch)
@@ -439,7 +447,53 @@ export const useHarborStore = defineStore('harbor', () => {
     }
   }
 
-  async function repairNetwork(): Promise<NetworkSetupOperation | null> {
+  async function resumeNetworkSetup(): Promise<NetworkSetupOperation | null> {
+    if (settingUpNetwork.value || removingOldNetworking.value || projectLifecycleBusy.value
+      || snapshotStale.value || connectionState.value !== 'connected') {
+      return null
+    }
+    const pending = networkSetupRecovery.value
+    if (!pending) {
+      return null
+    }
+    const requestEpoch = connectionEpoch
+    settingUpNetwork.value = true
+    networkSetupError.value = null
+    try {
+      const result = await harborBridge.resumeNetworkSetup()
+      if (requestEpoch !== connectionEpoch) {
+        return null
+      }
+      if (result.operation.id !== pending.operation_id
+        || result.operation.intent_id !== pending.intent_id
+        || result.operation.kind !== 'network.setup'
+        || result.operation.project_id
+        || result.operation.state !== 'succeeded'
+        || result.operation.phase !== 'completed'
+        || !Number.isSafeInteger(result.revision)
+        || result.revision <= pending.operation_revision) {
+        throw new Error('Harbor returned inconsistent setup recovery progress.')
+      }
+      networkSetupResult.value = result
+      return result
+    }
+    catch (cause) {
+      if (requestEpoch === connectionEpoch) {
+        networkSetupError.value = cause instanceof Error
+          ? cause.message
+          : 'Harbor could not resume networking.'
+      }
+      return null
+    }
+    finally {
+      if (requestEpoch === connectionEpoch) {
+        await refresh()
+      }
+      settingUpNetwork.value = false
+    }
+  }
+
+  async function repairNetwork(expandPool = false): Promise<NetworkSetupOperation | null> {
     if (settingUpNetwork.value || removingOldNetworking.value) {
       return null
     }
@@ -452,13 +506,14 @@ export const useHarborStore = defineStore('harbor', () => {
     networkSetupError.value = null
     oldNetworkingRemovalError.value = null
     try {
-      const result = await harborBridge.repairNetwork()
+      const result = expandPool ? await harborBridge.expandNetwork() : await harborBridge.repairNetwork()
       if (result.operation.kind !== 'network.setup'
         || result.operation.project_id
         || result.operation.state !== 'succeeded') {
         throw new Error('Harbor returned incomplete network repair progress.')
       }
       networkSetupResult.value = result
+      if (expandPool) await refresh()
       return result
     }
     catch (cause) {
@@ -1481,6 +1536,9 @@ export const useHarborStore = defineStore('harbor', () => {
     addProject,
     setupNetwork,
     repairNetwork,
+    expandNetwork: () => repairNetwork(true),
+    resumeNetworkSetup,
+    networkSetupRecovery,
     removeOldNetworking,
     projectRemovalNotice,
     removeProject,

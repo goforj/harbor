@@ -3,6 +3,7 @@ package loopbackhandler
 import (
 	"context"
 	"fmt"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"net/netip"
 
 	"github.com/goforj/harbor/internal/helper"
@@ -80,8 +81,16 @@ func (handler *Handler) EnsureLoopbackIdentity(ctx context.Context, ticket helpe
 	return evidenceFromChange(ticket.Operation, address, change)
 }
 
-// EnsureLoopbackPool ensures all eight approved identities only after every signed assignment precondition holds.
+// EnsureLoopbackPool ensures the complete approved pool only after every signed assignment precondition holds.
 func (handler *Handler) EnsureLoopbackPool(ctx context.Context, ticket helper.Ticket) (helper.PoolMutationEvidence, error) {
+	if ticket.PreviousPool != "" {
+		return helper.PoolMutationEvidence{}, fmt.Errorf("pool expansion requires admitted ownership transition")
+	}
+	return handler.ensureLoopbackPool(ctx, ticket)
+}
+
+// ensureLoopbackPool shares exact mutation checks after the caller has established any required ownership transition.
+func (handler *Handler) ensureLoopbackPool(ctx context.Context, ticket helper.Ticket) (helper.PoolMutationEvidence, error) {
 	plan, err := validatePoolMutationTicket(ticket, helper.OperationEnsureLoopbackPool)
 	if err != nil {
 		return helper.PoolMutationEvidence{}, err
@@ -123,7 +132,7 @@ func (handler *Handler) EnsureLoopbackPool(ctx context.Context, ticket helper.Ti
 	}, nil
 }
 
-// ReleaseLoopbackPool releases every owned identity only after all eight signed observations still hold.
+// ReleaseLoopbackPool releases every owned identity only after the complete signed observations still hold.
 func (handler *Handler) ReleaseLoopbackPool(ctx context.Context, ticket helper.Ticket) (helper.PoolMutationEvidence, error) {
 	plan, err := validatePoolMutationTicket(ticket, helper.OperationReleaseLoopbackPool)
 	if err != nil {
@@ -215,7 +224,7 @@ func (handler *Handler) observeExpectedPreAssignment(
 	return nil
 }
 
-// validatePoolMutationTicket copies one exact canonical /29 authority for safe two-phase processing.
+// validatePoolMutationTicket copies one exact bounded pool authority for safe two-phase processing.
 func validatePoolMutationTicket(ticket helper.Ticket, operation helper.Operation) (poolMutationPlan, error) {
 	if ticket.Operation != operation {
 		return poolMutationPlan{}, fmt.Errorf("loopback ticket operation %q does not match handler operation %q", ticket.Operation, operation)
@@ -224,8 +233,8 @@ func validatePoolMutationTicket(ticket helper.Ticket, operation helper.Operation
 		return poolMutationPlan{}, fmt.Errorf("pool operation cannot contain single-address authority")
 	}
 	pool, err := netip.ParsePrefix(ticket.ApprovedPool)
-	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() != loopbackPoolPrefixBits || pool != pool.Masked() || pool.String() != ticket.ApprovedPool {
-		return poolMutationPlan{}, fmt.Errorf("pool operation requires a canonical IPv4 loopback /29")
+	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || (pool.Bits() != loopbackPoolPrefixBits && pool.Bits() != poolpolicy.PrefixBits) || pool != pool.Masked() || pool.String() != ticket.ApprovedPool {
+		return poolMutationPlan{}, fmt.Errorf("pool operation requires a canonical IPv4 loopback /29 or /24")
 	}
 	if ticket.ExpectedLoopbackPool == nil {
 		return poolMutationPlan{}, fmt.Errorf("pool operation requires expected loopback pool authority")
@@ -257,8 +266,8 @@ func validatePoolMutationTicket(ticket helper.Ticket, operation helper.Operation
 		identities[index] = plan
 	}
 
-	if len(identities) != loopbackPoolIdentityCount {
-		return poolMutationPlan{}, fmt.Errorf("pool ensure requires exactly eight identities")
+	if len(identities) != 1<<(32-pool.Bits()) {
+		return poolMutationPlan{}, fmt.Errorf("pool ensure requires every identity in the approved pool")
 	}
 	return poolMutationPlan{
 		pool:              pool,

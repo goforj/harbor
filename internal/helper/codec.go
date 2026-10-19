@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"io"
 	"strings"
 )
@@ -14,7 +15,7 @@ import (
 const MaxRequestBytes = 16 * 1024
 
 // MaxResponseBytes is the hard upper bound for one helper response body, including its newline.
-const MaxResponseBytes = 16 * 1024
+const MaxResponseBytes = 128 * 1024
 
 const maximumJSONDepth = 32
 
@@ -246,7 +247,7 @@ func validateCanonicalPoolMutationEvidenceObject(body []byte) error {
 	if err := json.Unmarshal(poolEvidence["identities"], &identities); err != nil || identities == nil {
 		return errors.New("helper response pool identities are not an array")
 	}
-	if len(identities) != loopbackPoolIdentities {
+	if len(identities) != loopbackPoolIdentities && len(identities) != poolpolicy.Capacity {
 		return errors.New("helper response pool evidence has the wrong identity count")
 	}
 	for _, identity := range identities {

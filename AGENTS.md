@@ -65,3 +65,10 @@ The exact source-to-generator map and commands are maintained in `docs/developme
 - Update `docs/handoff.md` at a stopping point with the exact worktree boundary, evidence, unresolved risks, and one concrete next goal.
 - Never present a historical PID, address, path, or database row as current without re-observing it.
 - Keep root `README.md` suitable for future users: describe release status honestly and link to detail instead of implying unfinished cross-platform behavior is available.
+
+## Frontend Iteration Pace
+
+- For small Harbor frontend changes, work directly in the user's active checkout and use focused validation proportional to the change.
+- Hand back the working local UI after relevant checks pass; do not hold visual review for the full cross-platform CI suite.
+- Do not create a PR for every small change during active iteration. Open a PR when the user asks or the scope warrants a reviewed integration.
+- Runtime, security, lifecycle, contract, and release changes still require their applicable broader checks.

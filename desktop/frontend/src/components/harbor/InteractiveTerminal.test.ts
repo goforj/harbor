@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import InteractiveTerminal from './InteractiveTerminal.vue'
+import { setTerminalAppearance } from '@/lib/terminalAppearance'
 import type { TerminalSession } from '@/lib/terminalSession'
 
 const observers: MockResizeObserver[] = []
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => {
   const terminals: Array<{
     cols: number
     rows: number
+    options: { theme?: Record<string, string> }
     open: ReturnType<typeof vi.fn>
     loadAddon: ReturnType<typeof vi.fn>
     write: ReturnType<typeof vi.fn>
@@ -38,7 +40,7 @@ const mocks = vi.hoisted(() => {
     readonly dispose = vi.fn()
     private inputListener: ((data: string) => void) | null = null
 
-    constructor() {
+    constructor(public options: { theme?: Record<string, string> } = {}) {
       terminals.push(this)
     }
 
@@ -79,6 +81,7 @@ vi.mock('@xterm/addon-fit', () => ({ FitAddon: mocks.MockFitAddon }))
 
 describe('InteractiveTerminal', () => {
   afterEach(() => {
+    setTerminalAppearance('app')
     mocks.terminals.length = 0
     mocks.fits.length = 0
     observers.length = 0
@@ -115,6 +118,23 @@ describe('InteractiveTerminal', () => {
     terminal?.sendInput('ls\\r')
     expect(terminal?.write).toHaveBeenCalledWith('ready\\r\\n')
     expect(session.write).toHaveBeenCalledWith('ls\\r')
+  })
+
+  it('changes appearance in place without restarting or closing the shell', async () => {
+    setTerminalAppearance('dark')
+    const session = createSession()
+    const wrapper = mount(InteractiveTerminal, { props: { session } })
+    await nextTick()
+    const emulator = mocks.terminals[0]!
+    expect(emulator.options.theme?.background).toBe('#0b0b0b')
+    setTerminalAppearance('light')
+    await nextTick()
+    expect(emulator.options.theme?.background).toBe('#f6f8fa')
+    expect(mocks.terminals).toHaveLength(1)
+    expect(session.start).toHaveBeenCalledOnce()
+    expect(session.close).not.toHaveBeenCalled()
+    expect(emulator.dispose).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('does not repeat the same PTY resize and releases terminal resources on unmount', async () => {

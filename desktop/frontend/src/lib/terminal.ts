@@ -1,5 +1,4 @@
 import type { CSSProperties } from 'vue'
-import { terminalTheme } from './terminalTheme'
 
 export type TerminalRunStyle = CSSProperties
 
@@ -60,13 +59,13 @@ const maximumRetainedCells = 256 * 1024
 const minimumStylePruneThreshold = 4096
 const stylePruneHeadroom = 256
 const maximumPendingSequenceCharacters = 4096
-const defaultForeground = terminalTheme.foreground
-const defaultBackground = terminalTheme.background
+const defaultForeground = 'var(--terminal-foreground)'
+const defaultBackground = 'var(--terminal-background)'
 const terminalColors = [
-  terminalTheme.black, terminalTheme.red, terminalTheme.green, terminalTheme.yellow,
-  terminalTheme.blue, terminalTheme.magenta, terminalTheme.cyan, terminalTheme.white,
-  terminalTheme.brightBlack, terminalTheme.brightRed, terminalTheme.brightGreen, terminalTheme.brightYellow,
-  terminalTheme.brightBlue, terminalTheme.brightMagenta, terminalTheme.brightCyan, terminalTheme.brightWhite,
+  'var(--terminal-black)', 'var(--terminal-red)', 'var(--terminal-green)', 'var(--terminal-yellow)',
+  'var(--terminal-blue)', 'var(--terminal-magenta)', 'var(--terminal-cyan)', 'var(--terminal-white)',
+  'var(--terminal-bright-black)', 'var(--terminal-bright-red)', 'var(--terminal-bright-green)', 'var(--terminal-bright-yellow)',
+  'var(--terminal-bright-blue)', 'var(--terminal-bright-magenta)', 'var(--terminal-bright-cyan)', 'var(--terminal-bright-white)',
 ] as const
 
 // TerminalModel incrementally applies the terminal controls emitted by interactive development tools.

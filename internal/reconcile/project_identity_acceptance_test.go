@@ -30,7 +30,7 @@ import (
 const (
 	projectIdentityAcceptanceForjEnvironment             = "HARBOR_PROJECT_IDENTITY_FORJ_BINARY"
 	projectIdentityAcceptanceAddressesEnvironment        = "HARBOR_PROOF_ADDRESSES"
-	projectIdentityAcceptanceGoForjVersion               = "0.30.0"
+	projectIdentityAcceptanceGoForjVersion               = "0.34.0"
 	projectIdentityAcceptancePort                 uint16 = 3000
 	projectIdentityAcceptanceEndpointCheckTimeout        = 5 * time.Second
 	projectIdentityAcceptanceTimeout                     = 8 * time.Minute

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"net/netip"
 
 	"github.com/goforj/harbor/internal/domain"
@@ -135,16 +136,18 @@ func resolveNetworkSetupPoolMode(
 	if err != nil {
 		return ticketissuer.PoolPlan{}, err
 	}
-	if !projected.Exists || projected.Record != plan.Ownership {
+	if !projected.Exists || projected.Record != plan.Ownership && ownership.ValidatePoolExpansion(projected.Record, plan.Ownership) != nil {
 		return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(operationID, fmt.Errorf("repair ownership differs from machine projection"))
 	}
-	if network.Pool.Prefix() != plan.Pool.Prefix() ||
+	if network.Pool.Prefix().String() != projected.Record.LoopbackPoolPrefix ||
 		string(network.Ownership.InstallationID) != plan.Ownership.InstallationID ||
 		network.Ownership.Generation != plan.Ownership.Generation {
 		return ticketissuer.PoolPlan{}, corruptNetworkSetupPlan(operationID, fmt.Errorf("repair ownership differs from initialized network"))
 	}
 	plan.Mode = ticketissuer.PoolModeRepair
-	plan.Ownership = projected.Record
+	if plan.Ownership != projected.Record {
+		plan.PreviousPool = projected.Record.LoopbackPoolPrefix
+	}
 	return plan, nil
 }
 
@@ -265,11 +268,11 @@ func networkSetupPoolPlanFromModel(
 func networkSetupIdentityPool(value string) (identity.Pool, error) {
 	prefix, err := netip.ParsePrefix(value)
 	if err != nil || !prefix.Addr().Is4() || prefix.Addr() != prefix.Addr().Unmap() ||
-		!prefix.Addr().IsLoopback() || prefix.Bits() != 29 || prefix != prefix.Masked() || prefix.String() != value {
+		!prefix.Addr().IsLoopback() || (prefix.Bits() != 29 && prefix.Bits() != poolpolicy.PrefixBits) || prefix != prefix.Masked() || prefix.String() != value {
 		return identity.Pool{}, fmt.Errorf("loopback pool prefix %q is not a canonical IPv4-loopback /29", value)
 	}
 
-	addresses := make([]netip.Addr, networkSetupPoolIdentityCount)
+	addresses := make([]netip.Addr, 1<<(32-prefix.Bits()))
 	address := prefix.Addr()
 	for index := range addresses {
 		if !prefix.Contains(address) {

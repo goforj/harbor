@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import NetworkSetupRecoveryCard from '@/components/harbor/NetworkSetupRecoveryCard.vue'
 import { computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
@@ -6,7 +7,6 @@ import {
   Activity,
   ArrowUpRight,
   Boxes,
-  CircleCheck,
   Clock3,
   FolderKanban,
   FolderPlus,
@@ -15,6 +15,7 @@ import {
   Server,
   TriangleAlert,
 } from '@lucide/vue'
+import { showNewProjectDialog } from '@/lib/projectCreationDialog'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
 import ProjectIcon from '@/components/harbor/ProjectIcon.vue'
 import KindIcon from '@/components/harbor/KindIcon.vue'
@@ -77,7 +78,7 @@ async function removeOldNetworking() {
 
 <template>
   <main class="h-full min-w-0 overflow-y-auto" aria-labelledby="overview-title">
-    <header class="flex min-h-16 items-center justify-between gap-4 border-b px-5 py-3 lg:px-7">
+    <header class="flex min-h-16 flex-wrap items-center justify-between gap-4 border-b px-5 py-3 lg:px-7">
       <div class="min-w-0">
         <div class="flex items-center gap-2">
           <h1 id="overview-title" class="truncate text-base font-semibold tracking-tight">Overview</h1>
@@ -88,8 +89,9 @@ async function removeOldNetworking() {
           Snapshot {{ capturedAt }}
         </p>
       </div>
-      <div class="flex items-center gap-2">
-        <Button size="sm" :disabled="store.addingProject || store.connectionState !== 'connected'" @click="addProject">
+      <div class="flex flex-wrap items-center gap-2">
+        <Button size="sm" :disabled="store.connectionState !== 'connected'" @click="showNewProjectDialog"><FolderPlus class="size-3.5" />New project</Button>
+        <Button variant="outline" size="sm" :disabled="store.addingProject || store.connectionState !== 'connected'" @click="addProject">
           <Spinner v-if="store.addingProject" aria-hidden="true" />
           <FolderPlus v-else class="size-3.5" aria-hidden="true" />
           {{ store.addingProject ? 'Adding…' : 'Add project' }}
@@ -102,6 +104,7 @@ async function removeOldNetworking() {
     </header>
 
     <div class="space-y-5 p-5 lg:p-7">
+ <NetworkSetupRecoveryCard />
       <div v-if="store.error && !store.connectionMessage" class="flex items-start gap-3 rounded-lg border border-destructive/35 bg-destructive/10 px-4 py-3 text-sm" role="alert">
         <TriangleAlert class="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
         <div>
@@ -120,16 +123,10 @@ async function removeOldNetworking() {
         </CardHeader>
         <CardContent class="flex flex-col items-start gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div class="min-w-0 flex-1 text-sm">
-            <p v-if="store.networkSetupResult" class="flex items-center gap-2 font-medium text-emerald-700 dark:text-emerald-400">
-              <CircleCheck class="size-4 shrink-0" aria-hidden="true" />
-              Harbor’s secure, trusted local ingress is ready.
-            </p>
-            <template v-else>
-              <p class="font-medium">Set up secure local networking before you start a project.</p>
-              <p v-if="store.networkSetupError" class="mt-1 text-xs text-destructive" role="alert">{{ store.networkSetupError }}</p>
-            </template>
+            <p class="font-medium">Set up secure local networking before you start a project.</p>
+            <p v-if="store.networkSetupError" class="mt-1 text-xs text-destructive" role="alert">{{ store.networkSetupError }}</p>
           </div>
-          <div v-if="!store.networkSetupResult" class="flex shrink-0 flex-wrap gap-2">
+          <div class="flex shrink-0 flex-wrap gap-2">
             <Button
               :disabled="store.settingUpNetwork || store.removingOldNetworking || store.connectionState !== 'connected'"
               @click="setupNetwork"

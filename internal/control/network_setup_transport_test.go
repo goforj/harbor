@@ -14,6 +14,27 @@ import (
 	"github.com/goforj/harbor/internal/rpc/session"
 )
 
+// TestSetupRecoveryRequiresItsOwnCapability prevents older setup sessions from gaining recovery authority.
+func TestSetupRecoveryRequiresItsOwnCapability(t *testing.T) {
+	request := ConfirmNetworkSetupApprovalRequest{OperationID: "operation-network-setup", ExpectedOperationRevision: 3, Resume: true}
+	peer := session.Peer{Role: rpc.RoleCLI, Protocol: protocolV1, Capabilities: []rpc.Capability{CapabilityV1, CapabilityNetworkSetupV1}}
+	client := &Client{peer: DaemonPeer{Session: peer}}
+	if _, err := client.ConfirmNetworkSetupApproval(t.Context(), request); err == nil || !strings.Contains(err.Error(), "does not support setup recovery") {
+		t.Fatal("legacy client reached transport", err)
+	}
+	authority := &recordingAuthority{}
+	server := &Server{config: ServerConfig{Authority: authority}}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.networkSetupApprovalConfirmHandler(testClientPeer)(t.Context(), session.Request{Peer: peer, Payload: payload})
+	var handlerError *session.HandlerError
+	if !errors.As(err, &handlerError) || handlerError.Code() != rpc.ErrorCodePermissionDenied || len(authority.recordedCallers()) != 0 {
+		t.Fatal("unnegotiated recovery reached authority", err)
+	}
+}
+
 // TestControlClientRoundTripsNetworkSetup verifies both human roles preserve caller identity, revision selection, and exact helper evidence.
 func TestControlClientRoundTripsNetworkSetup(t *testing.T) {
 	for _, role := range []rpc.Role{rpc.RoleCLI, rpc.RoleDesktop} {

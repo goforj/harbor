@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Activity, Anchor, Command, Search } from '@lucide/vue'
+import { Activity, Anchor, Command, Search, Settings } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import {
@@ -58,7 +58,7 @@ function navigate(path: string) {
       <Separator class="mb-2 w-7" />
 
       <nav class="flex flex-col items-center gap-1" aria-label="Primary">
-        <Tooltip v-for="item in harborNavigation" :key="item.destination">
+        <Tooltip v-for="item in harborNavigation.filter(item => item.destination !== 'system')" :key="item.destination">
           <TooltipTrigger as-child>
             <Button
               variant="ghost"
@@ -95,6 +95,15 @@ function navigate(path: string) {
           </TooltipContent>
         </Tooltip>
 
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <Button variant="ghost" size="icon-sm" aria-label="Settings" :aria-current="activeDestination === 'system' ? 'page' : undefined" :data-active="activeDestination === 'system' ? '' : undefined" class="text-muted-foreground hover:text-foreground data-[active]:bg-accent data-[active]:text-foreground" @click="navigate('/settings/appearance')">
+              <Settings aria-hidden="true" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Settings</TooltipContent>
+        </Tooltip>
+
         <ThemeMenu />
 
         <Tooltip>
@@ -104,7 +113,7 @@ function navigate(path: string) {
               size="icon-sm"
               class="relative text-muted-foreground hover:text-foreground"
               aria-label="View daemon status"
-              @click="navigate('/system/daemon')"
+              @click="navigate('/settings/daemon')"
             >
               <Activity aria-hidden="true" />
               <span

@@ -137,7 +137,7 @@ Harbor branding, icons, terminology, and status semantics remain Harbor-owned. L
 
 `ProjectIcon` uses the bundled GoForj iOS artwork while a project is stopped, starting, stopping, failed, or unavailable, without requesting its favicon. Ready, rebuilding, and degraded projects can display their primary App favicon through the existing same-origin backend lookup. The GoForj artwork remains the fallback during discovery, after a failed image, or when the project has no primary App resource. Returning offline restores the local icon immediately.
 
-`KindIcon` and `presentationIcons.ts` define one Lucide vocabulary for service and resource types across project summaries, lists, quick access, and the command palette. Theme tokens give applications, documentation, data, cache, mail, and other services restrained type colors. These colors identify kind; status badges and dots still communicate health. Tab icons supplement visible labels and remain hidden from assistive technology. The local GoForj asset and its canonical source are recorded in `desktop/frontend/src/assets/brand/README.md`.
+`KindIcon` and `presentationIcons.ts` define one Lucide vocabulary for service and resource types across project summaries, lists, quick access, and the command palette. Command actions, navigation, settings, and theme choices use the same tinted badges. Glyphs explicitly inherit the badge color so primitive menu styles cannot mute their semantic color. Theme tokens give applications, documentation, data, cache, mail, and other services restrained type colors. These colors identify kind; status badges and dots still communicate health. Tab icons supplement visible labels and remain hidden from assistive technology. The local GoForj asset and its canonical source are recorded in `desktop/frontend/src/assets/brand/README.md`.
 
 ## Illustration system
 
@@ -147,7 +147,15 @@ Atmospheric scenes are local transparent assets under `src/assets/illustrations/
 
 ## Terminal presentation
 
-`terminalTheme.ts` centralizes the deep near-black surface and restrained ANSI palette shared by streamed logs and the interactive shell. The `#0A080D` ground comes from the GoForj website code well, with a slightly lifted `#100D14` output toolbar. Explicit 256-color and RGB process output remains faithful. `TerminalOutput` uses 13-pixel Menlo with platform monospace fallbacks, a 1.2 line height, and rows with exactly the same minimum height; do not add independent row padding or a larger minimum height, which separates vertical box-drawing glyphs. Wrapping and safe links still use the bounded incremental terminal model, and copied text remains unstyled.
+`terminalTheme.ts` centralizes the neutral near-black surface and vivid ANSI palette shared by streamed logs and the interactive shell. The neutral `#0B0B0B` ground and `#171717` toolbar fit Harbor's charcoal workspace without the former purple cast. Saturated blue, cyan, green, amber, red, and violet ANSI tokens provide contrast while ordinary text and timestamps remain neutral. Explicit 256-color and RGB process output remains faithful. `TerminalOutput` uses 13-pixel Menlo with platform monospace fallbacks, a 1.2 line height, and rows with exactly the same minimum height; do not add independent row padding or a larger minimum height, which separates vertical box-drawing glyphs. Wrapping and safe links still use the bounded incremental terminal model, and copied text remains unstyled.
+
+## Terminal appearance preferences
+
+The bottom navigation cog opens Settings, with Appearance and Daemon sections. Appearance contains both app and terminal preferences; daemon status and snapshot facts remain under Daemon. Existing `/system` links redirect to `/settings/daemon`. Settings has no entity search or count, and appearance remains available before a daemon snapshot arrives.
+
+Settings → Appearance includes separate app-theme controls and a Terminal appearance card with a live preview and System, Dark, and Light choices. The terminal System option follows Harbor's app appearance, with a split light/dark thumbnail distinguishing it from pinned modes. Both app and terminal choices use System, Dark, Light order. System is the default and tracks Harbor's resolved light/dark appearance, including system changes when the app follows the operating system. An explicit terminal choice remains independent. The preference is stored locally as `harbor.terminal-appearance`; unsupported stored values fall back to System, and unavailable storage still permits a session-local change.
+
+The dark palette uses a neutral `#0B0B0B` well with charcoal chrome. Light mode follows GoForj code styling with `#F6F8FA` with `#1F2328` text and white chrome. Standard ANSI colors and inverse defaults reference shared CSS variables so retained output updates without replay or cursor changes. Explicit extended RGB/color-cube values remain intact. The interactive terminal updates xterm's theme in place, preserving its live shell and scrollback. Appearance never changes a daemon setting or restarts a project.
 
 ## State flow
 

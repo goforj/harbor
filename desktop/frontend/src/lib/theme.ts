@@ -5,6 +5,9 @@ export type AppliedTheme = Exclude<ThemePreference, 'system'>
 
 const storageKey = 'theme'
 const appliedThemeState = ref<AppliedTheme>('light')
+const themePreferenceState = ref<ThemePreference>('system')
+
+export const currentThemePreference = readonly(themePreferenceState)
 
 export const appliedTheme = readonly(appliedThemeState)
 
@@ -20,14 +23,19 @@ function resolveTheme(preference: ThemePreference): AppliedTheme {
 }
 
 export function themePreference(): ThemePreference {
-  const stored = localStorage.getItem(storageKey)
-  if (stored === 'light' || stored === 'dark' || stored === 'system') {
-    return stored
+  try {
+    const stored = localStorage.getItem(storageKey)
+    if (stored === 'light' || stored === 'dark' || stored === 'system') {
+      return stored
+    }
+    return 'system'
+  } catch {
+    return themePreferenceState.value
   }
-  return 'system'
 }
 
 export function applyTheme(preference: ThemePreference = themePreference()) {
+  themePreferenceState.value = preference
   const theme = resolveTheme(preference)
   appliedThemeState.value = theme
   document.documentElement.classList.toggle('dark', theme === 'dark')
@@ -35,7 +43,11 @@ export function applyTheme(preference: ThemePreference = themePreference()) {
 }
 
 export function setThemePreference(preference: ThemePreference) {
-  localStorage.setItem(storageKey, preference)
+  try {
+    localStorage.setItem(storageKey, preference)
+  } catch {
+    // Session preferences remain available when the WebView blocks local storage.
+  }
   applyTheme(preference)
 }
 

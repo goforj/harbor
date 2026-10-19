@@ -325,10 +325,10 @@ func validateProjectIdentityRequest(request ProjectIdentityRequest) error {
 	return nil
 }
 
-// validateProjectIdentityAddresses bounds one socket proof to two through eight distinct IPv4 loopback identities.
+// validateProjectIdentityAddresses bounds one socket proof to two through 256 distinct IPv4 loopback identities.
 func validateProjectIdentityAddresses(addresses []netip.Addr) error {
-	if len(addresses) < 2 || len(addresses) > 8 {
-		return fmt.Errorf("project identity proof requires between two and eight addresses, got %d", len(addresses))
+	if len(addresses) < 2 || len(addresses) > 256 {
+		return fmt.Errorf("project identity proof requires between two and 256 addresses, got %d", len(addresses))
 	}
 	seen := make(map[netip.Addr]struct{}, len(addresses))
 	for _, address := range addresses {

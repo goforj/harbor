@@ -3,7 +3,7 @@ import type { ListboxItemEmits, ListboxItemProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit, useCurrentElement } from "@vueuse/core"
 import { ListboxItem, useForwardPropsEmits, useId } from "reka-ui"
-import { computed, onMounted, onUnmounted, ref } from "vue"
+import { computed, onMounted, onUnmounted, ref, watch } from "vue"
 import { cn } from "@/lib/utils"
 import { useCommand, useCommandGroup } from "."
 
@@ -54,8 +54,13 @@ onMounted(() => {
     }
   }
 })
+watch(() => props.value, value => {
+  allItems.value.set(id, value?.toString() ?? (currentElement.value instanceof HTMLElement ? currentElement.value.textContent ?? "" : ""))
+})
 onUnmounted(() => {
   allItems.value.delete(id)
+  const groupId = groupContext?.id
+  if (groupId) allGroups.value.get(groupId)?.delete(id)
 })
 </script>
 

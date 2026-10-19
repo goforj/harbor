@@ -65,9 +65,7 @@ function filterItems() {
   filterState.filtered.count = itemCount
 }
 
-watch(() => filterState.search, () => {
-  filterItems()
-})
+watch([() => filterState.search, allItems, allGroups], filterItems, { deep: true })
 
 provideCommandContext({
   allItems,

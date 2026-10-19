@@ -18,7 +18,7 @@ describe('StartupTimeline', () => {
     expect(wrapper.findAll('li')[0]!.text()).toContain('completed')
     expect(wrapper.findAll('li')[1]!.text()).toContain('failed')
     expect(wrapper.text()).toContain('1.2 s')
-    expect(wrapper.get('details').attributes('open')).toBeDefined()
+    expect(wrapper.get('button').attributes('aria-expanded')).toBe('true')
     expect(wrapper.text()).toContain('Startup failed')
   })
 
@@ -26,11 +26,35 @@ describe('StartupTimeline', () => {
     const wrapper = mount(StartupTimeline, { props: { progress: { events: [event(1, 'Startup', 'completed', 'startup')] } } })
     expect(wrapper.text()).toContain('Startup steps completed')
     expect(wrapper.text()).not.toContain('Ready')
-    expect(wrapper.get('details').attributes('open')).toBeUndefined()
+    expect(wrapper.get('button').attributes('aria-expanded')).toBe('false')
   })
 
   it('preserves raw-output guidance for malformed optional diagnostics', () => {
     const wrapper = mount(StartupTimeline, { props: { progress: { events: [], invalid: true } } })
     expect(wrapper.text()).toContain('Development output is still available')
   })
+  it('keeps running output compact and names the current step', () => {
+    const wrapper = mount(StartupTimeline, { props: { compact: true, progress: { events: [event(1, 'Preparing App', 'started')] } } })
+    expect(wrapper.get('button').text()).toContain('Preparing App')
+    expect(wrapper.get('button').attributes('aria-expanded')).toBe('false')
+  })
+
+  it('expands a failed compact view and names the failed step', () => {
+    const wrapper = mount(StartupTimeline, { props: { compact: true, progress: { events: [event(1, 'Build frontend', 'started'), event(2, 'Build frontend', 'failed')] } } })
+    expect(wrapper.get('button').text()).toContain('Build frontend failed')
+    expect(wrapper.get('button').attributes('aria-expanded')).toBe('true')
+  })
+
+  it('removes completed output rows even when startup was previously expanded', async () => {
+    const started = event(1, 'Preparing App', 'started')
+    const wrapper = mount(StartupTimeline, { props: { compact: true, progress: { events: [started] } } })
+    expect(wrapper.find('ol').exists()).toBe(false)
+    await wrapper.get('button').trigger('click')
+    expect(wrapper.find('ol').exists()).toBe(true)
+    await wrapper.setProps({ progress: { events: [started, event(2, 'Preparing App', 'completed'), event(3, 'Startup', 'completed', 'startup')] } })
+    expect(wrapper.get('button').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('ol').exists()).toBe(false)
+    expect(wrapper.get('button').text()).toContain('Startup complete')
+  })
+
 })

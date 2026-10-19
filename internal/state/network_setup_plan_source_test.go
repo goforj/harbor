@@ -150,7 +150,7 @@ func TestNetworkSetupPlanSourceRejectsEveryDurableMismatch(t *testing.T) {
 			networkSetupPlanSourceExec(t, fixture.database, "UPDATE network_setup_plans SET ownership_generation = 2")
 		}, want: "bootstrap ownership is not generation-one"},
 		{name: "pool width", mutate: func(t *testing.T, fixture *networkSetupPlanSourceFixture) {
-			networkSetupPlanSourceExec(t, fixture.database, "UPDATE network_setup_plans SET loopback_pool_prefix = '127.77.0.0/24'")
+			networkSetupPlanSourceExec(t, fixture.database, "UPDATE network_setup_plans SET loopback_pool_prefix = '127.77.0.0/23'")
 		}, want: "canonical IPv4-loopback /29"},
 		{name: "pool alignment", mutate: func(t *testing.T, fixture *networkSetupPlanSourceFixture) {
 			networkSetupPlanSourceExec(t, fixture.database, "UPDATE network_setup_plans SET loopback_pool_prefix = '127.77.0.9/29'")

@@ -271,7 +271,7 @@ func TestNewPoolLaunchTicketRejectsInvalidMetadata(t *testing.T) {
 		{name: "non-loopback pool", mutate: func(value *input) { value.pool = "192.0.2.8/29" }},
 		{name: "IPv6 loopback pool", mutate: func(value *input) { value.pool = "::/125" }},
 		{name: "mapped IPv4 pool", mutate: func(value *input) { value.pool = "::ffff:127.77.0.8/125" }},
-		{name: "broad pool", mutate: func(value *input) { value.pool = "127.77.0.0/24" }},
+		{name: "broad pool", mutate: func(value *input) { value.pool = "127.77.0.0/23" }},
 		{name: "narrow pool", mutate: func(value *input) { value.pool = "127.77.0.8/30" }},
 		{name: "host bits", mutate: func(value *input) { value.pool = "127.77.0.9/29" }},
 		{name: "zero expiry", mutate: func(value *input) { value.expiresAt = time.Time{} }},

@@ -1,14 +1,93 @@
 # Current Implementation State
 
+## Released CLI and native creation lifecycle (2026-10-19)
+
+GoForj PR #251 is merged as `4553ef30446b798a896ab2bb91bb1927caa428a1`, published as v0.34.0, and installed locally from that published module. CI, hosted lifecycle jobs, development package checks, and generated-project acceptance now select that CLI release. Existing project config metadata and Harbor's framework module dependencies are independent of this tool pin.
+
+A real macOS Wails window used the production SPA and bindings against the running daemon to create a minimal Vue/web API project through the wizard with the released CLI. Start reached Ready and normal system trust accepted HTTPS with status 200. After Stop and native desktop process exit, a fresh process found the same stopped registration, started it again through the UI, reached Ready, and served trusted HTTPS 200 before stopping. The temporary proof extended the opt-in native creation harness in an isolated checkout; no fixture bridge or fake daemon was used. The normal project registration cleanup preserves the generated checkout beneath `/tmp`. This is desktop close/reopen evidence with the existing daemon, not an OS reboot or fresh installer proof.
+
+The CI fixes preserve the helper's forbidden authority imports while reviewing the pure pool-policy package, and use native temporary paths for Windows creation fixtures. Local focused checks pass. A deterministic regression and focused race checks also cover a runtime session ending between a service-change notification and its fresh observation; only typed runtime-not-running ends the watcher silently, while genuine observation failures remain visible. CI for these final integration fixes is tracked on Harbor PR #11.
+
+## Hosted capacity gate (2026-10-19)
+
+The hosted platform-network API workflow now includes an explicitly selected, initially absent `/24` on Ubuntu, macOS, and Windows. Its new acceptance case creates a partial range, replays exact assignments unchanged while completing all 256 aliases, proves 100 simultaneous same-port listeners with authenticated responses, and conditionally removes only the native fingerprints created by that test. It verifies that all 256 aliases are absent afterward. Existing legacy `/29` adapter coverage remains.
+
+Portable proof and range-validation tests pass locally. The native capacity step passed on hosted Ubuntu, macOS, and Windows in run `39333621961` at `79e441d`. This is adapter and socket acceptance, separate from protected ownership expansion, installer consent, full application workloads, and reboot restoration.
+
+## Interrupted network setup recovery (2026-10-19)
+
+Pending loopback setup, repair, and capacity expansion now appear in Overview and Settings, Daemon with one **Resume setup** action. The daemon projects the exact operation, intent, approval revision, and whether administrator approval or final confirmation remains. Polling only reads durable state and does not request host changes.
+
+For clients that negotiate `control.network-setup-recovery.v1`, the daemon independently verifies the helper's complete pool evidence and retains a bounded receipt before the final completion transaction. A failed completion or database reopen preserves that receipt. Resume uses the same approval, independently reads every native address again, and completes without launching another loopback helper. Confirmed host drift discards only that exact pending receipt and restores the ordinary approval path. Unavailable or malformed observations retain evidence and fail closed. Terminal receipts permit an exact lost-response replay and retire when a later setup plan is staged. The recovery migration refuses downgrade while verified effects remain pending.
+
+The CLI exposes `setup --resume`. Initial setup still continues through the existing resolver, trust, and ingress approval flows; the retained receipt covers the loopback phase, not every secure-networking phase. Native changes that completed before their evidence reached the daemon still require the normal idempotent helper approval path.
+
+Validation covers a real SQLite completion rollback and reopen, exact proof/revision fences, native-readback drift and transient errors, executor resumption with zero helper launches, both authenticated control roles, capability negotiation, desktop phase selection, frontend retry/disconnection handling, and a Chromium Resume/retry flow in light, dark, and mobile layouts. Focused race and vet checks pass. This does not add Linux or Windows shipping-consent or reboot evidence.
+
+
 Status: active development
 
-Last updated: 2026-10-18
+Last updated: 2026-10-19
 
 Project work is organized in [Harbor in Plane](https://plane.goforj.dev/goforj/projects/093ece1d-aa7b-4c5c-a77f-b5774f898111/issues/)
 with identifier `HARBOR`. The board distinguishes completed foundations from
 remaining product verification and release gates; see the handoff for priorities.
 
+Plane was reconciled on 2026-10-19: 46 tasks, including 15 Done, with local implementation explicitly labeled `Evidence: Local verified`. CLI publication (HARBOR-42), Harbor integration (HARBOR-46), and native/signing/onboarding gates remain open. See the handoff for the current Working Now shortlist.
+
+## Project capacity and address lifecycle (2026-10-19)
+
+New setup selects a complete `/24` with 256 loopback identities. The intended workload is at least 100 concurrent projects with capacity remaining for secondary endpoints. Each primary or secondary identity consumes one slot. The pool limits network identities, independently of host CPU, memory, and container resources.
+
+Existing `/29` installations remain valid until explicitly expanded through Settings, Daemon, Expand network capacity, or `harbor setup --expand-pool`. Expansion claims only the containing `/24`, preserves installation identity, ownership generation, verifier key, network policy, existing leases, routes, and reservations, and requires the existing one-shot native approval. It never relocates projects or adopts pre-existing aliases outside the old owned range. The embedded capacity migration preserves existing state and refuses rollback while a larger pool remains configured.
+
+Signed setup, ownership admission, helper response bounds, durable confirmation, and complete-pool cleanup accept both supported sizes. Protected ownership uses an exact source fingerprint and atomic replacement. Interrupted host mutations can resume against the same retained plan. Approval receipts bind the exact journal revision and permit unrelated daemon mutations while native consent is open, while requiring the completion transaction's own edges to remain contiguous. CLI and desktop expansion retries resume a pending approved intent.
+
+Address reuse requires completed teardown, deleted registration, elapsed cooldown, matching installation history, a fresh exact assignment observation, and an available App port. Reuse consumes only the selected quarantine through the revision-fenced writer transaction and advances the release generation. Stopping alone retains the lease. Missing assignments, foreign shapes, occupied ports, retained quarantines, and actual capacity exhaustion have distinct recovery diagnostics.
+
+Validation includes synchronized 100-project fresh and recycled allocation, a real full-network database expansion with retained routes and leases, an unrelated project registered during approval, injected commit failure, database reopen and lost-response retry, 32 teardown cycles against a legacy pool, signed 256-identity setup and release messages, partial native-adapter failure and retry, and cleanup of all 256 identities. Relevant Go boundaries, focused race checks and vet, the frontend build and 86 store/bridge tests, nested desktop tests, and the settings expansion browser flow pass. Generated wire fixtures are stable on a second generation.
+
+Native macOS expansion is complete: protected ownership and durable state agree on `127.77.59.0/24`, and the snapshot reports 256 identities. One hundred simultaneous TCP listeners bound the same port on distinct approved aliases and accepted 100 connections. All eight pre-existing active/quarantined lease records retained their addresses, generations, and ownership. Test2 is Ready at its original `127.77.59.73`, lease generation 4, and normal-trust `https://test2.test` returns 200. The other two projects remain stopped. This proves network capacity and retained-project operation; it is not a 100-Compose-stack hardware benchmark. Changes are integrated in the dirty active `harbor-wails-v3` checkout from `fix/address-lifecycle` in `/tmp/harbor-address-lifecycle-20261019`. They are checkpointed locally in `8f52dd7`. Linux and Windows growth and reboot restoration still require native acceptance before release claims.
+
+## Command menu parity (2026-10-18)
+
+Visual follow-up: command actions, navigation, and theme choices now use the existing semantic icon colors with tinted badges. Shared icon glyphs explicitly inherit their badge color so command-item defaults cannot mute them. Vendor artwork and status colors retain their roles. The frontend build and focused keyboard/settings browser checks pass; light and dark previews were inspected.
+
+The command menu now reuses the shared service logos, project identity, resource favicons, and settings navigation. Actions include New project, Add existing project, Refresh, direct Appearance/Daemon links, and app theme choices. Creation uses the same dialog as Overview and the sidebar. Resource search includes all current resources, with recent items grouped separately and no duplicates. Search metadata updates when snapshot entries change, and reopening clears the prior query. Connection-sensitive actions remain disabled when disconnected or stale. The frontend production build, two command primitive unit tests, and four focused Chromium checks pass, including keyboard focus, service branding, non-recent resources, shared creation, and settings navigation. Browser previews were inspected. No daemon or project restart was needed.
+
+## Service identity logos (2026-10-18)
+
+Service cards, the service browser, service headers, and per-project service tabs now use a bundled offline vendor-logo catalog. Exact service IDs/names select logos for the current name-only snapshot; the resolver also accepts complete image repositories, tags, and digests for a future image metadata projection. An explicit unknown/private image overrides name guessing and retains the generic semantic icon. Grafana seed helpers share Grafana artwork; VictoriaMetrics helpers share its vendor mark. No Docker observation, daemon contract, dependency, or lifecycle behavior changes in this presentation slice. Asset sources and licenses are recorded beside the SVGs. The frontend build, eight focused lookup tests, and two existing service browser checks pass, with light/dark visual inspection and card/tab interaction proof.
+
+## Network setup prompt (2026-10-18)
+
+The Overview setup prompt now consumes the daemon's retained networking configuration, not just its ability to run setup. The snapshot adds optional `network_setup.configured`, projected from the current durable full networking stage, independently of bounded operation history. Missing metadata from an older daemon is unknown rather than an instruction to set up networking; explicit setup errors retain their recovery path. Completed setup removes the onboarding card, and subsequently removed configuration can show it again. This adds no migration or host mutation. Focused domain/authority tests, 77 store/view tests, the setup browser flow, the frontend build, and repeat-generation parity pass. Other pending appearance and project-creation work remains local and uncommitted.
+
+## Graphical project creation (2026-10-18)
+
+Help-format choices now show a live terminal preview and the selected format description. The optional option-level `preview` text comes from GoForj's real formatters through the schema, so the GUI stays stack-neutral and omits the panel for options without previews. Framework, Guided, and External CLI switching, narrow layouts, the existing creation flow, producer/adapter/wire checks, repeat-generation parity, and the frontend build pass. The installed local CLI includes the previews; the previous binary remains backed up.
+
+The creation dialog now presents the current GoForj iOS logo in a branded stack card with its description and a connected step indicator. Multiple adapters use the shared select primitive with per-stack artwork and a neutral fallback. The first screen includes clearer input hints and a compact directory action. Frontend build, five focused timeline tests, and two relevant browser flows pass, with light/dark and narrow visual inspection.
+
+The wizard now selects a compiled-in project creator. Its shared schema, field conditions, semantic destination role, creation jobs, output cursors, and error presentation are stack-neutral. GoForj is the first available adapter and retains responsibility for its CLI arguments and daemon registration. This creates an extension point for additional stacks; it does not claim other stacks can already run under Harbor.
+
+Creation runs asynchronously with bounded live command output and explicit Create files / Add to Harbor stages. A failed render keeps its directory and offers editable choices. A completed render whose registration fails offers Retry registration using only the retained job's destination; this never invokes the renderer again. Jobs and retry authority are retained for the current desktop process only, with bounded output and job counts. The retry button is available in the creation dialog; after leaving that flow, Add existing project remains the recovery path. After restarting Harbor, Add existing project can register the retained directory. Custom Atlas agent and integration fields now follow producer-supplied conditional metadata.
+
+Overview and the Projects browser can open a New project wizard. The installed, canonical GoForj CLI supplies a version-one `new --schema` document; Harbor renders Project, Stack, Options, and Review stages from that contract, including component dependencies, exclusive database choices, starter-kit availability, component-library selection, CLI help format, Atlas presets and custom choices, and Demo. Native directory selection proposes a child directory, with an editable absolute destination.
+
+Creation passes validated argv directly to `forj new --no-interaction`. GoForj owns validation, resources, dependencies, and rendering. Harbor registers successful output with `harbord` and leaves it stopped. An unavailable CLI schema produces update guidance. A registration failure after successful creation reports the retained path separately, and partial creation files are never automatically deleted. Explicit RGB process output and existing project lifecycles are unaffected.
+
+Local evidence includes a real CLI-only render and Go build, plus a production Wails WebView flow using a local CLI and the real daemon to create a Vue project. The native check verified registration in Stopped, removed only its temporary registration, and retained the generated checkout. The generated Vue Go application and frontend both build. This is local macOS evidence; no cross-platform creation or native directory-picker interaction is claimed.
+
+## Terminal appearance settings (2026-10-18)
+
+Settings → Appearance now groups app themes and System, Dark, and Light terminal choices with a live preview. GoForj's pale light code surface and Harbor's neutral near-black dark surface apply consistently to project output, service logs, and interactive shells. The local preference survives reloads, validates stored values, and remains usable for a session when storage is blocked. System tracks the resolved app theme; pinned choices remain independent. Existing ANSI scrollback recolors through CSS variables and open shells receive an in-place palette update, without replay, reconnect, or project restart.
+
+The appearance menu also anchors directly to its button instead of nesting two trigger wrappers, fixing offscreen placement at the bottom of the desktop rail. The bottom rail cog opens Settings → Appearance; Daemon is a separate section for connection and snapshot details. Legacy `/system` routes redirect to `/settings/daemon`. Appearance stays available before the first daemon snapshot, and app-theme controls share reactive state with desktop and mobile quick menus. The production build, 259 frontend tests, and 28 Chromium checks pass, with dark/light card inspection. Tests cover preference persistence, unsupported storage values, unavailable storage, app-follow behavior, retained preview text, and shell continuity. Native consent, tray, and platform acceptance remain separate gates.
+
 ## Embedded development output (2026-10-18)
+
+Development output defaults to one collapsed startup summary naming the current step or reporting completion and elapsed time. A failed step names the failure and expands its details automatically. Overview retains the full startup timeline. These are frontend presentation changes; raw process output and lifecycle authority remain with their existing owners.
 
 The log viewer now uses tight terminal rows instead of the former 1.8 line spacing plus a 20-pixel row minimum, so box-drawing borders join. Streamed logs and interactive shells share the GoForj website code well's deeper near-black background (`#0A080D`) and a softer ANSI palette while preserving explicit RGB/256-color output. The frontend build, 248 unit tests, 26 Chromium checks, focused process-launch tests and race checks, and process-package vet pass. A fresh fixture server was required after branch/HMR changes to keep the existing dynamic bridge-mocking browser test on one module identity.
 

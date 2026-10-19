@@ -61,6 +61,15 @@ async function mountOverview() {
 }
 
 describe('OverviewView', () => {
+  it('does not offer setup when the daemon already retains complete networking', async () => {
+    const { store, wrapper } = await mountOverview()
+    store.$patch({ snapshot: { ...store.snapshot!, network_setup: { configured: true } }, networkSetupResult: null, networkSetupError: null })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).not.toContain('Secure local networking')
+    expect(wrapper.text()).not.toContain('Set up secure networking')
+    wrapper.unmount()
+  })
+
   it('offers old networking removal only after setup fails and disables both actions while it runs', async () => {
     const { store, wrapper } = await mountOverview()
     const pending = deferred<NetworkResolverPolicyMigrationOperation>()
@@ -80,7 +89,7 @@ describe('OverviewView', () => {
     await flushPromises()
     expect(store.removingOldNetworking).toBe(false)
 
-    store.$patch({ networkSetupResult: { operation: completedOldNetworkingRemoval().operation, revision: 43 } })
+    store.$patch({ networkSetupResult: { operation: completedOldNetworkingRemoval().operation, revision: 43 }, snapshot: { ...store.snapshot!, network_setup: { configured: true } } })
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).not.toContain('Remove old networking')
     wrapper.unmount()

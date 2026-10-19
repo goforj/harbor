@@ -11,9 +11,46 @@ import (
 
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/projectcreation"
 )
 
+// ProjectCreationResult keeps successful creation distinct from a failed daemon registration.
+type ProjectCreationResult struct {
+	Path              string                       `json:"path"`
+	Output            string                       `json:"output"`
+	Registration      *control.ProjectRegistration `json:"registration,omitempty"`
+	RegistrationError string                       `json:"registration_error,omitempty"`
+}
+
+// ProjectCreationProgress contains a bounded output delta and an independently observed job phase.
+type ProjectCreationProgress struct {
+	JobID      string                 `json:"job_id"`
+	ProviderID string                 `json:"provider_id"`
+	Path       string                 `json:"path"`
+	Phase      string                 `json:"phase"`
+	Output     string                 `json:"output"`
+	Cursor     uint64                 `json:"cursor"`
+	Truncated  bool                   `json:"truncated,omitempty"`
+	Error      string                 `json:"error,omitempty"`
+	Result     *ProjectCreationResult `json:"result,omitempty"`
+}
+
 const (
+	// MethodProjectCreationProviders lists the available stack adapters.
+	MethodProjectCreationProviders = "ProjectCreationProviders"
+	// MethodStartProjectCreation starts a desktop-owned authoring job.
+	MethodStartProjectCreation = "StartProjectCreation"
+	// MethodProjectCreationProgress reads bounded live creation output.
+	MethodProjectCreationProgress = "ProjectCreationProgress"
+	// MethodRetryProjectRegistration registers retained successful output without rerendering.
+	MethodRetryProjectRegistration = "RetryProjectRegistration"
+	// MethodProjectCreationSchema reads the installed GoForj creation contract.
+	MethodProjectCreationSchema = "ProjectCreationSchema"
+	// MethodChooseProjectParent selects a new project's parent folder.
+	MethodChooseProjectParent = "ChooseProjectParent"
+	// MethodCreateProject creates one project through GoForj and registers it with Harbor.
+	MethodCreateProject = "CreateProject"
+
 	// MethodAddProject is the generated Wails method that selects and registers one local project.
 	MethodAddProject = "AddProject"
 	// MethodApproveProjectRemoval is the generated Wails method that explicitly approves one retained removal intent.
@@ -48,6 +85,10 @@ const (
 	MethodRemoveOldNetworking = "RemoveOldNetworking"
 	// MethodRepairNetwork is the generated Wails method that restores the exact owned loopback pool.
 	MethodRepairNetwork = "RepairNetwork"
+	// MethodExpandNetwork is the reviewed binding for approved identity-pool growth.
+	MethodExpandNetwork = "ExpandNetwork"
+	// MethodResumeNetworkSetup continues the exact daemon-owned pending setup.
+	MethodResumeNetworkSetup = "ResumeNetworkSetup"
 	// MethodStartProject is the generated Wails method that starts one registered project.
 	MethodStartProject = "StartProject"
 	// MethodStopProject is the generated Wails method that stops one registered project.
@@ -182,6 +223,13 @@ func (result AddProjectResult) Validate() error {
 
 // AppContract is the complete exported method surface Wails may bind from App.
 type AppContract interface {
+	ProjectCreationProviders() ([]projectcreation.ProviderInfo, error)
+	ProjectCreationSchema(providerID string) (projectcreation.Schema, error)
+	StartProjectCreation(request projectcreation.Request) (ProjectCreationProgress, error)
+	ProjectCreationProgress(jobID string, cursor uint64) (ProjectCreationProgress, error)
+	RetryProjectRegistration(jobID string) (ProjectCreationProgress, error)
+	ChooseProjectParent() (string, error)
+	CreateProject(request projectcreation.Request) (ProjectCreationResult, error)
 	AddProject() (AddProjectResult, error)
 	ApproveProjectRemoval(projectID string, intentID string) (control.ProjectUnregistration, error)
 	ConfirmProjectRuntimeRepair(projectID string, inspectionID string, candidateFingerprint string) (control.ProjectRuntimeRepairConfirmation, error)
@@ -196,6 +244,9 @@ type AppContract interface {
 	RemoveProject(projectID string, intentID string) (control.ProjectUnregistration, error)
 	RemoveOldNetworking() (control.NetworkResolverPolicyMigrationOperation, error)
 	RepairNetwork() (control.NetworkSetupOperation, error)
+	ExpandNetwork() (control.NetworkSetupOperation, error)
+	// ResumeNetworkSetup resumes the existing phase without creating competing authority.
+	ResumeNetworkSetup() (control.NetworkSetupOperation, error)
 	SetupNetwork() (control.NetworkSetupOperation, error)
 	Snapshot() (domain.Snapshot, error)
 	StartProject(projectID string, intentID string) (control.ProjectLifecycleOperation, error)
@@ -222,6 +273,13 @@ type MethodContract struct {
 func MethodContracts() []MethodContract {
 	contractType := reflect.TypeOf((*AppContract)(nil)).Elem()
 	parameterNames := map[string][]string{
+		MethodProjectCreationProviders:    {},
+		MethodProjectCreationSchema:       {"providerId"},
+		MethodStartProjectCreation:        {"request"},
+		MethodProjectCreationProgress:     {"jobId", "cursor"},
+		MethodRetryProjectRegistration:    {"jobId"},
+		MethodChooseProjectParent:         {},
+		MethodCreateProject:               {"request"},
 		MethodAddProject:                  {},
 		MethodApproveProjectRemoval:       []string{"projectId", "intentId"},
 		MethodConfirmProjectRuntimeRepair: []string{"projectId", "inspectionId", "candidateFingerprint"},
@@ -236,6 +294,8 @@ func MethodContracts() []MethodContract {
 		MethodRemoveProject:               []string{"projectId", "intentId"},
 		MethodRemoveOldNetworking:         {},
 		MethodRepairNetwork:               {},
+		MethodExpandNetwork:               {},
+		MethodResumeNetworkSetup:          {},
 		MethodSetupNetwork:                {},
 		MethodSnapshot:                    []string{},
 		MethodStartProject:                []string{"projectId", "intentId"},

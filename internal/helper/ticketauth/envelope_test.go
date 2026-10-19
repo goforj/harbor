@@ -602,3 +602,40 @@ func envelopeTestPoolTicket(now time.Time) helper.Ticket {
 func envelopeTestTime() time.Time {
 	return time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
 }
+
+// TestLargePoolEnvelopeFitsBoundAndAuthenticatesEveryIdentity proves the complete production pool fits the signed protocol.
+func TestLargePoolEnvelopeFitsBoundAndAuthenticatesEveryIdentity(t *testing.T) {
+	now := envelopeTestTime()
+	publicKey, privateKey := envelopeTestKey(t, 17)
+	ticket := envelopeTestPoolTicket(now)
+	ticket.ApprovedPool = "127.77.0.0/24"
+	prototype := ticket.ExpectedLoopbackPool.Identities[0]
+	ticket.ExpectedLoopbackPool.Identities = nil
+	address := netip.MustParseAddr("127.77.0.0")
+	for range 256 {
+		item := prototype
+		item.Address = address.String()
+		ticket.ExpectedLoopbackPool.Identities = append(ticket.ExpectedLoopbackPool.Identities, item)
+		address = address.Next()
+	}
+	envelope, err := Sign(ticket, privateKey, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := Encode(envelope)
+	if err != nil || len(encoded) > MaxEnvelopeBytes {
+		t.Fatalf("large envelope: %d bytes, %v", len(encoded), err)
+	}
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := decoded.Verify(publicKey, now)
+	if err != nil || !reflect.DeepEqual(verified, ticket) {
+		t.Fatalf("large pool verification: %v", err)
+	}
+	decoded.Ticket.ExpectedLoopbackPool.Identities[200].Address = "127.77.1.1"
+	if _, err := decoded.Verify(publicKey, now); err == nil {
+		t.Fatal("unsigned identity substitution accepted")
+	}
+}

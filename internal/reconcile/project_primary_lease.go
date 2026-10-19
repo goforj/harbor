@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -24,7 +25,7 @@ const (
 	// primaryLeasePersistenceAttempts bounds optimistic replanning when another durable writer wins the revision.
 	primaryLeasePersistenceAttempts = 4
 	// primaryLeaseAllocationPersistenceAttempts gives every member of Harbor's fixed /29 pool one turn to win a shared revision race.
-	primaryLeaseAllocationPersistenceAttempts = networkSetupPoolAddressCount
+	primaryLeaseAllocationPersistenceAttempts = poolpolicy.Capacity
 	// maximumPrimaryLeasePorts matches Harbor's bounded host-conflict socket vocabulary.
 	maximumPrimaryLeasePorts = 128
 	// maximumPrimaryLeaseProbeEvidenceBytes rejects unbounded injected observer output before it reaches a digest.
@@ -45,6 +46,7 @@ const (
 type projectPrimaryLeaseState interface {
 	Project(context.Context, domain.ProjectID) (state.ProjectRecord, error)
 	Network(context.Context) (state.NetworkRecord, bool, error)
+	ReusableNetworkAddresses(context.Context, domain.Sequence, time.Time) ([]state.NetworkAddressReuse, error)
 	ReplaceProjectNetwork(context.Context, state.ReplaceProjectNetworkRequest) (state.NetworkMutationResult, error)
 }
 
@@ -809,24 +811,45 @@ func (coordinator *projectPrimaryLeaseCoordinator) allocateAtCurrentRevision(
 ) (projectPrimaryLeaseAdmission, error) {
 	requirements := primaryLeaseRequirements(network.Leases, key)
 	conflicts := make([]identity.Conflict, 0, network.Pool.Capacity())
+	quarantines := network.Quarantines
+	reuseGenerations := map[netip.Addr]uint64{}
+	reuseChecked := false
+	missingAliases := 0
+	conflictingAliases := 0
+	occupiedAddresses := 0
 	for {
 		plan, err := coordinator.planner.Plan(identity.Input{
 			Pool:         network.Pool,
 			Ownership:    network.Ownership,
 			Requirements: requirements,
 			Existing:     network.Leases,
-			Quarantines:  network.Quarantines,
+			Quarantines:  quarantines,
 			Conflicts:    conflicts,
 		})
 		if err != nil {
 			cause := fmt.Errorf("plan primary network lease for project %q: %w", project.Project.ID, err)
 			var exhausted *identity.ExhaustionError
 			if errors.As(err, &exhausted) {
-				return projectPrimaryLeaseAdmission{}, newProjectPrimaryLeaseRejection(domain.Problem{
-					Code:      "project.network.capacity_exhausted",
-					Message:   "No Harbor loopback address is available for this project. Repair or expand Harbor networking, stop conflicting listeners, and try again.",
-					Retryable: true,
-				}, cause)
+				if !reuseChecked && len(quarantines) > 0 {
+					reuseChecked = true
+					candidates, reuseErr := coordinator.state.ReusableNetworkAddresses(ctx, network.Revision, lifecycleTime(coordinator.now()))
+					if reuseErr != nil {
+						return projectPrimaryLeaseAdmission{}, reuseErr
+					}
+					for _, candidate := range candidates {
+						reuseGenerations[candidate.Address] = candidate.Generation
+					}
+					if len(reuseGenerations) > 0 {
+						quarantines = slices.DeleteFunc(slices.Clone(quarantines), func(quarantine identity.Quarantine) bool {
+							_, reusable := reuseGenerations[quarantine.Address]
+							return reusable
+						})
+						continue
+					}
+				}
+				return projectPrimaryLeaseAdmission{}, newProjectPrimaryLeaseRejection(
+					primaryLeaseCapacityProblem(exhausted.Capacity, missingAliases, conflictingAliases, occupiedAddresses), cause,
+				)
 			}
 			return projectPrimaryLeaseAdmission{}, cause
 		}
@@ -834,12 +857,21 @@ func (coordinator *projectPrimaryLeaseCoordinator) allocateAtCurrentRevision(
 		if err != nil {
 			return projectPrimaryLeaseAdmission{}, fmt.Errorf("plan primary network lease for project %q: %w", project.Project.ID, err)
 		}
+		generation := primaryLeaseInitialGeneration
+		if reusedGeneration, reused := reuseGenerations[lease.Address]; reused {
+			generation = reusedGeneration
+		}
 
 		observation, err := coordinator.observePrimaryLease(ctx, project.Project.Path, network.Pool, lease)
 		if err != nil {
 			return projectPrimaryLeaseAdmission{}, err
 		}
 		if observation.Loopback.State != loopback.StateExact {
+			if observation.Loopback.State == loopback.StateAbsent {
+				missingAliases++
+			} else {
+				conflictingAliases++
+			}
 			conflicts = append(conflicts, identity.Conflict{
 				Address: lease.Address,
 				Kind:    identity.ConflictKindAddress,
@@ -866,8 +898,17 @@ func (coordinator *projectPrimaryLeaseCoordinator) allocateAtCurrentRevision(
 					return projectPrimaryLeaseAdmission{}, err
 				}
 				if observation.Loopback.State == loopback.StateExact && len(observation.UnavailableAppPorts) == 0 {
-					return coordinator.persistPrimaryLease(ctx, project, network, lease, observation, projectEndpoints)
+					return coordinator.persistPrimaryLease(ctx, project, network, lease, generation, observation, projectEndpoints)
 				}
+			}
+			if observation.Loopback.State != loopback.StateExact {
+				if observation.Loopback.State == loopback.StateAbsent {
+					missingAliases++
+				} else {
+					conflictingAliases++
+				}
+				conflicts = append(conflicts, identity.Conflict{Address: lease.Address, Kind: identity.ConflictKindAddress, Detail: "identity changed during listener repair"})
+				continue
 			}
 			for _, port := range observation.UnavailableAppPorts {
 				conflicts = append(conflicts, identity.Conflict{
@@ -877,11 +918,36 @@ func (coordinator *projectPrimaryLeaseCoordinator) allocateAtCurrentRevision(
 					Detail:  "required project listener is unavailable",
 				})
 			}
+			occupiedAddresses++
 			continue
 		}
 
-		return coordinator.persistPrimaryLease(ctx, project, network, lease, observation, projectEndpoints)
+		return coordinator.persistPrimaryLease(ctx, project, network, lease, generation, observation, projectEndpoints)
 	}
+}
+
+// primaryLeaseCapacityProblem distinguishes repairable host drift from retained authority and real pool exhaustion.
+func primaryLeaseCapacityProblem(capacity identity.Capacity, missingAliases, conflictingAliases, occupiedAddresses int) domain.Problem {
+	counts := fmt.Sprintf("Harbor has %d loopback addresses: %d leased, %d quarantined, %d missing aliases, %d conflicting aliases, and %d with occupied App ports.",
+		capacity.Total, capacity.Existing, capacity.Quarantined, missingAliases, conflictingAliases, occupiedAddresses)
+	problem := domain.Problem{Code: "project.network.capacity_exhausted", Retryable: true}
+	switch {
+	case missingAliases > 0:
+		problem.Code = "project.network.repair_required"
+		problem.Message = counts + " Run Harbor's network setup again to approve restoring the missing aliases, then retry Start. Existing projects keep their addresses."
+	case conflictingAliases > 0:
+		problem.Code = "project.network.host_conflict"
+		problem.Message = counts + " Resolve the conflicting loopback configuration, then retry Start. Harbor will leave foreign host state untouched."
+	case occupiedAddresses > 0:
+		problem.Code = "project.network.port_unavailable"
+		problem.Message = counts + " Stop the conflicting listeners, then retry Start. Stopping another Harbor project keeps its address reserved."
+	case capacity.Quarantined > 0:
+		problem.Code = "project.network.addresses_quarantined"
+		problem.Message = counts + " Released addresses become reusable only after project removal and the reuse delay complete. Finish any pending removal and retry Start."
+	default:
+		problem.Message = counts + " All addresses are reserved. Remove an unused project to release its address; stopping it does not release the reservation."
+	}
+	return problem
 }
 
 // observePrimaryLease binds one exact runtime plan to the address and port observations used for admission.
@@ -1027,6 +1093,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) persistPrimaryLease(
 	project state.ProjectRecord,
 	network state.NetworkRecord,
 	lease identity.Lease,
+	generation uint64,
 	observation projectPrimaryLeaseObservation,
 	projectEndpoints []state.EndpointReservation,
 ) (projectPrimaryLeaseAdmission, error) {
@@ -1043,7 +1110,7 @@ func (coordinator *projectPrimaryLeaseCoordinator) persistPrimaryLease(
 		ExpectedProjectRevision: project.Revision,
 		Ensures: []state.NetworkLeaseEnsure{{
 			Lease:          lease,
-			Generation:     primaryLeaseInitialGeneration,
+			Generation:     generation,
 			EnsureEvidence: primaryLeaseEvidence(lease, observation.LoopbackFingerprint, observation.Probe),
 			LeasedAt:       at,
 		}},

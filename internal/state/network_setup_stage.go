@@ -155,6 +155,9 @@ func stageNetworkSetupInTransaction(tx *gorm.DB, request StageNetworkSetupReques
 		)
 	}
 
+	if err := retireNetworkSetupConfirmation(tx); err != nil {
+		return OperationRecord{}, err
+	}
 	queued, err := insertQueuedNetworkSetupOperation(tx, request.Operation)
 	if err != nil {
 		return OperationRecord{}, err
@@ -204,6 +207,12 @@ func requireNetworkSetupStageBoundary(tx *gorm.DB, request StageNetworkSetupRequ
 	if !request.Repair {
 		return requireNetworkStateAbsentForStaging(tx)
 	}
+	if err := requireNoActiveGlobalNetworkReleaseMutation(tx, "repair or expand networking"); err != nil {
+		return err
+	}
+	if err := requireNoActiveNetworkResolverPolicyMigrationMutation(tx, "repair or expand networking"); err != nil {
+		return err
+	}
 	rows, err := readNetworkModelRows(tx)
 	if err != nil {
 		return err
@@ -219,10 +228,10 @@ func requireNetworkSetupStageBoundary(tx *gorm.DB, request StageNetworkSetupRequ
 	if err != nil {
 		return err
 	}
-	if !projected.Exists || projected.Record != request.Ownership {
+	if !projected.Exists || projected.Record != request.Ownership && ownership.ValidatePoolExpansion(projected.Record, request.Ownership) != nil {
 		return fmt.Errorf("network repair ownership differs from the durable machine projection")
 	}
-	if network.Pool.Prefix().String() != request.Ownership.LoopbackPoolPrefix ||
+	if network.Pool.Prefix().String() != projected.Record.LoopbackPoolPrefix ||
 		string(network.Ownership.InstallationID) != request.Ownership.InstallationID ||
 		network.Ownership.Generation != request.Ownership.Generation {
 		return fmt.Errorf("network repair ownership differs from the initialized network")

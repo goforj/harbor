@@ -536,3 +536,21 @@ func validResource() ResourceSnapshot {
 		URL:   "http://orders.test/swagger",
 	}
 }
+
+// TestSnapshotNetworkCapacityRemainsOptionalAndBounded protects older clients and rejects malformed metadata.
+func TestSnapshotNetworkCapacityRemainsOptionalAndBounded(t *testing.T) {
+	for _, capacity := range []int{0, 8, 256, 65535} {
+		snapshot := validSnapshot(t)
+		snapshot.NetworkCapacity = capacity
+		if err := snapshot.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, capacity := range []int{-1, 65536} {
+		snapshot := validSnapshot(t)
+		snapshot.NetworkCapacity = capacity
+		if err := snapshot.Validate(); err == nil {
+			t.Fatal("unbounded network capacity accepted")
+		}
+	}
+}

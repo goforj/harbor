@@ -8,6 +8,8 @@ type OwnershipAdmissionState string
 const (
 	// OwnershipAdmissionAlreadyCurrent means protected ownership already equals the signed ticket target.
 	OwnershipAdmissionAlreadyCurrent OwnershipAdmissionState = "already_current"
+	// OwnershipAdmissionPoolExpansion permits only the exact signed source-to-target pool transition.
+	OwnershipAdmissionPoolExpansion OwnershipAdmissionState = "pool_expansion"
 	// OwnershipAdmissionSchema1To2 means an ensure may transition the exact target-derived schema-1 claim to schema 2.
 	OwnershipAdmissionSchema1To2 OwnershipAdmissionState = "schema_1_to_2"
 	// OwnershipAdmissionSchema2To1 means a resolver retirement may transition the exact schema-2 target to its schema-1 form.
@@ -73,7 +75,14 @@ func (r TicketRedemption) validate(reference TicketReference) error {
 		return ErrTicketRedemptionFailed
 	}
 	switch admission.OwnershipState {
+	case OwnershipAdmissionPoolExpansion:
+		if r.Ticket.Operation != OperationEnsureLoopbackPool || r.Ticket.PreviousPool == "" || admission.OwnershipFingerprint != r.Ticket.ExpectedOwnershipFingerprint || admission.PostOwnershipFingerprint != admission.TargetOwnershipFingerprint {
+			return ErrTicketRedemptionFailed
+		}
 	case OwnershipAdmissionAlreadyCurrent:
+		if r.Ticket.PreviousPool != "" && (admission.OwnershipFingerprint != admission.TargetOwnershipFingerprint || admission.PostOwnershipFingerprint != admission.TargetOwnershipFingerprint) {
+			return ErrTicketRedemptionFailed
+		}
 		if r.Ticket.Operation == OperationReleaseNetworkOwnership &&
 			(r.Ticket.ExpectedOwnershipFingerprint != admission.TargetOwnershipFingerprint ||
 				admission.OwnershipFingerprint != admission.TargetOwnershipFingerprint ||

@@ -27,6 +27,13 @@ describe('Harbor mock bridge', () => {
     })
     expect(harborWireFixture.methods).toEqual({
       add_project: 'AddProject',
+      project_creation_providers: 'ProjectCreationProviders',
+      start_project_creation: 'StartProjectCreation',
+      project_creation_progress: 'ProjectCreationProgress',
+      retry_project_registration: 'RetryProjectRegistration',
+      project_creation_schema: 'ProjectCreationSchema',
+      choose_project_parent: 'ChooseProjectParent',
+      create_project: 'CreateProject',
       approve_project_removal: 'ApproveProjectRemoval',
       confirm_project_runtime_repair: 'ConfirmProjectRuntimeRepair',
       inspect_project_runtime_repair: 'InspectProjectRuntimeRepair',
@@ -42,6 +49,8 @@ describe('Harbor mock bridge', () => {
       remove_project: 'RemoveProject',
       remove_old_networking: 'RemoveOldNetworking',
       repair_network: 'RepairNetwork',
+      expand_network: 'ExpandNetwork',
+      resume_network_setup:'ResumeNetworkSetup',
       snapshot: 'Snapshot',
       setup_network: 'SetupNetwork',
       start_project: 'StartProject',

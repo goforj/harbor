@@ -298,7 +298,17 @@ export interface ResourceRef {
   resource_id: string
 }
 
+export interface NetworkSetupRecovery {
+  operation_id: string
+  intent_id: string
+  operation_revision: number
+  kind: 'setup' | 'repair' | 'expansion'
+  phase: 'approval' | 'confirmation'
+}
+
 export interface HarborSnapshot {
+  network_setup?: { configured: boolean; pending?: NetworkSetupRecovery }
+  network_capacity?: number
   schema_version: number
   sequence: number
   captured_at: string
@@ -315,4 +325,66 @@ export interface ProjectService extends ServiceSnapshot {
 export interface ProjectResource extends ResourceSnapshot {
   project_id: string
   project_name: string
+}
+
+export interface ProjectCreationOption {
+  value: string
+  label: string
+  description: string
+  preview?: string
+  requires?: string[]
+  exclusive_group?: string
+}
+
+export interface ProjectCreationField {
+  key: string
+  label: string
+  description?: string
+  kind: 'text' | 'path' | 'select' | 'multi' | 'boolean'
+  step: string
+  required?: boolean
+  default: string | boolean | string[]
+  options?: ProjectCreationOption[]
+  requires?: string[]
+  depends_on?: string
+  role?: string
+  when?: Record<string, string>
+}
+
+export interface ProjectCreationSchema {
+  schema_version: number
+  provider_id: string
+  version: string
+  fields: ProjectCreationField[]
+}
+
+export interface ProjectCreationRequest {
+  provider_id: string
+  schema_version: number
+  options: Record<string, string>
+}
+
+export interface ProjectCreationResult {
+  path: string
+  output: string
+  registration?: ProjectRegistration
+  registration_error?: string
+}
+
+export interface ProjectCreationProvider {
+  id: string
+  name: string
+  description: string
+}
+
+export interface ProjectCreationProgress {
+  job_id: string
+  provider_id: string
+  path: string
+  phase: 'creating' | 'registering' | 'completed' | 'failed' | 'registration_failed'
+  output: string
+  cursor: number
+  truncated?: boolean
+  error?: string
+  result?: ProjectCreationResult
 }
