@@ -8,6 +8,12 @@ Project work is organized in [Harbor in Plane](https://plane.goforj.dev/goforj/p
 with identifier `HARBOR`. The board distinguishes completed foundations from
 remaining product verification and release gates; see the handoff for priorities.
 
+## Project identity and semantic icons (2026-10-18)
+
+Project rows, headers, and command results now share the current GoForj iOS icon while offline. They request the primary App favicon only in ready, rebuilding, or degraded states, with GoForj retained for discovery and failure. Tabs, service kinds, and resource kinds use consistent Lucide glyphs with restrained light/dark type colors; health remains explicit in the existing status treatments. This changes presentation only, without daemon contracts, dependencies, or project lifecycle changes.
+
+The production frontend build, 248 unit tests, and 26 Chromium checks pass. Browser inspection covers light/dark desktop and a 430-pixel layout without document overflow. Focused tests cover offline lookup suppression, online discovery, discovery failure, and returning offline. Native tray and onboarding verification remain separate gates.
+
 ## Accepted project workspace design (2026-10-18)
 
 Branch `feat/project-workspace-design` contains the accepted visual implementation of

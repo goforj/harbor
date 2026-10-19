@@ -2,6 +2,8 @@
 import { computed, ref, watch } from 'vue'
 import { Folder } from '@lucide/vue'
 import { harborBridge } from '@/bridge'
+import goforjIcon from '@/assets/brand/goforj-ios.png'
+import KindIcon from './KindIcon.vue'
 
 const props = withDefaults(defineProps<{
   name: string
@@ -9,7 +11,8 @@ const props = withDefaults(defineProps<{
   projectId: string
   resourceId: string
   compact?: boolean
-  fallback?: 'initial' | 'folder'
+  fallback?: 'initial' | 'folder' | 'goforj'
+  kind?: string
 }>(), {
   compact: false,
   fallback: 'initial',
@@ -69,6 +72,14 @@ function clearFailedFavicon(event: Event) {
     aria-hidden="true"
     @error="clearFailedFavicon"
   >
+  <img
+    v-else-if="props.fallback === 'goforj'"
+    :src="goforjIcon"
+    alt=""
+    aria-hidden="true"
+    :class="[props.compact ? 'size-6' : 'size-8', 'shrink-0 rounded-[22%] object-contain']"
+  >
+  <KindIcon v-else-if="props.kind" :kind="props.kind" :compact="props.compact" />
   <span
     v-else
     :class="[props.compact ? 'size-6' : 'size-8', 'inline-flex shrink-0 items-center justify-center rounded-md border bg-muted/40 text-xs font-semibold text-muted-foreground']"

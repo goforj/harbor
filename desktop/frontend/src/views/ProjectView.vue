@@ -3,6 +3,11 @@ import { computed, nextTick, onBeforeUnmount, ref, shallowReactive, watch } from
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
+  LayoutDashboard,
+  FileText,
+  FileKey,
+  Plug,
+  Blocks,
   Check,
   Clipboard,
   ExternalLink,
@@ -29,6 +34,8 @@ import InteractiveTerminal from '@/components/harbor/InteractiveTerminal.vue'
 import ProjectConnectPanel from '@/components/harbor/ProjectConnectPanel.vue'
 import ProjectEnvironmentPanel from '@/components/harbor/ProjectEnvironmentPanel.vue'
 import ResourceFavicon from '@/components/harbor/ResourceFavicon.vue'
+import ProjectIcon from '@/components/harbor/ProjectIcon.vue'
+import KindIcon from '@/components/harbor/KindIcon.vue'
 import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
 import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
 import { copyText } from '@/bridge/clipboard'
@@ -543,8 +550,7 @@ async function setupNetworkAndStartProject() {
           </Button>
           <div class="project-identity flex min-w-0 flex-1 items-center gap-3">
             <div class="project-emblem flex size-11 shrink-0 items-center justify-center rounded-xl border bg-card">
-              <ResourceFavicon v-if="primaryResource" :name="project.name" :url="primaryResource.url" :project-id="project.id" :resource-id="primaryResource.id" />
-              <Folder v-else class="size-5 text-muted-foreground" />
+              <ProjectIcon :project="project" />
             </div>
             <div class="min-w-0">
               <div class="flex min-w-0 flex-wrap items-center gap-2.5">
@@ -724,13 +730,13 @@ async function setupNetworkAndStartProject() {
 
       <Tabs v-model="selectedDetailTab" class="project-tabs min-h-0 min-w-0 flex-1 gap-0" :data-surface="selectedDetailTab">
         <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
-          <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Overview</TabsTrigger>
-          <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Development output</TabsTrigger>
-          <TabsTrigger value="terminal" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Terminal</TabsTrigger>
-          <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Environment</TabsTrigger>
-          <TabsTrigger value="connect" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Connect</TabsTrigger>
-          <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
-          <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
+          <TabsTrigger value="overview" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"><LayoutDashboard class="project-tab-icon" aria-hidden="true" />Overview</TabsTrigger>
+          <TabsTrigger value="output" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"><FileText class="project-tab-icon" aria-hidden="true" />Development output</TabsTrigger>
+          <TabsTrigger value="terminal" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"><SquareTerminal class="project-tab-icon" aria-hidden="true" />Terminal</TabsTrigger>
+          <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"><FileKey class="project-tab-icon" aria-hidden="true" />Environment</TabsTrigger>
+          <TabsTrigger value="connect" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"><Plug class="project-tab-icon" aria-hidden="true" />Connect</TabsTrigger>
+          <TabsTrigger value="services" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"><Server class="project-tab-icon" aria-hidden="true" />Services <span class="text-xs tabular-nums text-muted-foreground">{{ project.services.length }}</span></TabsTrigger>
+          <TabsTrigger value="resources" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"><Blocks class="project-tab-icon" aria-hidden="true" />Resources <span class="text-xs tabular-nums text-muted-foreground">{{ project.resources.length }}</span></TabsTrigger>
         </TabsList>
 
         <div class="project-tab-body" :class="selectedDetailTab === 'output' || selectedDetailTab === 'terminal' || selectedDetailTab === 'environment' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
@@ -782,9 +788,9 @@ async function setupNetworkAndStartProject() {
 
         <TabsContent value="overview" class="m-0 space-y-5">
           <section aria-label="Project summary" class="project-summary grid grid-cols-2 gap-3 xl:grid-cols-4">
-            <div class="summary-stat"><span class="summary-label"><SquareTerminal />Applications</span><strong>{{ project.apps.length }}</strong><span class="summary-note">{{ project.apps.filter(app => app.active).length }} active</span></div>
-            <div class="summary-stat"><span class="summary-label"><Server />Services</span><strong>{{ readyServiceCount }}<span class="summary-total"> ready</span></strong><span class="summary-note">{{ project.services.length }} reported</span></div>
-            <div class="summary-stat"><span class="summary-label"><Globe2 />Resources</span><strong>{{ project.resources.length }}</strong><span class="summary-note">Available endpoints</span></div>
+            <div class="summary-stat"><span class="summary-label"><KindIcon kind="application" compact />Applications</span><strong>{{ project.apps.length }}</strong><span class="summary-note">{{ project.apps.filter(app => app.active).length }} active</span></div>
+            <div class="summary-stat"><span class="summary-label"><KindIcon kind="service" compact />Services</span><strong>{{ readyServiceCount }}<span class="summary-total"> ready</span></strong><span class="summary-note">{{ project.services.length }} reported</span></div>
+            <div class="summary-stat"><span class="summary-label"><KindIcon kind="docs" compact />Resources</span><strong>{{ project.resources.length }}</strong><span class="summary-note">Available endpoints</span></div>
             <div class="summary-stat"><span class="summary-label"><Clock3 />Last updated</span><strong class="!text-base">{{ updatedTime }}</strong><span class="summary-note">{{ updatedDate }}</span></div>
           </section>
 
@@ -792,7 +798,7 @@ async function setupNetworkAndStartProject() {
             <div class="mb-3 flex items-center justify-between"><h2 class="text-sm font-semibold">Quick access</h2><button type="button" class="text-xs text-muted-foreground hover:text-foreground" @click="selectedDetailTab = 'resources'">All resources <ArrowUpRight class="ml-1 inline size-3" /></button></div>
             <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               <button v-for="resource in project.resources.slice(0, 6)" :key="resource.id" type="button" class="quick-resource group flex min-w-0 items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:border-muted-foreground/40 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" @click="openResource(resource.id)">
-                <ResourceFavicon :name="resource.name" :url="resource.url" :project-id="project.id" :resource-id="resource.id" compact />
+                <ResourceFavicon :kind="resource.kind" :name="resource.name" :url="resource.url" :project-id="project.id" :resource-id="resource.id" compact />
                 <div class="min-w-0 flex-1"><p class="truncate text-xs font-medium">{{ resource.name }}</p><p class="mt-1 truncate font-mono text-[11px] text-muted-foreground">{{ resource.url.replace(/^https?:\/\//, '') }}</p></div>
                 <ArrowUpRight class="size-3.5 text-muted-foreground group-hover:text-foreground" />
               </button>
@@ -818,7 +824,7 @@ async function setupNetworkAndStartProject() {
             <CardContent class="p-0">
               <div v-if="project.services.length" class="divide-y">
                 <button v-for="service in project.services.slice(0, 6)" :key="service.id" type="button" class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50" :aria-label="`View ${service.name} service`" @click="selectedServiceId = service.id; selectedDetailTab = 'services'">
-                  <div class="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted"><Server class="size-3.5 text-muted-foreground" /></div>
+                  <KindIcon :kind="service.kind" compact />
                   <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{{ service.name }}</p><p class="text-xs text-muted-foreground">{{ service.kind }}</p></div>
                   <StatusBadge :status="service.state" />
                 </button>
@@ -986,9 +992,9 @@ async function setupNetworkAndStartProject() {
             >
               <Tabs v-model="selectedServiceSurface" class="flex min-h-0 flex-1 flex-col gap-2">
                 <TabsList class="h-11 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent px-5 py-0 lg:px-7">
-                  <TabsTrigger value="logs" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Logs</TabsTrigger>
-                  <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Environment</TabsTrigger>
-                  <TabsTrigger value="ports" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent">Ports <span class="text-xs tabular-nums text-muted-foreground">{{ selectedServicePorts.length }}</span></TabsTrigger>
+                  <TabsTrigger value="logs" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"><FileText class="size-3.5" aria-hidden="true" />Logs</TabsTrigger>
+                  <TabsTrigger value="environment" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"><FileKey class="size-3.5" aria-hidden="true" />Environment</TabsTrigger>
+                  <TabsTrigger value="ports" class="h-11 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 text-muted-foreground shadow-none hover:text-foreground data-[state=active]:!border-primary data-[state=active]:!bg-transparent data-[state=active]:text-foreground data-[state=active]:!shadow-none dark:data-[state=active]:!bg-transparent"><Network class="size-3.5" aria-hidden="true" />Ports <span class="text-xs tabular-nums text-muted-foreground">{{ selectedServicePorts.length }}</span></TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="logs" class="m-0 flex min-h-0 flex-1 flex-col px-5 lg:px-7">
@@ -1035,7 +1041,7 @@ async function setupNetworkAndStartProject() {
           <CardContent class="p-0">
             <div v-if="project.resources.length" class="divide-y">
               <button v-for="resource in project.resources" :key="resource.id" type="button" class="group flex w-full min-w-0 items-center gap-3 px-4 py-3 text-left hover:bg-muted/50" @click="openResource(resource.id)">
-                <ResourceFavicon :name="resource.name" :url="resource.url" :project-id="project.id" :resource-id="resource.id" />
+                <ResourceFavicon :kind="resource.kind" :name="resource.name" :url="resource.url" :project-id="project.id" :resource-id="resource.id" />
                 <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{{ resource.name }}</p><p class="truncate text-xs text-muted-foreground">{{ resource.kind }} · {{ resource.owner.kind }} · {{ resource.url }}</p></div>
                 <ExternalLink class="size-3.5 text-muted-foreground" />
               </button>

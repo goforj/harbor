@@ -3,7 +3,6 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   Activity,
-  ExternalLink,
   Folder,
   RefreshCw,
   Search,
@@ -17,11 +16,10 @@ import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { serviceOwnerLabel } from '@/lib/servicePresentation'
-import type { ProjectSnapshot } from '@/domain/harbor'
 import { useHarborStore } from '@/stores/harbor'
 import EntityRow from './EntityRow.vue'
-import ResourceFavicon from './ResourceFavicon.vue'
-import ServiceOwnership from './ServiceOwnership.vue'
+import ProjectIcon from './ProjectIcon.vue'
+import KindIcon from './KindIcon.vue'
 import { destinationFromPath, harborNavigation } from './navigation'
 
 const route = useRoute()
@@ -87,10 +85,6 @@ function refresh() {
   void store.refresh()
 }
 
-// primaryProjectResource selects the app resource first because it best represents the project in Harbor's project browser.
-function primaryProjectResource(project: ProjectSnapshot) {
-  return project.resources.find((resource) => resource.owner.kind === 'app') ?? project.resources[0]
-}
 </script>
 
 <template>
@@ -162,16 +156,7 @@ function primaryProjectResource(project: ProjectSnapshot) {
                 :to="`/projects/${encodeURIComponent(project.id)}`"
               >
                 <template #leading>
-                  <ResourceFavicon
-                    v-if="primaryProjectResource(project)"
-                    :name="project.name"
-                    :url="primaryProjectResource(project)!.url"
-                    :project-id="project.id"
-                    :resource-id="primaryProjectResource(project)!.id"
-                    compact
-                    fallback="folder"
-                  />
-                  <Folder v-else />
+                  <ProjectIcon :project="project" compact />
                 </template>
               </EntityRow>
             </div>
@@ -189,7 +174,7 @@ function primaryProjectResource(project: ProjectSnapshot) {
                 :description="resource.project_name"
                 @activate="openResource(resource.project_id, resource.id)"
               >
-                <template #leading><ExternalLink /></template>
+                <template #leading><KindIcon :kind="resource.kind" compact /></template>
               </EntityRow>
             </div>
           </section>
@@ -221,16 +206,7 @@ function primaryProjectResource(project: ProjectSnapshot) {
                 :to="`/projects/${encodeURIComponent(project.id)}`"
               >
                 <template #leading>
-                  <ResourceFavicon
-                    v-if="primaryProjectResource(project)"
-                    :name="project.name"
-                    :url="primaryProjectResource(project)!.url"
-                    :project-id="project.id"
-                    :resource-id="primaryProjectResource(project)!.id"
-                    compact
-                    fallback="folder"
-                  />
-                  <Folder v-else />
+                  <ProjectIcon :project="project" compact />
                 </template>
               </EntityRow>
             </div>
@@ -249,7 +225,7 @@ function primaryProjectResource(project: ProjectSnapshot) {
               :selected="selectedProjectId === service.project_id && selectedServiceId === service.id"
               :to="`/services/${encodeURIComponent(service.project_id)}/${encodeURIComponent(service.id)}`"
             >
-              <template #leading><ServiceOwnership :owner="service.owner" icon-only /></template>
+              <template #leading><KindIcon :kind="service.kind" compact /></template>
             </EntityRow>
           </div>
         </section>

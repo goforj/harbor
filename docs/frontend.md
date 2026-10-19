@@ -133,6 +133,12 @@ The initial theme should preserve:
 
 Harbor branding, icons, terminology, and status semantics remain Harbor-owned. Lerd's logo, product icons, copy, and PHP-specific surfaces do not enter the product.
 
+## Project identity and semantic icons
+
+`ProjectIcon` uses the bundled GoForj iOS artwork while a project is stopped, starting, stopping, failed, or unavailable, without requesting its favicon. Ready, rebuilding, and degraded projects can display their primary App favicon through the existing same-origin backend lookup. The GoForj artwork remains the fallback during discovery, after a failed image, or when the project has no primary App resource. Returning offline restores the local icon immediately.
+
+`KindIcon` and `presentationIcons.ts` define one Lucide vocabulary for service and resource types across project summaries, lists, quick access, and the command palette. Theme tokens give applications, documentation, data, cache, mail, and other services restrained type colors. These colors identify kind; status badges and dots still communicate health. Tab icons supplement visible labels and remain hidden from assistive technology. The local GoForj asset and its canonical source are recorded in `desktop/frontend/src/assets/brand/README.md`.
+
 ## Illustration system
 
 Harbor's maritime illustration language is a first-class, original part of the product identity. [Illustration system](./illustrations.md) defines its purpose, visual vocabulary, metaphor mappings, asset and provenance rules, light/dark treatment, placement constraints, and accessibility contract. Reference products inform the desired warmth and craft but do not supply compositions, branding, or artwork.
