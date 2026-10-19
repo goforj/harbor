@@ -4,6 +4,10 @@ Status: GitHub-hosted macOS, Linux, and Windows three-project trusted-HTTPS life
 
 Last updated: 2026-10-18
 
+## Development output continuation (2026-10-18)
+
+The active user checkout is `harbor-wails-v3` on `fix/development-output`. Semantic icons are merged through PR #9 and present locally. The output refinement removes excess terminal leading, centralizes the neutral surface/soft ANSI palette, and offers an embedded-presentation selector alongside private startup diagnostics. GoForj PR #249 consumes that independent selector and omits only the redundant resource inventory. The installed global CLI remains v0.30.0 and an active project still uses it, so do not claim the startup summary has disappeared from that session. Preserve the running project and its process evidence while the source fix is reviewed.
+
 ## Semantic icon continuation (2026-10-18)
 
 `feat/semantic-ui-icons` adds shared project identity and semantic tab, resource, and service icons. Offline projects use the bundled current GoForj iOS asset without favicon calls; online projects can use their primary App favicon with the same local fallback. The frontend build, 248 unit tests, and 26 Chromium checks pass, with light/dark desktop and 430-pixel browser inspection. No daemon, lifecycle, or dependency changes belong to this slice. The isolated browser fixture on `127.0.0.1:39519` contains fake projects only.

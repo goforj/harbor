@@ -508,9 +508,9 @@
 }
 
 .project-log-viewport {
-  background: #101112;
+  background: #101010;
+  color: #d4d4d4;
   font-size: 12px;
-  line-height: 1.8;
 }
 
 .summary-stat {
@@ -638,4 +638,17 @@
 
 .project-tabs[data-surface="overview"] [data-slot="card-header"] > div {
   width: 100%;
+}
+
+/* Terminal rows use a tight cell grid so box-drawing glyphs join between lines. */
+.harbor-terminal-output {
+  font-family: Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.2;
+  font-variant-ligatures: none;
+  letter-spacing: 0;
+}
+
+.harbor-terminal-line {
+  min-height: 1.2em;
 }

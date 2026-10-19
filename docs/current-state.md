@@ -8,6 +8,12 @@ Project work is organized in [Harbor in Plane](https://plane.goforj.dev/goforj/p
 with identifier `HARBOR`. The board distinguishes completed foundations from
 remaining product verification and release gates; see the handoff for priorities.
 
+## Embedded development output (2026-10-18)
+
+The log viewer now uses tight terminal rows instead of the former 1.8 line spacing plus a 20-pixel row minimum, so box-drawing borders join. Streamed logs and interactive shells share a neutral background and softer ANSI palette while preserving explicit RGB/256-color output. The frontend build, 248 unit tests, 26 Chromium checks, focused process-launch tests and race checks, and process-package vet pass. A fresh fixture server was required after branch/HMR changes to keep the existing dynamic bridge-mocking browser test on one module identity.
+
+Harbor also offers `FORJ_DEV_PRESENTATION=embedded` with its private startup destination. Supporting GoForj versions omit the legacy `Dev ready` URL inventory at the producer; ordinary console behavior and raw build/error output remain intact. Companion GoForj PR #249 implements that option. The observed installed CLI is v0.30.0, which ignores it; existing log history does not change, and a supporting CLI plus a new project session is required. No running project was stopped or installed CLI replaced for this change.
+
 ## Project identity and semantic icons (2026-10-18)
 
 Project rows, headers, and command results now share the current GoForj iOS icon while offline. They request the primary App favicon only in ready, rebuilding, or degraded states, with GoForj retained for discovery and failure. Tabs, service kinds, and resource kinds use consistent Lucide glyphs with restrained light/dark type colors; health remains explicit in the existing status treatments. This changes presentation only, without daemon contracts, dependencies, or project lifecycle changes.

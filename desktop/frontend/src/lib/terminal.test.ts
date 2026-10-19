@@ -47,7 +47,7 @@ describe('TerminalModel', () => {
 
     const [line] = terminal.renderLines()
     expect(line?.runs).toEqual([
-      { text: '<script>', style: { color: '#cd3131', fontWeight: '700' } },
+      { text: '<script>', style: { color: '#df8a85', fontWeight: '700' } },
       { text: ' ready', style: {} },
     ])
     expect(terminal.text()).toBe('<script> ready')
@@ -61,7 +61,7 @@ describe('TerminalModel', () => {
       {
         text: 'warning',
         style: {
-          backgroundColor: '#2472c8',
+          backgroundColor: '#8aaed1',
           color: 'rgb(255 175 0)',
           fontWeight: '700',
           textDecorationLine: 'underline',
@@ -70,7 +70,7 @@ describe('TerminalModel', () => {
       { text: ' ', style: { color: 'rgb(255 175 0)' } },
       {
         text: 'inverse',
-        style: { backgroundColor: 'rgb(12 34 56)', color: '#09090b' },
+        style: { backgroundColor: 'rgb(12 34 56)', color: '#101010' },
       },
     ])
   })

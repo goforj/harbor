@@ -151,7 +151,7 @@ func withoutStartupProgressEnvironment(environment []string) []string {
 	result := make([]string, 0, len(environment))
 	for _, value := range environment {
 		key, _, _ := strings.Cut(value, "=")
-		if strings.EqualFold(key, "FORJ_DEV_EVENTS_FILE") || strings.EqualFold(key, "FORJ_DEV_EVENTS_SESSION") {
+		if strings.EqualFold(key, "FORJ_DEV_EVENTS_FILE") || strings.EqualFold(key, "FORJ_DEV_EVENTS_SESSION") || strings.EqualFold(key, "FORJ_DEV_PRESENTATION") {
 			continue
 		}
 		result = append(result, value)
