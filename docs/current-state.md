@@ -1,5 +1,15 @@
 # Current Implementation State
 
+## Installed daemon lifecycle (2026-10-19)
+
+The `fix/installed-daemon-lifecycle` implementation adds a package-owned `harbord.service` and a release-only Linux desktop adapter. The adapter verifies direct root-owned package files, rejects user-shadowed units and drop-ins, then starts the systemd user service. It does not enable linger or create a daemon child tied to the window. Source development and Windows activation remain unchanged.
+
+The macOS stable launcher now selects foreground mode and runs the selected release's embedded migrations when invoked without arguments by the existing LaunchAgent. Explicit maintenance arguments retain their previous behavior. The Linux unit also runs migrations before starting the daemon. First launch therefore does not depend on a source-development graph having prepared the user's database.
+
+macOS uninstall shares the desktop's canonical LaunchAgent definition. It resolves the selected account through the OS, retains no-follow parent descriptors, verifies the saved file and loaded service, unloads only the exact GUI-domain job, and confirms absence before deleting its admitted file. Atomic retirement and a fresh inode/byte check preserve replacements, foreign files, symlinks, hardlinks, and neighboring definitions. User data and checkouts are outside removal authority.
+
+Focused local macOS installer/launcher and release-adapter tests pass, and the Linux release-adapter tests compile. Native package workflows now exercise the actual installed daemon adapter with an absent user database, client close/reopen, daemon restart, retained registration, and post-uninstall user database/project-file hashes. Hosted execution of this new gate is pending; the earlier green rehearsal below predates these changes. This gate exercises the desktop's daemon adapter, not real window/tray interactions, reboot, or Docker-volume preservation.
+
 ## Native package rehearsal (2026-10-19)
 
 The [build-only package rehearsal](https://github.com/goforj/harbor/actions/runs/39339451091) passed on merged main `03e6c52759f65178cdcfb0bc103ac5e6cedb2a7a`. Both macOS Apple-silicon PKG and Ubuntu 24.04 amd64 DEB passed native installation, packaged daemon/CLI setup, three generated projects over system-trusted HTTPS, ownership-aware cleanup, and package removal. Exact tested packages, checksums, and provenance were retained; publication was skipped and no Harbor tag or release was created.

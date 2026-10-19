@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -17,7 +18,11 @@ import (
 func main() {
 	daemon, err := resolveInstalledDaemon()
 	if err == nil {
-		err = syscall.Exec(daemon, daemonArguments(daemon, os.Args[1:]), os.Environ())
+		var arguments []string
+		arguments, err = prepareDaemonLaunch(daemon, os.Args[1:], runDaemonMigration)
+		if err == nil {
+			err = syscall.Exec(daemon, arguments, os.Environ())
+		}
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "start installed Harbor daemon: %v\n", err)
@@ -25,8 +30,29 @@ func main() {
 	}
 }
 
-// daemonArguments preserves daemon subcommands while replacing only the launcher's process identity.
+// prepareDaemonLaunch applies embedded migrations only for the implicit installed-service launch.
+func prepareDaemonLaunch(daemon string, arguments []string, migrate func(string) error) ([]string, error) {
+	if len(arguments) == 0 {
+		if err := migrate(daemon); err != nil {
+			return nil, fmt.Errorf("prepare installed Harbor database: %w", err)
+		}
+	}
+	return daemonArguments(daemon, arguments), nil
+}
+
+// runDaemonMigration uses the selected release as the same unprivileged user before it owns the daemon endpoint.
+func runDaemonMigration(daemon string) error {
+	command := exec.Command(daemon, "migrate")
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	return command.Run()
+}
+
+// daemonArguments starts the per-user service by default while preserving explicit maintenance operations.
 func daemonArguments(daemon string, arguments []string) []string {
+	if len(arguments) == 0 {
+		arguments = []string{"--foreground"}
+	}
 	return append([]string{daemon}, arguments...)
 }
 

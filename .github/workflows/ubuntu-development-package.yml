@@ -110,6 +110,7 @@ jobs:
           sudo -n apt-get install --yes \
             build-essential \
             ca-certificates \
+            dbus-user-session \
             libcap2-bin \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
@@ -154,6 +155,7 @@ jobs:
             "${HARBOR_PACKAGE_ROOT}/DEBIAN" \
             "${HARBOR_PACKAGE_ROOT}/usr/bin" \
             "${HARBOR_PACKAGE_ROOT}/usr/libexec" \
+            "${HARBOR_PACKAGE_ROOT}/usr/lib/systemd/user" \
             "$product_root" \
             "${HARBOR_PACKAGE_ROOT}/usr/share/applications" \
             "${HARBOR_PACKAGE_ROOT}/usr/share/icons/hicolor/512x512/apps"
@@ -164,6 +166,8 @@ jobs:
           go build -trimpath -o "${product_root}/harbor-installer" ./cmd/devbootstrap
           go build -trimpath -ldflags "$ldflags" -o "${product_root}/harbor-helper" ./cmd/helper
           install -m 0755 desktop/build/bin/harbor-desktop "${product_root}/harbor-desktop"
+          install -m 0644 internal/platform/daemonservice/harbord.service \
+            "${HARBOR_PACKAGE_ROOT}/usr/lib/systemd/user/harbord.service"
           install -m 0755 "${product_root}/harbor-helper" "${HARBOR_PACKAGE_ROOT}/usr/libexec/harbor-helper"
           install -m 0644 packaging/linux/goforj-harbor.desktop \
             "${HARBOR_PACKAGE_ROOT}/usr/share/applications/goforj-harbor.desktop"
@@ -295,6 +299,22 @@ jobs:
             --root "$HARBOR_PHASE1_EVIDENCE_DIRECTORY" \
             --platform linux
 
+      - name: Prove installed desktop daemon activation and reopen
+        working-directory: desktop
+        env:
+          HARBOR_INSTALLED_DAEMON_ACCEPTANCE: "1"
+          HARBOR_INSTALLED_PROJECT_DIRECTORY: ${{ runner.temp }}/harbor-installed-project
+          HARBOR_INSTALLED_DAEMON_EVIDENCE: ${{ github.workspace }}/harbor-packaged-ubuntu-evidence/installed-desktop-daemon.json
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+          sudo -n systemctl start "user@$(id -u).service"
+          test -S "${XDG_RUNTIME_DIR}/bus"
+          go test -tags='release gtk3' -count=1 -timeout=3m -run '^Test(Linux|AdmitLinux|InstalledDaemon)' -v ./internal/daemonprerequisite
+          sha256sum "$HOME/.local/share/goforj/harbor/harbor.db" > "${RUNNER_TEMP}/harbor-retained-user-data.sha256"
+          sha256sum "${RUNNER_TEMP}/harbor-installed-project/.goforj.yml" "${RUNNER_TEMP}/harbor-installed-project/project-data.txt" >> "${RUNNER_TEMP}/harbor-retained-user-data.sha256"
+
       - name: Purge admitted package and prove zero Harbor state
         run: |
           set -euo pipefail
@@ -326,6 +346,13 @@ jobs:
             fi
           done
           [[ "$(sudo -n cat "$foreign_sentinel")" == "foreign package state ${GITHUB_RUN_ID}" ]]
+          test ! -e /usr/lib/systemd/user/harbord.service
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+          systemctl --user daemon-reload
+          test "$(systemctl --user show harbord.service --property=LoadState --value)" = not-found
+          sha256sum --check "${RUNNER_TEMP}/harbor-retained-user-data.sha256"
+          test "$(cat "$HOME/.local/share/goforj/harbor/package-preservation.txt")" = "preserved user data"
           evidence="${GITHUB_WORKSPACE}/harbor-packaged-ubuntu-evidence/package-uninstall.txt"
           {
             printf 'package_sha256=%s\n' "$(sha256sum "$HARBOR_PACKAGE_PATH" | awk '{print $1}')"
@@ -333,6 +360,8 @@ jobs:
             printf 'installed_product_paths=absent\n'
             printf 'harbor_host_projection=absent\n'
             printf 'foreign_package_sentinel=preserved\n'
+            printf 'user_database_and_project_files=preserved\n'
+            printf 'installed_user_service=absent\n'
           } > "$evidence"
           sudo -n rm -f "$foreign_sentinel"
           sudo -n rmdir /usr/lib/goforj-harbor
@@ -362,5 +391,6 @@ jobs:
           path: |
             harbor-packaged-ubuntu-evidence/summary.json
             harbor-packaged-ubuntu-evidence/package-uninstall.txt
+            harbor-packaged-ubuntu-evidence/installed-desktop-daemon.json
           if-no-files-found: error
           retention-days: 14

@@ -36,6 +36,8 @@ The same main commit passed [push CI](https://github.com/goforj/harbor/actions/r
 
 ## Installed desktop gates before a public beta
 
+The `fix/installed-daemon-lifecycle` implementation addresses the two audited gaps below and adds fresh-database startup, installed daemon adapter reopen/restart, and post-uninstall data-preservation checks to both native package workflows. The canonical macOS LaunchAgent is unchanged; the stable launcher now supplies migrations and foreground startup. Focused local tests pass; hosted proof for these changes remains pending. The earlier rehearsal is not evidence for this new behavior.
+
 The package acceptance jobs install native packages and launch their packaged daemon and CLI directly. They prove that boundary independently of the desktop. A green job does not establish the complete install, open-app, create, reopen, and uninstall experience.
 
 The 2026-10-19 source audit found two concrete gaps:

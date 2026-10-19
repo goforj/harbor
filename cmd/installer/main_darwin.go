@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -150,6 +151,7 @@ type darwinUninstallDependencies struct {
 	remove             func(string) error
 	removeAll          func(string) error
 	removeEmpty        func(string) error
+	removeUserAgent    func(uint32) error
 }
 
 // productionUninstallDependencies binds uninstall authority only to fixed native tools and operating-system calls.
@@ -163,6 +165,9 @@ func productionUninstallDependencies() darwinUninstallDependencies {
 		remove:             os.Remove,
 		removeAll:          os.RemoveAll,
 		removeEmpty:        os.Remove,
+		removeUserAgent: func(userID uint32) error {
+			return removeDarwinUserAgent(userID, darwinAgentDependencies{lookupUser: user.LookupId, launchctl: runAgentLaunchctl})
+		},
 	}
 }
 
@@ -209,6 +214,9 @@ func uninstallDarwin(
 	}
 	if err := verifyDarwinRemovalTrees(paths, userID, groupID); err != nil {
 		return err
+	}
+	if err := dependencies.removeUserAgent(userID); err != nil {
+		return fmt.Errorf("remove Harbor per-user daemon registration: %w", err)
 	}
 
 	for _, path := range []string{paths.cli, paths.helper, paths.relay} {

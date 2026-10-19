@@ -4,6 +4,18 @@ Status: native macOS/Ubuntu package rehearsal passed; installed desktop lifecycl
 
 Last updated: 2026-10-19
 
+## Installed daemon implementation continuation (2026-10-19)
+
+The accepted next slice is isolated in `/tmp/harbor-installed-daemon-20261019`, branch `fix/installed-daemon-lifecycle`, based on merged main plus the receipt correction from local `c4fb533`. The active `/Users/cmiles/code/harbor-wails-v3` checkout is preserved until integration. No project restart or privileged change on the developer's machine is required.
+
+Linux release activation admits the exact root-owned packaged `harbord.service`, rejects shadow units and drop-ins, and starts it through the existing user manager without enabling linger. The unit applies embedded migrations before foreground startup. macOS retains its canonical LaunchAgent bytes; the stable launcher's no-argument path now runs migrations and selects `--foreground`, while explicit maintenance arguments remain unchanged. The old no-argument launcher exited without running the daemon, and the package test previously hid fresh-database startup by running migrations explicitly.
+
+macOS uninstall now checks the OS-resolved user's saved agent and loaded job before bootout, confirms absence, and uses no-follow descriptors plus atomic retirement/inode revalidation to remove only the admitted file. Ambiguous files, native observations, and foreign service definitions stop product removal. Focused regression tests cover replacement, symlink/hardlink, owner/mode, service drift, and native failures. The canonical definition lives in `internal/platform/daemonservice` for desktop/installer agreement.
+
+Both package workflows now run `TestInstalledDaemonLifecycle` through the production release adapter on a fresh user database, retain a stopped registration across client and daemon reopen, and verify user database/project-file hashes after package removal. The test leaves its explicitly selected disposable files for uninstall verification. It proves the daemon adapter used by the desktop, not a Wails window/tray or reboot. Linux test-worker user-manager startup is explicit and does not enable linger.
+
+Local evidence: `/tmp/harbor-installed-daemon-root.log`, `/tmp/harbor-installed-daemon-desktop.log`, and `/tmp/harbor-installed-daemon-linux-build.log`. Native hosted package execution remains the next verification step. Keep the previous rehearsal's evidence and limitations below distinct from this implementation.
+
 ## Package rehearsal continuation (2026-10-19)
 
 [Build-only run 39339451091](https://github.com/goforj/harbor/actions/runs/39339451091) passed on merged main `03e6c52759f65178cdcfb0bc103ac5e6cedb2a7a`. Both native packages passed installation, three-project trusted HTTPS using released GoForj v0.34.0, ownership-aware host cleanup, and uninstall. Assembly retained the tested bytes, checksums, provenance, and preview notes; publication was skipped. No Harbor tag/release or installation over the developer's active machine was performed.

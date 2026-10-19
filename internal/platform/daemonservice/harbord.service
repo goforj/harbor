@@ -1,0 +1,13 @@
+[Unit]
+Description=GoForj Harbor daemon
+
+[Service]
+Type=simple
+ExecStartPre=/usr/lib/goforj-harbor/harbord migrate
+ExecStart=/usr/lib/goforj-harbor/harbord --foreground
+WorkingDirectory=/usr/lib/goforj-harbor
+Restart=on-failure
+RestartSec=5s
+# Projects have their own verified lifetime and may survive daemon recovery.
+KillMode=process
+TimeoutStopSec=30s
