@@ -287,6 +287,65 @@ func TestNetworkSetupStartRepairsEstablishedOwnership(t *testing.T) {
 	}
 }
 
+// TestNetworkSetupStartExpandsEstablishedOwnership proves host drift cannot rotate or reselect durable authority.
+func TestNetworkSetupStartExpandsEstablishedOwnership(t *testing.T) {
+	now := time.Date(2026, 7, 19, 10, 5, 0, 0, time.UTC)
+	pool := networkSetupTestPool(t, "127.91.0.8/29")
+	record := networkSetupTestOwnershipRecord(t, "501", pool)
+	record.SchemaVersion = ownership.NetworkPolicySchemaVersion
+	record.NetworkPolicyFingerprint = strings.Repeat("a", 64)
+	fingerprint, err := record.Fingerprint()
+	if err != nil {
+		t.Fatalf("Fingerprint() error = %v", err)
+	}
+	journal := &networkSetupTestJournal{
+		operation: networkSetupUnexpectedOperation,
+		byIntent: func(context.Context, domain.IntentID) (state.OperationRecord, error) {
+			return state.OperationRecord{}, &state.OperationIntentNotFoundError{IntentID: "intent-repair"}
+		},
+		stage: func(_ context.Context, request state.StageNetworkSetupRequest) (state.OperationRecord, error) {
+			if !request.Repair || request.Ownership.LoopbackPoolPrefix != "127.91.0.0/24" || request.Ownership.Generation != record.Generation || request.Ownership.NetworkPolicyFingerprint != record.NetworkPolicyFingerprint {
+				t.Fatalf("StageNetworkSetup(repair) request = %#v", request)
+			}
+			return networkSetupApprovalFromQueued(t, request.Operation), nil
+		},
+	}
+	owner := &networkSetupTestOwnership{observe: func(context.Context) (ownership.Observation, error) {
+		return ownership.Observation{Exists: true, Record: record, Fingerprint: fingerprint}, nil
+	}}
+	coordinator := networkSetupTestCoordinator(
+		now,
+		journal,
+		networkSetupUnusedPlans(),
+		networkSetupUnusedStore(),
+		func() (SigningKeyStore, error) {
+			t.Fatal("repair opened bootstrap signing-key authority")
+			return nil, nil
+		},
+		&networkSetupTestSelector{selectPool: func(context.Context, identity.InstallationID, string) (identity.PoolSelection, error) {
+			t.Fatal("repair selected a new pool")
+			return identity.PoolSelection{}, nil
+		}},
+		networkSetupUnusedIssuerFactory(),
+		owner,
+		networkSetupUnusedLoopback(),
+	)
+
+	started, err := coordinator.Start(t.Context(), NetworkSetupStartRequest{
+		OperationID:       "operation-repair",
+		IntentID:          "intent-repair",
+		InstallationID:    "installation-proposed",
+		RequesterIdentity: "501",
+		ExpandPool:        true,
+	})
+	if err != nil {
+		t.Fatalf("Start(repair) error = %v", err)
+	}
+	if started.Operation.State != domain.OperationRequiresApproval {
+		t.Fatalf("Start(repair) = %#v", started)
+	}
+}
+
 // TestNetworkSetupStartClosesKeysOnFailures verifies external key resources close before selection or staging failures escape.
 func TestNetworkSetupStartClosesKeysOnFailures(t *testing.T) {
 	tests := []struct {

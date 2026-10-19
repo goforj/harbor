@@ -3,6 +3,7 @@ package launcher
 import (
 	"encoding/hex"
 	"fmt"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"net/netip"
 	"time"
 
@@ -373,7 +374,7 @@ func (ticket PoolLaunchTicket) validateStructure(pool string) error {
 		!ticket.pool.Addr().Is4() ||
 		!ticket.pool.Addr().IsLoopback() ||
 		ticket.pool.Addr() != ticket.pool.Addr().Unmap() ||
-		ticket.pool.Bits() != 29 ||
+		(ticket.pool.Bits() != 29 && ticket.pool.Bits() != poolpolicy.PrefixBits) ||
 		ticket.pool != ticket.pool.Masked() ||
 		pool != ticket.pool.String() {
 		return fmt.Errorf("pool launch ticket pool is not a canonical IPv4 loopback /29")

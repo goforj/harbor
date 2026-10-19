@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"net/netip"
 
 	"github.com/goforj/harbor/internal/host/networkpolicy"
@@ -103,7 +104,7 @@ type OwnershipMutationEvidence struct {
 type LoopbackIdentityHandler interface {
 	// EnsureLoopbackIdentity ensures the ticket's approved address and returns its observed postcondition.
 	EnsureLoopbackIdentity(context.Context, Ticket) (MutationEvidence, error)
-	// EnsureLoopbackPool ensures all eight ticket-approved addresses and returns their observed postconditions.
+	// EnsureLoopbackPool ensures all ticket-approved addresses and returns their observed postconditions.
 	EnsureLoopbackPool(context.Context, Ticket) (PoolMutationEvidence, error)
 	// ReleaseLoopbackIdentity releases the ticket's approved address and returns its observed postcondition.
 	ReleaseLoopbackIdentity(context.Context, Ticket) (MutationEvidence, error)
@@ -113,6 +114,12 @@ type LoopbackIdentityHandler interface {
 type LoopbackPoolReleaseHandler interface {
 	// ReleaseLoopbackPool releases all owned ticket-approved addresses and returns absent postconditions.
 	ReleaseLoopbackPool(context.Context, Ticket) (PoolMutationEvidence, error)
+}
+
+// LoopbackPoolExpansionHandler applies a pool ensure only after its admitted protected ownership transition.
+type LoopbackPoolExpansionHandler interface {
+	// ExpandLoopbackPool preserves existing identities while proving and claiming the additional range.
+	ExpandLoopbackPool(context.Context, Ticket, TicketAdmission) (PoolMutationEvidence, error)
 }
 
 // UnavailableLoopbackIdentityHandler fails closed until platform mutation adapters are installed.
@@ -405,7 +412,8 @@ func (admitted AdmittedLowPortOperation) ExecuteLowPorts(ctx context.Context, ha
 
 // AdmittedLoopbackOperation is one loopback ticket operation that passed redemption, clock, and replay admission.
 type AdmittedLoopbackOperation struct {
-	ticket Ticket
+	ticket    Ticket
+	admission TicketAdmission
 }
 
 // RequesterIdentity returns the authenticated requester identity bound to the admitted loopback ticket.
@@ -441,7 +449,17 @@ func (admitted AdmittedLoopbackOperation) ExecuteLoopback(ctx context.Context, h
 	case OperationEnsureLoopbackPool, OperationReleaseLoopbackPool:
 		poolHandler, supported := handler.(LoopbackPoolReleaseHandler)
 		if admitted.ticket.Operation == OperationEnsureLoopbackPool {
-			evidence, err := handler.EnsureLoopbackPool(ctx, admitted.ticket)
+			var evidence PoolMutationEvidence
+			var err error
+			if admitted.ticket.PreviousPool != "" {
+				expander, ok := handler.(LoopbackPoolExpansionHandler)
+				if !ok {
+					return OperationResult{}, ErrMutationUnavailable
+				}
+				evidence, err = expander.ExpandLoopbackPool(ctx, admitted.ticket, admitted.admission)
+			} else {
+				evidence, err = handler.EnsureLoopbackPool(ctx, admitted.ticket)
+			}
 			if err != nil {
 				return OperationResult{}, err
 			}
@@ -746,7 +764,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request Request) (Response, e
 		OperationEnsureLoopbackPool,
 		OperationReleaseLoopbackPool,
 		OperationReleaseLoopbackIdentity:
-		result, err = d.executors.Loopback(operationContext, AdmittedLoopbackOperation{ticket: ticket})
+		result, err = d.executors.Loopback(operationContext, AdmittedLoopbackOperation{ticket: ticket, admission: redemption.Admission})
 	default:
 		err = newRequestError(ErrorCodeInvalidTicket, "ticket operation is not allowlisted")
 	}
@@ -957,7 +975,7 @@ func (e PoolMutationEvidence) validate(ticket Ticket) error {
 	if e.Pool != ticket.ApprovedPool {
 		return newRequestError(ErrorCodeMutationFailed, "pool mutation evidence does not match the approved pool")
 	}
-	if ticket.ExpectedLoopbackPool == nil || len(ticket.ExpectedLoopbackPool.Identities) != loopbackPoolIdentities {
+	if ticket.ExpectedLoopbackPool == nil || len(ticket.ExpectedLoopbackPool.Identities) != len(e.Identities) {
 		return newRequestError(ErrorCodeMutationFailed, "pool mutation evidence does not match the ticket authority")
 	}
 	for index, evidence := range e.Identities {
@@ -971,11 +989,11 @@ func (e PoolMutationEvidence) validate(ticket Ticket) error {
 // validateShape enforces the standalone canonical response shape without requiring the redeemed ticket.
 func (e PoolMutationEvidence) validateShape(operation Operation) error {
 	pool, err := netip.ParsePrefix(e.Pool)
-	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() != loopbackPoolPrefixBits || pool != pool.Masked() || pool.String() != e.Pool {
-		return errors.New("response pool evidence pool is not a canonical IPv4 loopback /29")
+	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || (pool.Bits() != loopbackPoolPrefixBits && pool.Bits() != poolpolicy.PrefixBits) || pool != pool.Masked() || pool.String() != e.Pool {
+		return errors.New("response pool evidence pool is not a canonical IPv4 loopback /29 or /24")
 	}
-	if len(e.Identities) != loopbackPoolIdentities {
-		return errors.New("response pool evidence must contain exactly eight identities")
+	if len(e.Identities) != 1<<(32-pool.Bits()) {
+		return errors.New("response pool evidence must enumerate every identity in the approved pool")
 	}
 
 	address := pool.Addr()

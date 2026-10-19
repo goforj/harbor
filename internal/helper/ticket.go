@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"net/netip"
 	"strings"
 	"time"
@@ -236,11 +237,11 @@ func (expected ExpectedLoopbackPool) ValidateRelease(pool netip.Prefix) error {
 
 // validate verifies that the authority contains every exact /29 address once in canonical order.
 func (expected ExpectedLoopbackPool) validate(pool netip.Prefix, operation Operation) error {
-	if !pool.IsValid() || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() != loopbackPoolPrefixBits || pool != pool.Masked() {
+	if !pool.IsValid() || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || (pool.Bits() != loopbackPoolPrefixBits && pool.Bits() != poolpolicy.PrefixBits) || pool != pool.Masked() {
 		return newRequestError(ErrorCodeInvalidTicket, "expected loopback pool requires a canonical IPv4 loopback /29")
 	}
-	if len(expected.Identities) != loopbackPoolIdentities {
-		return newRequestError(ErrorCodeInvalidTicket, "expected loopback pool must contain exactly eight identities")
+	if len(expected.Identities) != 1<<(32-pool.Bits()) {
+		return newRequestError(ErrorCodeInvalidTicket, "expected loopback pool must enumerate every identity in the approved pool")
 	}
 
 	address := pool.Addr()
@@ -293,6 +294,7 @@ type Ticket struct {
 	NetworkPolicyFingerprint     string                       `json:"network_policy_fingerprint,omitempty"`
 	NetworkPolicy                *networkpolicy.Policy        `json:"network_policy,omitempty"`
 	ApprovedPool                 string                       `json:"approved_pool"`
+	PreviousPool                 string                       `json:"previous_pool,omitempty"`
 	ApprovedAddress              string                       `json:"approved_address,omitempty"`
 	ExpectedObservation          ExpectedObservation          `json:"expected_observation,omitzero"`
 	ExpectedPreAssignment        *ExpectedPreAssignment       `json:"expected_pre_assignment,omitempty"`
@@ -342,11 +344,17 @@ func (t Ticket) Validate(now time.Time) error {
 	if err != nil || !pool.Addr().Is4() || !pool.Addr().IsLoopback() || pool.Bits() < 8 || pool != pool.Masked() {
 		return newRequestError(ErrorCodeInvalidTicket, "approved pool must be a canonical IPv4 loopback prefix")
 	}
+	if t.PreviousPool != "" {
+		previous, err := netip.ParsePrefix(t.PreviousPool)
+		if err != nil || previous.String() != t.PreviousPool || poolpolicy.Expansion(previous, pool) != nil || t.Operation != OperationEnsureLoopbackPool || !validFingerprint(t.ExpectedOwnershipFingerprint) {
+			return newRequestError(ErrorCodeInvalidTicket, "pool expansion requires an exact source fingerprint and containing target")
+		}
+	}
 	if t.Operation != OperationReleaseNetworkOwnership &&
 		(t.ReleaseOperationID != "" ||
 			t.ReleaseOperationRevision != 0 ||
 			t.ReleaseCheckpointRevision != 0 ||
-			t.ExpectedOwnershipFingerprint != "") {
+			t.ExpectedOwnershipFingerprint != "" && t.PreviousPool == "") {
 		return newRequestError(ErrorCodeInvalidTicket, "non-ownership-release operation cannot contain ownership release bindings")
 	}
 	if t.Operation == OperationReleaseNetworkOwnership {
@@ -369,7 +377,7 @@ func (t Ticket) Validate(now time.Time) error {
 		if t.NetworkPolicy != nil || t.ExpectedResolverObservation != nil || t.TrustRoot != nil || t.ExpectedTrustObservation != nil || t.ExpectedLowPortObservation != nil {
 			return newRequestError(ErrorCodeInvalidTicket, "loopback operation cannot contain network authority")
 		}
-		if pool.Bits() != loopbackPoolPrefixBits || pool.String() != t.ApprovedPool {
+		if (pool.Bits() != loopbackPoolPrefixBits && pool.Bits() != poolpolicy.PrefixBits) || pool.String() != t.ApprovedPool {
 			return newRequestError(ErrorCodeInvalidTicket, "pool ensure requires a canonical IPv4 loopback /29")
 		}
 		if t.ApprovedAddress != "" || t.ExpectedObservation != (ExpectedObservation{}) || t.ExpectedPreAssignment != nil {

@@ -527,8 +527,8 @@ func validateNetworkReleaseLoopbackEvidence(evidence helper.PoolMutationEvidence
 	if err != nil {
 		return fmt.Errorf("network release loopback evidence: %w", err)
 	}
-	if len(evidence.Identities) != networkSetupPoolAddresses {
-		return fmt.Errorf("network release loopback evidence must contain exactly %d identities", networkSetupPoolAddresses)
+	if len(evidence.Identities) != 1<<(32-pool.Bits()) {
+		return fmt.Errorf("network release loopback evidence must contain exactly %d identities", 1<<(32-pool.Bits()))
 	}
 
 	address := pool.Addr()

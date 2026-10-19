@@ -20,6 +20,7 @@ import (
 
 const (
 	networkSetupCompletionRunningPhase   = "committing"
+	networkSetupExpansionRunningPhase    = "expanding"
 	networkSetupCompletionSucceededPhase = "completed"
 
 	networkSetupOwnershipEvidencePrefix = "machine-ownership-sha256:"
@@ -75,6 +76,10 @@ type CompleteNetworkSetupResult struct {
 	Network NetworkMutationResult
 	// Repair reports that the operation preserved the durable network while restoring its owned host pool.
 	Repair bool
+	// Expanded distinguishes ownership-preserving capacity growth from an ordinary host repair.
+	Expanded bool
+	// ApprovalRevision binds the result to the durable journal entry preceding native consent.
+	ApprovalRevision domain.Sequence
 }
 
 // Validate rejects completion results whose operation and network revisions do not describe one atomic setup completion.
@@ -97,7 +102,7 @@ func (result CompleteNetworkSetupResult) Validate() error {
 	if !result.Repair && result.Network.Record.Stage != NetworkStageIdentity {
 		return fmt.Errorf("completed network setup must create the identity network stage")
 	}
-	if result.Repair && result.Operation.Revision <= result.Network.Record.Revision {
+	if result.Repair && (result.Operation.Revision == result.Network.Record.Revision || !result.Network.Replayed && result.Operation.Revision < result.Network.Record.Revision) {
 		return fmt.Errorf("completed network repair operation must follow the preserved network revision")
 	}
 	if !result.Repair && result.Operation.Revision != result.Network.Record.Revision+1 {
@@ -176,7 +181,7 @@ func completeNetworkSetupInTransaction(
 		if err != nil {
 			return CompleteNetworkSetupResult{}, err
 		}
-		if confirmedAt.Before(record.Operation.RequestedAt) {
+		if confirmedAt.Before(record.Operation.RequestedAt) || len(history) == 5 && history[3].Phase == networkSetupExpansionRunningPhase {
 			return replayCompletedNetworkSetupRepair(tx, record, history, request, projectedOwnership)
 		}
 		identityRequest, err := networkIdentityRequestFromSetupCompletion(request)
@@ -209,7 +214,7 @@ func completeNetworkSetupInTransaction(
 		); err != nil {
 			return CompleteNetworkSetupResult{}, err
 		}
-		result := CompleteNetworkSetupResult{Operation: record, Network: networkResult}
+		result := CompleteNetworkSetupResult{Operation: record, Network: networkResult, ApprovalRevision: request.ExpectedOperationRevision}
 		if err := result.Validate(); err != nil {
 			return CompleteNetworkSetupResult{}, err
 		}
@@ -329,7 +334,7 @@ func completeNetworkSetupInTransaction(
 	); err != nil {
 		return CompleteNetworkSetupResult{}, err
 	}
-	result := CompleteNetworkSetupResult{Operation: succeeded, Network: networkResult}
+	result := CompleteNetworkSetupResult{Operation: succeeded, Network: networkResult, ApprovalRevision: request.ExpectedOperationRevision}
 	if err := result.Validate(); err != nil {
 		return CompleteNetworkSetupResult{}, err
 	}
@@ -370,12 +375,14 @@ func replayCompletedNetworkSetupRepair(
 		return CompleteNetworkSetupResult{}, err
 	}
 	result := CompleteNetworkSetupResult{
-		Operation: record,
+		ApprovalRevision: request.ExpectedOperationRevision,
+		Operation:        record,
 		Network: NetworkMutationResult{
 			Record:   network,
 			Replayed: true,
 		},
-		Repair: true,
+		Repair:   true,
+		Expanded: len(history) == 5 && history[3].Phase == networkSetupExpansionRunningPhase,
 	}
 	if err := result.Validate(); err != nil {
 		return CompleteNetworkSetupResult{}, err
@@ -392,6 +399,10 @@ func completeNetworkSetupRepairInTransaction(
 ) (CompleteNetworkSetupResult, error) {
 	if request.At.Before(record.Operation.RequestedAt) {
 		return CompleteNetworkSetupResult{}, fmt.Errorf("network repair completion time precedes the operation request")
+	}
+	runningPhase := networkSetupCompletionRunningPhase
+	if plan.PreviousPool != "" {
+		runningPhase = networkSetupExpansionRunningPhase
 	}
 	expectedModelRevision, err := sequenceToModelInt(
 		"expected network repair operation revision",
@@ -417,12 +428,17 @@ func completeNetworkSetupRepairInTransaction(
 		request.OperationID,
 		record.Revision,
 		domain.OperationRunning,
-		networkSetupCompletionRunningPhase,
+		runningPhase,
 		request.At,
 		nil,
 	)
 	if err != nil {
 		return CompleteNetworkSetupResult{}, err
+	}
+	if plan.PreviousPool != "" {
+		if err := expandNetworkSetupPoolInTransaction(tx, request, plan); err != nil {
+			return CompleteNetworkSetupResult{}, err
+		}
 	}
 	succeeded, err := transitionOperationInTransaction(
 		tx,
@@ -470,12 +486,14 @@ func completeNetworkSetupRepairInTransaction(
 		return CompleteNetworkSetupResult{}, err
 	}
 	result := CompleteNetworkSetupResult{
-		Operation: succeeded,
+		ApprovalRevision: request.ExpectedOperationRevision,
+		Operation:        succeeded,
 		Network: NetworkMutationResult{
 			Record:   network,
-			Replayed: true,
+			Replayed: plan.PreviousPool == "",
 		},
-		Repair: true,
+		Repair:   true,
+		Expanded: plan.PreviousPool != "",
 	}
 	if err := result.Validate(); err != nil {
 		return CompleteNetworkSetupResult{}, err
@@ -498,12 +516,16 @@ func requireExactCompletedNetworkRepairHistory(
 	if history[2].Sequence != request.ExpectedOperationRevision {
 		return fmt.Errorf("network repair completion does not follow the expected approval revision")
 	}
-	if history[3].State != domain.OperationRunning || history[3].Phase != networkSetupCompletionRunningPhase ||
-		!history[3].OccurredAt.Equal(request.At) || history[3].Sequence != request.ExpectedOperationRevision+1 {
+	if history[3].State != domain.OperationRunning || (history[3].Phase != networkSetupCompletionRunningPhase && history[3].Phase != networkSetupExpansionRunningPhase) ||
+		!history[3].OccurredAt.Equal(request.At) || history[3].Sequence <= request.ExpectedOperationRevision {
 		return fmt.Errorf("network repair running edge differs from the exact request")
 	}
+	gap := domain.Sequence(1)
+	if history[3].Phase == networkSetupExpansionRunningPhase {
+		gap = 2
+	}
 	if history[4].State != domain.OperationSucceeded || history[4].Phase != networkSetupCompletionSucceededPhase ||
-		!history[4].OccurredAt.Equal(request.At) || history[4].Sequence != history[3].Sequence+1 {
+		!history[4].OccurredAt.Equal(request.At) || history[4].Sequence != history[3].Sequence+gap {
 		return fmt.Errorf("network repair succeeded edge differs from the exact request")
 	}
 	return nil
@@ -533,13 +555,6 @@ func validateConfirmedNetworkSetupOwnership(observation ownership.Observation) e
 	if err := observation.Record.Validate(); err != nil {
 		return fmt.Errorf("confirmed network setup ownership record: %w", err)
 	}
-	if observation.Record.Generation != networkSetupOwnershipGeneration {
-		return fmt.Errorf(
-			"confirmed network setup ownership generation is %d, want %d",
-			observation.Record.Generation,
-			networkSetupOwnershipGeneration,
-		)
-	}
 	fingerprint, err := observation.Record.Fingerprint()
 	if err != nil {
 		return fmt.Errorf("fingerprint confirmed network setup ownership: %w", err)
@@ -559,11 +574,11 @@ func validateNetworkSetupPoolPostconditions(
 	if helperEvidence.Pool != pool.Prefix().String() {
 		return fmt.Errorf("helper network setup pool evidence does not match confirmed ownership")
 	}
-	if len(helperEvidence.Identities) != networkSetupPoolIdentityCount {
-		return fmt.Errorf("helper network setup pool evidence contains %d identities, want %d", len(helperEvidence.Identities), networkSetupPoolIdentityCount)
+	if len(helperEvidence.Identities) != pool.Capacity() {
+		return fmt.Errorf("helper network setup pool evidence contains %d identities, want %d", len(helperEvidence.Identities), pool.Capacity())
 	}
-	if len(observations) != networkSetupPoolIdentityCount {
-		return fmt.Errorf("daemon network setup observations contain %d identities, want %d", len(observations), networkSetupPoolIdentityCount)
+	if len(observations) != pool.Capacity() {
+		return fmt.Errorf("daemon network setup observations contain %d identities, want %d", len(observations), pool.Capacity())
 	}
 	addresses := pool.Candidates()
 	for index, address := range addresses {
@@ -706,7 +721,7 @@ func requireExactCompletedNetworkSetupHistory(
 		return fmt.Errorf("network setup completion does not follow the expected approval revision")
 	}
 	if history[3].State != domain.OperationRunning || history[3].Phase != networkSetupCompletionRunningPhase ||
-		!history[3].OccurredAt.Equal(request.At) || history[3].Sequence != request.ExpectedOperationRevision+1 {
+		!history[3].OccurredAt.Equal(request.At) || history[3].Sequence <= request.ExpectedOperationRevision {
 		return fmt.Errorf("network setup completion running edge differs from the exact request")
 	}
 	if networkRevision != history[3].Sequence+1 {

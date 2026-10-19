@@ -15,6 +15,7 @@ import (
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/helper"
 	"github.com/goforj/harbor/internal/network/identity"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 )
 
 // TestInvokeWritesCanonicalRequestAndSucceeds verifies one transport attempt and correlated success evidence.
@@ -59,6 +60,43 @@ func TestInvokeWritesCanonicalRequestAndSucceeds(t *testing.T) {
 func TestInvokePoolWritesCanonicalRequestAndSucceeds(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	issued := validPoolLaunchTicket(t, now)
+	wantResponse := poolSuccessResponse(issued.pool)
+	calls := 0
+	transport := transportFunc(func(_ context.Context, request io.Reader, response io.Writer) TransportResult {
+		calls++
+		decoded, err := helper.DecodeRequest(request)
+		if err != nil {
+			t.Fatalf("decode transport request: %v", err)
+		}
+		if decoded.Version != helper.ProtocolVersion || decoded.TicketReference != issued.reference {
+			t.Fatalf("transport request = %#v", decoded)
+		}
+		if err := helper.WriteResponse(response, wantResponse); err != nil {
+			t.Fatalf("write transport response: %v", err)
+		}
+		return TransportResult{State: TransportCompleted, ExitCode: ExitCodeSucceeded}
+	})
+
+	outcome, err := New(transport, fixedClock{now: now}).InvokePool(nil, issued)
+	if err != nil {
+		t.Fatalf("InvokePool() error = %v", err)
+	}
+	if calls != 1 || outcome.State != Succeeded || outcome.Exit == nil || outcome.Exit.Code != ExitCodeSucceeded {
+		t.Fatalf("calls = %d, outcome = %#v", calls, outcome)
+	}
+	if !reflect.DeepEqual(outcome.Response, wantResponse) {
+		t.Fatalf("response = %#v, want %#v", outcome.Response, wantResponse)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", outcome), string(issued.reference)) {
+		t.Fatal("pool outcome exposed the opaque ticket reference")
+	}
+}
+
+// TestInvokeLargePoolWritesCanonicalRequestAndSucceeds verifies aggregate consent correlates all decoded pool evidence.
+func TestInvokeLargePoolWritesCanonicalRequestAndSucceeds(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	issued := validPoolLaunchTicket(t, now)
+	issued.pool = netip.MustParsePrefix("127.77.0.0/24")
 	wantResponse := poolSuccessResponse(issued.pool)
 	calls := 0
 	transport := transportFunc(func(_ context.Context, request io.Reader, response io.Writer) TransportResult {
@@ -581,7 +619,7 @@ func TestInvokePoolRejectsInvalidLaunchTicketBeforeTransport(t *testing.T) {
 		{name: "helper operation", mutate: func(ticket *PoolLaunchTicket) { ticket.operation = helper.OperationEnsureLoopbackIdentity }},
 		{name: "zero pool", mutate: func(ticket *PoolLaunchTicket) { ticket.pool = netip.Prefix{} }},
 		{name: "non-loopback pool", mutate: func(ticket *PoolLaunchTicket) { ticket.pool = netip.MustParsePrefix("192.0.2.8/29") }},
-		{name: "wrong prefix", mutate: func(ticket *PoolLaunchTicket) { ticket.pool = netip.MustParsePrefix("127.77.0.0/24") }},
+		{name: "wrong prefix", mutate: func(ticket *PoolLaunchTicket) { ticket.pool = netip.MustParsePrefix("127.77.0.0/23") }},
 		{name: "host bits", mutate: func(ticket *PoolLaunchTicket) { ticket.pool = netip.MustParsePrefix("127.77.0.9/29") }},
 		{name: "zero expiry", mutate: func(ticket *PoolLaunchTicket) { ticket.expiresAt = time.Time{} }},
 		{name: "non-UTC expiry", mutate: func(ticket *PoolLaunchTicket) {
@@ -800,9 +838,13 @@ func successResponse(operation helper.Operation, address netip.Addr) helper.Resp
 
 // poolSuccessResponse returns valid owned postcondition evidence for every address in one canonical /29.
 func poolSuccessResponse(pool netip.Prefix) helper.Response {
-	identities := make([]helper.MutationEvidence, 0, 8)
+	size, err := poolpolicy.Size(pool)
+	if err != nil {
+		panic(err)
+	}
+	identities := make([]helper.MutationEvidence, 0, size)
 	address := pool.Addr()
-	for range 8 {
+	for range size {
 		identities = append(identities, helper.MutationEvidence{
 			Changed: true,
 			Address: address.String(),

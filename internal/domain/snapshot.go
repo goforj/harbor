@@ -299,8 +299,17 @@ func (reference ResourceRef) Validate() error {
 	return reference.ResourceID.Validate()
 }
 
+// NetworkSetupSnapshot reports whether the daemon retains the complete networking setup.
+// It describes configuration, while project failures report subsequent repair needs.
+type NetworkSetupSnapshot struct {
+	Configured bool `json:"configured"`
+}
+
 // Snapshot is a complete authoritative replacement of Harbor's client-visible state.
 type Snapshot struct {
+	NetworkSetup *NetworkSetupSnapshot `json:"network_setup,omitempty"`
+	// NetworkCapacity reports configured identity slots; zero remains omitted for older or unconfigured daemons.
+	NetworkCapacity   int               `json:"network_capacity,omitempty"`
 	SchemaVersion     uint16            `json:"schema_version"`
 	Sequence          Sequence          `json:"sequence"`
 	CapturedAt        time.Time         `json:"captured_at" ts_type:"string"`
@@ -311,6 +320,9 @@ type Snapshot struct {
 
 // Validate reports whether the complete snapshot is internally consistent.
 func (snapshot Snapshot) Validate() error {
+	if snapshot.NetworkCapacity < 0 || snapshot.NetworkCapacity > 65535 {
+		return fmt.Errorf("snapshot network capacity is outside the supported range")
+	}
 	if snapshot.SchemaVersion != SnapshotSchemaVersion {
 		return fmt.Errorf("unsupported snapshot schema version %d", snapshot.SchemaVersion)
 	}

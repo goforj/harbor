@@ -450,8 +450,9 @@ func TestAuthoritySnapshotPassesThroughStoreState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Snapshot() error = %v", err)
 	}
+	snapshot.NetworkSetup = &domain.NetworkSetupSnapshot{Configured: false}
 	if !reflect.DeepEqual(got, snapshot) {
-		t.Fatalf("Snapshot() = %#v, want exact Store snapshot %#v", got, snapshot)
+		t.Fatalf("Snapshot() = %#v, want client projection %#v", got, snapshot)
 	}
 	if calls := store.runtimeStateCalls.Load(); calls != 1 {
 		t.Fatalf("RuntimeState() calls = %d, want 1", calls)
@@ -591,6 +592,8 @@ func TestAuthoritySupportsConcurrentReads(t *testing.T) {
 	snapshot := emptySnapshot(71)
 	store := &recordingStore{sequence: snapshot.Sequence, runtimeState: state.RuntimeState{Snapshot: snapshot}}
 	authority := newAuthority(store, testProjectUnregisterApprovals(), buildinfo.Info{Version: "v1.0.0", Revision: "race-safe"}, testProjectLifecycles(), testNetworkSetups(), testNetworkResolverSetups(), testHTTPRoutes())
+	expected := snapshot
+	expected.NetworkSetup = &domain.NetworkSetupSnapshot{Configured: false}
 	caller := controlCaller([]rpc.Capability{control.CapabilityV1, "events.v1"})
 	errorsFound := make(chan error, readers*2)
 	start := make(chan struct{})
@@ -613,7 +616,7 @@ func TestAuthoritySupportsConcurrentReads(t *testing.T) {
 			defer wait.Done()
 			<-start
 			got, err := authority.Snapshot(context.Background(), caller)
-			if err == nil && !reflect.DeepEqual(got, snapshot) {
+			if err == nil && !reflect.DeepEqual(got, expected) {
 				err = errors.New("Snapshot() returned different state")
 			}
 			if err != nil {
@@ -633,5 +636,33 @@ func TestAuthoritySupportsConcurrentReads(t *testing.T) {
 	}
 	if got := store.runtimeStateCalls.Load(); got != readers {
 		t.Fatalf("RuntimeState() calls = %d, want %d", got, readers)
+	}
+}
+
+// TestAuthoritySnapshotReportsRetainedNetworkSetup projects current configuration independently of bounded operation history.
+func TestAuthoritySnapshotReportsRetainedNetworkSetup(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		initialized bool
+		stage       state.NetworkStage
+		configured  bool
+	}{
+		{"not initialized", false, "", false},
+		{"address pool only", true, state.NetworkStageIdentity, false},
+		{"resolver only", true, state.NetworkStageResolver, false},
+		{"complete setup", true, state.NetworkStageFull, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := emptySnapshot(17)
+			runtimeState := state.RuntimeState{Snapshot: snapshot, NetworkInitialized: test.initialized, Network: state.NetworkRecord{Stage: test.stage}}
+			got := publicControlSnapshot(runtimeState, testHTTPRoutes())
+			if got.NetworkSetup == nil || got.NetworkSetup.Configured != test.configured {
+				t.Fatalf("network setup=%+v", got.NetworkSetup)
+			}
+			got.NetworkSetup.Configured = !test.configured
+			if snapshot.NetworkSetup != nil {
+				t.Fatal("projection mutated durable snapshot")
+			}
+		})
 	}
 }

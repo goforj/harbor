@@ -6,11 +6,12 @@ import (
 	"slices"
 
 	"github.com/goforj/harbor/internal/network/identity"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"github.com/goforj/harbor/internal/platform/hostconflict"
 	"github.com/goforj/harbor/internal/platform/loopback"
 )
 
-const poolSelectorIdentityCount = 8
+const poolSelectorIdentityCount = poolpolicy.Capacity
 
 // PoolSelector derives one safe production pool solely from fresh native observations.
 type PoolSelector struct {
@@ -57,7 +58,7 @@ func (selector *PoolSelector) Select(
 			return identity.PoolSelection{}, err
 		}
 		prefix := prefixes[(startIndex+offset)%len(prefixes)]
-		observations := make([]identity.PoolAddressObservation, poolSelectorIdentityCount)
+		observations := make([]identity.PoolAddressObservation, 1<<(32-prefix.Bits()))
 		address := prefix.Addr()
 		assignmentBlocked := false
 		for index := range observations {

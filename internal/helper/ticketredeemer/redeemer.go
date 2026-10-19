@@ -339,7 +339,25 @@ func admitTicket(
 
 	state := helper.OwnershipAdmissionAlreadyCurrent
 	postOwnershipFingerprint := observation.Fingerprint
-	if record.SchemaVersion == ownership.IdentitySchemaVersion &&
+	if ticket.PreviousPool != "" {
+		target := ownershipRecordFromTicket(ticket, record.TicketVerifierKey)
+		source := target
+		source.LoopbackPoolPrefix = ticket.PreviousPool
+		fingerprint, err := source.Fingerprint()
+		if err != nil || ownership.ValidatePoolExpansion(source, target) != nil || fingerprint != ticket.ExpectedOwnershipFingerprint {
+			return helper.TicketAdmission{}, consumedFailure("bind pool expansion source", errors.New("pool expansion does not identify the exact protected source"))
+		}
+		switch record {
+		case source:
+			if observation.Fingerprint != fingerprint {
+				return helper.TicketAdmission{}, consumedFailure("bind pool expansion fingerprint", errors.New("source fingerprint drift"))
+			}
+			state = helper.OwnershipAdmissionPoolExpansion
+		case target:
+		default:
+			return helper.TicketAdmission{}, consumedFailure("bind pool expansion ownership", errors.New("pool expansion source or target differs from protected ownership"))
+		}
+	} else if record.SchemaVersion == ownership.IdentitySchemaVersion &&
 		ticket.OwnershipSchemaVersion == ownership.NetworkPolicySchemaVersion {
 		if ticket.Operation != helper.OperationEnsureResolver && ticket.Operation != helper.OperationRetireResolver {
 			return helper.TicketAdmission{}, consumedFailure(
@@ -491,6 +509,9 @@ func (redeemer *Redeemer) bootstrapOwnership(
 
 // validateBootstrapTicket confines first ownership to one generation-one pool whose eight addresses were all observed absent.
 func validateBootstrapTicket(ticket helper.Ticket, requesterIdentity string) error {
+	if ticket.PreviousPool != "" {
+		return fmt.Errorf("pool expansion requires established ownership")
+	}
 	if ticket.Operation != helper.OperationEnsureLoopbackPool {
 		return errors.New("first machine ownership claim requires loopback pool setup")
 	}

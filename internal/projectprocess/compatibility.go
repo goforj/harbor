@@ -79,3 +79,8 @@ func boundedVisibleASCII(value string, maximumBytes int) string {
 	}
 	return visible
 }
+
+// VerifyGoForjExecutable shares canonical binary admission with unprivileged desktop authoring.
+func VerifyGoForjExecutable(path string) error {
+	return productionGoForjExecutableVerifier()(path)
+}

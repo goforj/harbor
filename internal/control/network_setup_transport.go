@@ -239,14 +239,10 @@ func validateNetworkSetupApprovalConfirmationCorrelation(
 	request ConfirmNetworkSetupApprovalRequest,
 	confirmation NetworkSetupApprovalConfirmation,
 ) error {
-	expectedRevision := request.ExpectedOperationRevision + 3
-	if confirmation.Repair {
-		expectedRevision = request.ExpectedOperationRevision + 2
+	if err := confirmation.ValidateApproval(request.OperationID, request.ExpectedOperationRevision); err != nil {
+		return err
 	}
-	if confirmation.Operation.ID != request.OperationID ||
-		(!confirmation.Repair && confirmation.NetworkRevision != request.ExpectedOperationRevision+2) ||
-		confirmation.Revision != expectedRevision ||
-		confirmation.Pool != request.PoolEvidence.Pool {
+	if confirmation.Pool != request.PoolEvidence.Pool {
 		return errors.New("network setup approval confirmation does not match the requested operation revision")
 	}
 	return nil
@@ -260,6 +256,7 @@ func decodeStartNetworkSetupRequest(payload []byte) (StartNetworkSetupRequest, e
 	}
 	var request StartNetworkSetupRequest
 	intentSeen := false
+	expandSeen := false
 	for decoder.More() {
 		fieldToken, err := decoder.Token()
 		if err != nil {
@@ -268,6 +265,18 @@ func decodeStartNetworkSetupRequest(payload []byte) (StartNetworkSetupRequest, e
 		field, ok := fieldToken.(string)
 		if !ok {
 			return StartNetworkSetupRequest{}, errors.New("network setup start field name must be a string")
+		}
+		if field == "expand_pool" {
+			if expandSeen {
+				return StartNetworkSetupRequest{}, errors.New("network setup start request contains duplicate field expand_pool")
+			}
+			var value *bool
+			if err := decoder.Decode(&value); err != nil || value == nil {
+				return StartNetworkSetupRequest{}, errors.New("network setup expand_pool must be a boolean")
+			}
+			request.ExpandPool = *value
+			expandSeen = true
+			continue
 		}
 		if field != "intent_id" {
 			return StartNetworkSetupRequest{}, fmt.Errorf("network setup start request contains unknown field %q", field)

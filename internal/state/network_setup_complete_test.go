@@ -486,8 +486,8 @@ func TestCompleteNetworkSetupRequestValidationAndCancellation(t *testing.T) {
 			request.ConfirmedOwnership.Record.InstallationID = ""
 		}, want: "ownership record"},
 		{name: "ownership generation", mutate: func(request *CompleteNetworkSetupRequest) {
-			request.ConfirmedOwnership.Record.Generation = 2
-		}, want: "generation is 2"},
+			request.ConfirmedOwnership.Record.Generation = 0
+		}, want: "generation must be greater than zero"},
 		{name: "ownership fingerprint", mutate: func(request *CompleteNetworkSetupRequest) {
 			request.ConfirmedOwnership.Fingerprint = strings.Repeat("0", 64)
 		}, want: "fingerprint does not match"},

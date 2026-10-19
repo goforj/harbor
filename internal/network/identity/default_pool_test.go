@@ -9,21 +9,21 @@ import (
 // TestDefaultPoolPrefixesCoversProductionNamespace verifies exact ordered coverage without overlap or gaps.
 func TestDefaultPoolPrefixesCoversProductionNamespace(t *testing.T) {
 	prefixes := DefaultPoolPrefixes()
-	if len(prefixes) != 8192 {
-		t.Fatalf("DefaultPoolPrefixes() count = %d, want 8192", len(prefixes))
+	if len(prefixes) != 256 {
+		t.Fatalf("DefaultPoolPrefixes() count = %d, want 256", len(prefixes))
 	}
-	if prefixes[0] != netip.MustParsePrefix("127.77.0.0/29") {
-		t.Fatalf("first prefix = %s, want 127.77.0.0/29", prefixes[0])
+	if prefixes[0] != netip.MustParsePrefix("127.77.0.0/24") {
+		t.Fatalf("first prefix = %s, want 127.77.0.0/24", prefixes[0])
 	}
-	if prefixes[len(prefixes)-1] != netip.MustParsePrefix("127.77.255.248/29") {
-		t.Fatalf("last prefix = %s, want 127.77.255.248/29", prefixes[len(prefixes)-1])
+	if prefixes[len(prefixes)-1] != netip.MustParsePrefix("127.77.255.0/24") {
+		t.Fatalf("last prefix = %s, want 127.77.255.0/24", prefixes[len(prefixes)-1])
 	}
 
 	namespace := netip.MustParsePrefix(defaultPoolNamespaceText)
 	expectedAddress := namespace.Addr()
 	for index, prefix := range prefixes {
 		if prefix.Bits() != defaultPoolPrefixBits || prefix != prefix.Masked() || prefix.Addr() != expectedAddress {
-			t.Fatalf("prefix %d = %s, want canonical /29 at %s", index, prefix, expectedAddress)
+			t.Fatalf("prefix %d = %s, want canonical /24 at %s", index, prefix, expectedAddress)
 		}
 		if !namespace.Contains(prefix.Addr()) {
 			t.Fatalf("prefix %d address %s is outside %s", index, prefix.Addr(), namespace)
@@ -42,8 +42,8 @@ func TestDefaultPoolPrefixesReturnsDefensiveSlice(t *testing.T) {
 	first := DefaultPoolPrefixes()
 	first[0] = netip.MustParsePrefix("127.99.0.0/29")
 	second := DefaultPoolPrefixes()
-	if second[0] != netip.MustParsePrefix("127.77.0.0/29") {
-		t.Fatalf("second first prefix = %s, want defensive 127.77.0.0/29", second[0])
+	if second[0] != netip.MustParsePrefix("127.77.0.0/24") {
+		t.Fatalf("second first prefix = %s, want defensive 127.77.0.0/24", second[0])
 	}
 }
 
@@ -68,7 +68,7 @@ func TestDefaultPoolStartOffsetValidatesAndHashesInstallationID(t *testing.T) {
 // TestDefaultPoolStartOffsetDistributesDeterministicSamples guards against accidentally collapsing the digest to one candidate.
 func TestDefaultPoolStartOffsetDistributesDeterministicSamples(t *testing.T) {
 	seen := make(map[uint64]struct{})
-	for index := range 256 {
+	for index := range 4096 {
 		installationID := InstallationID(fmt.Sprintf("harbor-installation-%03d", index))
 		offset, err := DefaultPoolStartOffset(installationID)
 		if err != nil {
@@ -76,7 +76,7 @@ func TestDefaultPoolStartOffsetDistributesDeterministicSamples(t *testing.T) {
 		}
 		seen[offset%defaultPoolPrefixCount] = struct{}{}
 	}
-	if len(seen) < 240 {
-		t.Fatalf("256 deterministic samples reached %d candidates, want at least 240", len(seen))
+	if len(seen) < 250 {
+		t.Fatalf("4096 deterministic samples reached %d candidates, want at least 250", len(seen))
 	}
 }

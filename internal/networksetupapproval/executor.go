@@ -206,16 +206,10 @@ func (executor *Executor) confirm(
 	if err != nil {
 		return control.NetworkSetupApprovalConfirmation{}, fmt.Errorf("confirm network setup approval: %w", err)
 	}
-	if err := confirmation.Validate(); err != nil {
+	if err := confirmation.ValidateApproval(request.OperationID, request.ExpectedOperationRevision); err != nil {
 		return control.NetworkSetupApprovalConfirmation{}, fmt.Errorf("%w: validate confirmation: %w", ErrInconsistentResponse, err)
 	}
-	expectedRevision := request.ExpectedOperationRevision + 3
-	if confirmation.Repair {
-		expectedRevision = request.ExpectedOperationRevision + 2
-	}
-	if confirmation.Operation.ID != request.OperationID || confirmation.Pool != pool ||
-		(!confirmation.Repair && confirmation.NetworkRevision != request.ExpectedOperationRevision+2) ||
-		confirmation.Revision != expectedRevision {
+	if confirmation.Pool != pool {
 		return control.NetworkSetupApprovalConfirmation{}, fmt.Errorf("%w: confirmation crossed the requested operation, revision, or pool", ErrInconsistentResponse)
 	}
 	return confirmation, nil

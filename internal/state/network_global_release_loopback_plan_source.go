@@ -139,7 +139,7 @@ func validateGlobalNetworkReleaseLoopbackPlanRecord(
 			ObservationFingerprint: target.ObservationFingerprint,
 		}
 	}
-	if len(targets) != 8 {
+	if len(targets) != pool.Capacity() {
 		return identity.Pool{}, nil, errors.New("release loopback targets are not the exact retained ordered pool")
 	}
 	for index, candidate := range pool.Candidates() {

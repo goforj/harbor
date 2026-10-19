@@ -68,6 +68,7 @@ type NetworkDataPlaneSetupApprovalRunner interface {
 
 // SetupCmd completes the first-run network foundation through the unprivileged Harbor daemon client.
 type SetupCmd struct {
+	ExpandPool        bool `name:"expand-pool" help:"Approve expanding a legacy pool to 256 identities while retaining project addresses"`
 	client            *DaemonClient
 	approval          NetworkSetupApprovalRunner
 	resolverApproval  NetworkResolverSetupApprovalRunner
@@ -125,8 +126,27 @@ func (command *SetupCmd) Run(ctx context.Context) error {
 	}
 
 	intentID := networkSetupIntentID
+	if command.ExpandPool {
+		snapshot, err := command.client.Snapshot(ctx)
+		if err != nil {
+			return fmt.Errorf("read pending network expansion: %w", err)
+		}
+		pending, err := control.PendingNetworkSetupIntent(snapshot)
+		if err != nil {
+			return fmt.Errorf("select pending network expansion: %w", err)
+		}
+		if pending != "" {
+			intentID = pending
+		} else {
+			intentID, err = newNetworkSetupRetryIntent(networkSetupIntentID)
+			if err != nil {
+				return fmt.Errorf("create pool expansion intent: %w", err)
+			}
+		}
+	}
 	setup, err := command.client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{
-		IntentID: intentID,
+		IntentID:   intentID,
+		ExpandPool: command.ExpandPool,
 	})
 	if err == nil {
 		err = validateNetworkSetupStart(setup, intentID)
@@ -138,7 +158,8 @@ func (command *SetupCmd) Run(ctx context.Context) error {
 		}
 		intentID = intent
 		setup, err = command.client.StartNetworkSetup(ctx, control.StartNetworkSetupRequest{
-			IntentID: intentID,
+			IntentID:   intentID,
+			ExpandPool: command.ExpandPool,
 		})
 		if err == nil {
 			err = validateNetworkSetupStart(setup, intentID)
@@ -447,14 +468,12 @@ func (command *SetupCmd) approve(ctx context.Context, setup control.NetworkSetup
 		return fmt.Errorf("approve network setup: succeeded outcome contains a helper failure")
 	}
 	confirmation := *outcome.Confirmation
-	if err := confirmation.Validate(); err != nil {
+	if err := confirmation.ValidateApproval(setup.Operation.ID, setup.Revision); err != nil {
 		return fmt.Errorf("approve network setup: validate confirmation: %w", err)
 	}
 	if confirmation.Operation.ID != setup.Operation.ID ||
 		confirmation.Operation.IntentID != setup.Operation.IntentID ||
-		confirmation.Operation.Phase != "completed" ||
-		confirmation.NetworkRevision != setup.Revision+2 ||
-		confirmation.Revision != setup.Revision+3 {
+		confirmation.Operation.Phase != "completed" {
 		return fmt.Errorf("approve network setup: confirmation crossed the selected operation revision")
 	}
 

@@ -3,16 +3,17 @@ package identity
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"net/netip"
 )
 
 const (
 	defaultPoolNamespaceText = "127.77.0.0/16"
-	defaultPoolPrefixBits    = 29
+	defaultPoolPrefixBits    = poolpolicy.PrefixBits
 	defaultPoolPrefixCount   = 1 << (defaultPoolPrefixBits - 16)
 )
 
-// DefaultPoolPrefixes returns every disjoint /29 in Harbor's production candidate namespace in canonical address order.
+// DefaultPoolPrefixes returns every disjoint /24 in Harbor's production candidate namespace in canonical address order.
 func DefaultPoolPrefixes() []netip.Prefix {
 	prefixes := make([]netip.Prefix, defaultPoolPrefixCount)
 	address := netip.MustParsePrefix(defaultPoolNamespaceText).Addr()

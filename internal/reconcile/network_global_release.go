@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"net/netip"
 	"runtime"
 	"slices"
@@ -1755,11 +1756,11 @@ func validateGlobalNetworkReleaseLoopbackResult(result ticketissuer.PoolResult, 
 // validateGlobalNetworkReleaseLoopbackEvidence admits only canonical complete owned-absence pool evidence.
 func validateGlobalNetworkReleaseLoopbackEvidence(evidence helper.PoolMutationEvidence) error {
 	prefix, err := netip.ParsePrefix(evidence.Pool)
-	if err != nil || !prefix.Addr().Is4() || !prefix.Addr().IsLoopback() || prefix.Bits() != 29 || prefix != prefix.Masked() || prefix.String() != evidence.Pool {
+	if err != nil || !prefix.Addr().Is4() || !prefix.Addr().IsLoopback() || (prefix.Bits() != 29 && prefix.Bits() != poolpolicy.PrefixBits) || prefix != prefix.Masked() || prefix.String() != evidence.Pool {
 		return fmt.Errorf("release loopback evidence does not identify a canonical IPv4-loopback /29")
 	}
-	if len(evidence.Identities) != 8 {
-		return fmt.Errorf("release loopback evidence contains %d identities, want 8", len(evidence.Identities))
+	if len(evidence.Identities) != 1<<(32-prefix.Bits()) {
+		return fmt.Errorf("release loopback evidence contains %d identities, want %d", len(evidence.Identities), 1<<(32-prefix.Bits()))
 	}
 	address := prefix.Addr()
 	for _, identity := range evidence.Identities {

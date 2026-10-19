@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
@@ -785,3 +786,44 @@ var _ PoolPlanSource = (*poolPlanSource)(nil)
 var _ PoolKeyStore = (*poolKeyStore)(nil)
 var _ LoopbackObserver = (*poolLoopbackObserver)(nil)
 var _ ConflictObserver = (*poolConflictObserver)(nil)
+
+// TestPoolServiceExpansionSignsExactSourceAndRejectsDrift binds growth to unchanged durable ownership authority.
+func TestPoolServiceExpansionSignsExactSourceAndRejectsDrift(t *testing.T) {
+	for _, drift := range []bool{false, true} {
+		t.Run(fmt.Sprint(drift), func(t *testing.T) {
+			f := newPoolIssuerFixture(t, PoolModeRepair)
+			source := f.plan.Ownership
+			f.plan.PreviousPool = source.LoopbackPoolPrefix
+			f.plan.Pool = mustIdentityPool(t, "127.77.0.0/24", 256)
+			f.plan.Ownership.LoopbackPoolPrefix = f.plan.Pool.Prefix().String()
+			f.plans.plans = []PoolPlan{f.plan}
+			if drift {
+				changed := f.plan
+				changed.PreviousPool = "127.77.0.16/29"
+				f.plans.plans = append(f.plans.plans, changed)
+			}
+			for _, address := range f.plan.Pool.Candidates() {
+				f.loopback.observations[address] = poolLoopbackObservation(address, loopback.StateAbsent)
+				f.conflicts.observations[address] = poolSafeHostObservation(t, address)
+			}
+			_, err := f.service.Issue(t.Context(), source.OwnerIdentity, f.request)
+			if drift {
+				if err == nil || f.publisher.calls != 0 {
+					t.Fatal("published expansion after source drift")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			fingerprint, err := source.Fingerprint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ticket := f.publisher.ticket
+			if ticket.PreviousPool != source.LoopbackPoolPrefix || ticket.ExpectedOwnershipFingerprint != fingerprint || ticket.OwnershipGeneration != source.Generation || len(ticket.ExpectedLoopbackPool.Identities) != 256 {
+				t.Fatal("expansion ticket lost exact source or complete target")
+			}
+		})
+	}
+}

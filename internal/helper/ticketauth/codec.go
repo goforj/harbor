@@ -9,7 +9,7 @@ import (
 )
 
 // MaxEnvelopeBytes bounds one canonical signed ticket before durable storage or JSON decoding.
-const MaxEnvelopeBytes = 16 * 1024
+const MaxEnvelopeBytes = 256 * 1024
 
 // Encode returns the deterministic JSON representation used for signed-ticket persistence.
 func Encode(envelope Envelope) ([]byte, error) {

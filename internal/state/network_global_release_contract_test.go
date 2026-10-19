@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -298,4 +299,37 @@ func refreshGlobalNetworkReleasePolicyOwnership(t *testing.T, authority *GlobalN
 	authority.Projection.ConfirmedOwnership.Record.NetworkPolicyFingerprint = policyFingerprint
 	refreshGlobalNetworkReleaseOwnership(t, authority)
 	authority.ExpectedOwnershipFingerprint = authority.Projection.ConfirmedOwnership.Fingerprint
+}
+
+// TestLargePoolCleanupAuthorityFitsOneHundredProjectInstallation protects cleanup framing at the supported capacity.
+func TestLargePoolCleanupAuthorityFitsOneHundredProjectInstallation(t *testing.T) {
+	authority := validGlobalNetworkReleaseAuthority(t)
+	record := authority.Projection.ConfirmedOwnership.Record
+	record.LoopbackPoolPrefix = netip.PrefixFrom(netip.MustParsePrefix(record.LoopbackPoolPrefix).Addr(), 24).Masked().String()
+	fingerprint, err := record.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.Projection.ConfirmedOwnership.Record = record
+	authority.Projection.ConfirmedOwnership.Fingerprint = fingerprint
+	authority.ExpectedOwnershipFingerprint = fingerprint
+	pool, err := networkSetupIdentityPool(record.LoopbackPoolPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.LoopbackTargets = nil
+	for _, address := range pool.Candidates() {
+		authority.LoopbackTargets = append(authority.LoopbackTargets, GlobalNetworkReleaseLoopbackTarget{Address: address, ObservationFingerprint: strings.Repeat("a", 64)})
+	}
+	for index := range 100 {
+		authority.ProjectRevisions = append(authority.ProjectRevisions, NetworkProjectRevision{ProjectID: domain.ProjectID(fmt.Sprintf("project-%03d", index) + strings.Repeat("x", 118)), Revision: domain.Sequence(index + 1)})
+	}
+	payload, _, err := encodeGlobalNetworkReleaseAuthority(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := decodeGlobalNetworkReleaseAuthority(payload)
+	if err != nil || len(restored.LoopbackTargets) != 256 || len(restored.ProjectRevisions) != 100 {
+		t.Fatalf("large cleanup authority: %v", err)
+	}
 }

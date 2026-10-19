@@ -2,6 +2,7 @@ package identity
 
 import (
 	"fmt"
+	"github.com/goforj/harbor/internal/network/poolpolicy"
 	"net/netip"
 	"slices"
 	"strings"
@@ -170,12 +171,12 @@ func normalizePoolCandidate(candidate PoolCandidateObservation) (PoolCandidateOb
 	if err := validateSelectionPrefix(candidate.Prefix); err != nil {
 		return PoolCandidateObservation{}, err
 	}
-	if len(candidate.Addresses) != poolSelectionAddressCount {
+	if len(candidate.Addresses) != 1<<(32-candidate.Prefix.Bits()) {
 		return PoolCandidateObservation{}, fmt.Errorf(
 			"candidate %s contains %d address observations, want %d",
 			candidate.Prefix,
 			len(candidate.Addresses),
-			poolSelectionAddressCount,
+			1<<(32-candidate.Prefix.Bits()),
 		)
 	}
 
@@ -216,7 +217,7 @@ func validateSelectionPrefix(prefix netip.Prefix) error {
 	if !prefix.Addr().Is4() || prefix.Addr() != prefix.Addr().Unmap() {
 		return fmt.Errorf("candidate prefix %s is not canonical IPv4", prefix)
 	}
-	if !prefix.Addr().IsLoopback() || prefix.Bits() != poolSelectionPrefixBits {
+	if !prefix.Addr().IsLoopback() || (prefix.Bits() != poolSelectionPrefixBits && prefix.Bits() != poolpolicy.PrefixBits) {
 		return fmt.Errorf("candidate prefix %s is not an IPv4-loopback /29", prefix)
 	}
 	if prefix != prefix.Masked() {

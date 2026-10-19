@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -23,16 +24,18 @@ import (
 
 // primaryLeaseTestState keeps optimistic project and network revisions observable without replacing persistence semantics.
 type primaryLeaseTestState struct {
-	mu            sync.Mutex
-	project       state.ProjectRecord
-	projects      map[domain.ProjectID]state.ProjectRecord
-	network       state.NetworkRecord
-	initialized   bool
-	projectErr    error
-	networkErr    error
-	replaceCalls  []state.ReplaceProjectNetworkRequest
-	replace       func(state.ReplaceProjectNetworkRequest) (state.NetworkMutationResult, error)
-	beforeReplace func()
+	mu              sync.Mutex
+	project         state.ProjectRecord
+	projects        map[domain.ProjectID]state.ProjectRecord
+	network         state.NetworkRecord
+	initialized     bool
+	projectErr      error
+	networkErr      error
+	reuseCandidates []state.NetworkAddressReuse
+	reuseErr        error
+	replaceCalls    []state.ReplaceProjectNetworkRequest
+	replace         func(state.ReplaceProjectNetworkRequest) (state.NetworkMutationResult, error)
+	beforeReplace   func()
 }
 
 // Project returns the fixture's exact registered project revision.
@@ -60,6 +63,19 @@ func (fixture *primaryLeaseTestState) Network(context.Context) (state.NetworkRec
 		return state.NetworkRecord{}, false, fixture.networkErr
 	}
 	return clonePrimaryLeaseTestNetwork(fixture.network), fixture.initialized, nil
+}
+
+// ReusableNetworkAddresses returns only fixture-admitted candidates at the exact requested revision.
+func (fixture *primaryLeaseTestState) ReusableNetworkAddresses(_ context.Context, revision domain.Sequence, _ time.Time) ([]state.NetworkAddressReuse, error) {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if fixture.reuseErr != nil {
+		return nil, fixture.reuseErr
+	}
+	if revision != fixture.network.Revision {
+		return nil, &state.NetworkRevisionConflictError{Expected: revision, Actual: fixture.network.Revision}
+	}
+	return slices.Clone(fixture.reuseCandidates), nil
 }
 
 // ReplaceProjectNetwork applies one complete project delta while enforcing production's optimistic revisions.
@@ -100,6 +116,9 @@ func (fixture *primaryLeaseTestState) ReplaceProjectNetwork(
 	}
 	for _, ensure := range request.Ensures {
 		fixture.network.Leases = append(fixture.network.Leases, ensure.Lease)
+		fixture.network.Quarantines = slices.DeleteFunc(fixture.network.Quarantines, func(quarantine identity.Quarantine) bool {
+			return quarantine.Address == ensure.Lease.Address
+		})
 	}
 	slices.SortFunc(fixture.network.Leases, primaryLeaseTestLeaseCompare)
 	endpoints := make([]state.EndpointReservation, 0, len(fixture.network.Reservations.Endpoints)+len(request.Endpoints))
@@ -489,26 +508,33 @@ func TestProjectPrimaryLeaseCoordinatorAllocatesAndPersistsOneObservedDelta(t *t
 
 // TestProjectPrimaryLeaseCoordinatorConvergesEightConcurrentProjects proves every supported pool member replans around shared revision conflicts.
 func TestProjectPrimaryLeaseCoordinatorConvergesEightConcurrentProjects(t *testing.T) {
-	addresses := []netip.Addr{
-		netip.MustParseAddr("127.77.0.11"),
-		netip.MustParseAddr("127.77.0.12"),
-		netip.MustParseAddr("127.77.0.13"),
-		netip.MustParseAddr("127.77.0.14"),
-		netip.MustParseAddr("127.77.0.15"),
-		netip.MustParseAddr("127.77.0.16"),
-		netip.MustParseAddr("127.77.0.17"),
-		netip.MustParseAddr("127.77.0.18"),
+	testPrimaryLeaseConcurrentAllocation(t, false, 8)
+}
+
+// TestProjectPrimaryLeaseCoordinatorConvergesConcurrentReuse proves competing starts cannot consume one quarantine twice.
+func TestProjectPrimaryLeaseCoordinatorConvergesConcurrentReuse(t *testing.T) {
+	testPrimaryLeaseConcurrentAllocation(t, true, 8)
+}
+
+// testPrimaryLeaseConcurrentAllocation forces all starts to race on the same durable revision.
+func testPrimaryLeaseConcurrentAllocation(t *testing.T, reuse bool, count int) {
+	t.Helper()
+	addresses := make([]netip.Addr, count)
+	address := netip.MustParseAddr("127.77.0.11")
+	for index := range addresses {
+		addresses[index] = address
+		address = address.Next()
 	}
 	fixture := newPrimaryLeaseTestFixture(t, addresses...)
-	projectIDs := []domain.ProjectID{
-		"project-alpha",
-		"project-bravo",
-		"project-charlie",
-		"project-delta",
-		"project-echo",
-		"project-foxtrot",
-		"project-golf",
-		"project-hotel",
+	if reuse {
+		for index, address := range addresses {
+			fixture.state.network.Quarantines = append(fixture.state.network.Quarantines, identity.Quarantine{Address: address, Reason: "completed removal"})
+			fixture.state.reuseCandidates = append(fixture.state.reuseCandidates, state.NetworkAddressReuse{Address: address, Generation: uint64(index + 20)})
+		}
+	}
+	projectIDs := make([]domain.ProjectID, count)
+	for index := range projectIDs {
+		projectIDs[index] = domain.ProjectID(fmt.Sprintf("project-capacity-%03d", index))
 	}
 	fixture.state.projects = make(map[domain.ProjectID]state.ProjectRecord, len(projectIDs))
 	for _, projectID := range projectIDs {
@@ -572,6 +598,16 @@ func TestProjectPrimaryLeaseCoordinatorConvergesEightConcurrentProjects(t *testi
 	}
 	if len(leasedAddresses) != len(projectIDs) || len(fixture.state.network.Leases) != len(projectIDs) {
 		t.Fatalf("converged leases = %#v, want one unique lease for every project", fixture.state.network.Leases)
+	}
+	if reuse {
+		if len(fixture.state.network.Quarantines) != 0 {
+			t.Fatal("successful reuse retained consumed quarantine rows")
+		}
+		for _, request := range fixture.state.replaceCalls {
+			if request.Ensures[0].Generation < 20 {
+				t.Fatal("reuse reset the address generation")
+			}
+		}
 	}
 }
 
@@ -856,7 +892,7 @@ func TestProjectPrimaryLeaseCoordinatorBoundsOptimisticRevisionRaces(t *testing.
 		}
 	}
 	_, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
-	if err == nil || !strings.Contains(err.Error(), "did not converge after 8 revisions") {
+	if err == nil || !strings.Contains(err.Error(), "did not converge after 256 revisions") {
 		t.Fatalf("Ensure() error = %v, want bounded convergence failure", err)
 	}
 	if len(fixture.state.replaceCalls) != primaryLeaseAllocationPersistenceAttempts {
@@ -1677,7 +1713,7 @@ func TestProjectPrimaryLeaseCoordinatorFailsClosedOnIncompleteAuthority(t *testi
 		}, want: "evidence"},
 		{name: "pool exhausted", configure: func(fixture *primaryLeaseTestFixture) {
 			fixture.loopback.facts[address] = primaryLeaseTestAbsentObservation(address)
-		}, want: "pool exhausted", wantCode: "project.network.capacity_exhausted"},
+		}, want: "pool exhausted", wantCode: "project.network.repair_required"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1940,4 +1976,70 @@ func assertPrimaryLeaseTestPanic(t *testing.T, call func()) {
 		}
 	}()
 	call()
+}
+
+// TestProjectPrimaryLeaseCoordinatorReusesReleasedAddressesAfterFreshObservation proves a depleted pool recovers only through normal host admission and fenced persistence.
+func TestProjectPrimaryLeaseCoordinatorReusesReleasedAddressesAfterFreshObservation(t *testing.T) {
+	first := netip.MustParseAddr("127.77.0.11")
+	second := netip.MustParseAddr("127.77.0.12")
+	third := netip.MustParseAddr("127.77.0.13")
+	fixture := newPrimaryLeaseTestFixture(t, first, second, third)
+	for index, address := range []netip.Addr{first, second, third} {
+		fixture.state.network.Quarantines = append(fixture.state.network.Quarantines, identity.Quarantine{Address: address, Reason: "completed deleted project"})
+		fixture.state.reuseCandidates = append(fixture.state.reuseCandidates, state.NetworkAddressReuse{Address: address, Generation: uint64(index + 20)})
+	}
+	fixture.loopback.facts[first] = primaryLeaseTestAbsentObservation(first)
+	fixture.ports.results[second] = primaryLeaseTestProbeResult(second, 3000, false)
+	admission, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
+	if err != nil || admission.Lease.Address != third {
+		t.Fatalf("admission = %v, %v", admission.Lease, err)
+	}
+	if len(fixture.state.replaceCalls) != 1 || fixture.state.replaceCalls[0].Ensures[0].Generation != 22 {
+		t.Fatalf("reuse writes = %v", fixture.state.replaceCalls)
+	}
+	if len(fixture.state.network.Quarantines) != 2 {
+		t.Fatal("unselected quarantines were cleared")
+	}
+	if !slices.Equal(fixture.loopback.calls, []netip.Addr{first, second, third}) {
+		t.Fatalf("host observations = %v", fixture.loopback.calls)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorPreservesIneligibleQuarantine keeps unavailable reuse evidence from authorizing host changes or persistence.
+func TestProjectPrimaryLeaseCoordinatorPreservesIneligibleQuarantine(t *testing.T) {
+	for _, readError := range []error{nil, errors.New("reuse observation unavailable")} {
+		fixture := newPrimaryLeaseTestFixture(t, netip.MustParseAddr("127.77.0.11"))
+		fixture.state.network.Quarantines = []identity.Quarantine{{Address: netip.MustParseAddr("127.77.0.11"), Reason: "not eligible"}}
+		fixture.state.reuseErr = readError
+		if _, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID); err == nil {
+			t.Fatal("unsafe address admitted")
+		}
+		if len(fixture.state.replaceCalls) != 0 || len(fixture.loopback.calls) != 0 || len(fixture.ports.calls) != 0 {
+			t.Fatal("ineligible address crossed the observation or write boundary")
+		}
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorPrefersUnusedAddresses avoids consuming quarantine history while fresh capacity remains.
+func TestProjectPrimaryLeaseCoordinatorPrefersUnusedAddresses(t *testing.T) {
+	first := netip.MustParseAddr("127.77.0.11")
+	second := netip.MustParseAddr("127.77.0.12")
+	fixture := newPrimaryLeaseTestFixture(t, first, second)
+	fixture.state.network.Quarantines = []identity.Quarantine{{Address: first, Reason: "completed deleted project"}}
+	fixture.state.reuseCandidates = []state.NetworkAddressReuse{{Address: first, Generation: 20}}
+	fixture.state.reuseErr = errors.New("reuse must not be read while free capacity remains")
+	admission, err := fixture.coordinator.Ensure(t.Context(), fixture.state.project.Project.ID)
+	if err != nil || admission.Lease.Address != second {
+		t.Fatalf("admission = %v, %v", admission.Lease, err)
+	}
+}
+
+// TestProjectPrimaryLeaseCoordinatorConvergesOneHundredProjects proves the supported project count under forced allocation contention.
+func TestProjectPrimaryLeaseCoordinatorConvergesOneHundredProjects(t *testing.T) {
+	testPrimaryLeaseConcurrentAllocation(t, false, 100)
+}
+
+// TestProjectPrimaryLeaseCoordinatorRecyclesOneHundredProjects proves concurrent starts can safely reuse a depleted large pool.
+func TestProjectPrimaryLeaseCoordinatorRecyclesOneHundredProjects(t *testing.T) {
+	testPrimaryLeaseConcurrentAllocation(t, true, 100)
 }
