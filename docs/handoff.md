@@ -1,6 +1,6 @@
 # Development Handoff
 
-Status: native macOS/Ubuntu package rehearsal passed; installed desktop lifecycle gaps remain
+Status: installed daemon lifecycle passed native macOS/Ubuntu package checks; PR CI follow-up in progress
 
 Last updated: 2026-10-19
 
@@ -16,7 +16,9 @@ macOS uninstall now checks the OS-resolved user's saved agent and loaded job bef
 
 Both package workflows now run `TestInstalledDaemonLifecycle` through the production release adapter on a fresh user database, retain a stopped registration across client and daemon reopen, and verify user database/project-file hashes after package removal. The test leaves its explicitly selected disposable files for uninstall verification. It proves the daemon adapter used by the desktop, not a Wails window/tray or reboot. Linux test-worker user-manager startup is explicit and does not enable linger.
 
-Local evidence: `/tmp/harbor-installed-daemon-root.log`, `/tmp/harbor-installed-daemon-desktop.log`, `/tmp/harbor-installed-daemon-linux-build.log`, `/tmp/harbor-installed-daemon-guard.log`, `/tmp/harbor-installed-daemon-admission.log`, and `/tmp/harbor-installed-daemon-race.log`. The first candidate's new installed-service and preservation steps passed on macOS and Ubuntu in `39342597595`; final native execution with the singleton guard is pending. PR #12 contains the reviewable implementation. One initial PR Windows adapter check hit a loopback attribute conflict while the same candidate's push workflow passed; final-head CI remains required. Keep the previous rehearsal's evidence and limitations below distinct from this implementation.
+Local evidence: `/tmp/harbor-installed-daemon-root.log`, `/tmp/harbor-installed-daemon-desktop.log`, `/tmp/harbor-installed-daemon-linux-build.log`, `/tmp/harbor-installed-daemon-guard.log`, `/tmp/harbor-installed-daemon-admission.log`, and `/tmp/harbor-installed-daemon-race.log`. Final [build-only run 39343779111](https://github.com/goforj/harbor/actions/runs/39343779111) passed on product source `86e2121941facd864e0dab819ec5275c7f33ce26`, including the singleton guard. Native macOS and Ubuntu both proved fresh-database migration, client independence, reopen, daemon restart, retained registration, and data-preserving service/package removal. Downloaded evidence is under `/tmp/harbor-installed-daemon-final-39343779111`. Assembly passed and publish was skipped. No Harbor release or tag was created.
+
+PR #12's Linux root job failed because `TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays` independently allocated a native listener after releasing upstream reservations, allowing endpoint reuse. All public TCP endpoints are now reserved together before selecting distinct upstreams. The focused test passes 100 repetitions and the data-plane package passes. The follow-up changes tests and evidence documentation only; packaged product source remains identical to the native proof. The current product-head platform jobs pass on all three operating systems. Fresh PR CI after the fixture correction remains required. Keep the historical rehearsal below distinct from this implementation.
 
 ## Package rehearsal continuation (2026-10-19)
 
