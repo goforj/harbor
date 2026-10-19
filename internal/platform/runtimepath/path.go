@@ -6,6 +6,9 @@ import (
 	"github.com/goforj/harbor/internal/platform/userpaths"
 )
 
+// DaemonLockFilename binds installed preparation and daemon startup to the same singleton authority.
+const DaemonLockFilename = "harbord.lock"
+
 // environmentLookup keeps platform environment policy testable without mutating process-wide state.
 type environmentLookup func(string) (string, bool)
 

@@ -162,6 +162,7 @@ jobs:
           ldflags="-X github.com/goforj/harbor/internal/buildinfo.releaseVersion=${HARBOR_RELEASE_VERSION}"
           go build -trimpath -ldflags "$ldflags" -o "${HARBOR_PACKAGE_ROOT}/usr/bin/harbor" ./cmd/app
           go build -trimpath -ldflags "$ldflags" -o "${product_root}/harbord" ./cmd/harbord
+          go build -trimpath -o "${product_root}/daemon-launcher" ./cmd/daemonlauncher
           go build -trimpath -ldflags "$ldflags" -o "${product_root}/outputbroker" ./cmd/outputbroker
           go build -trimpath -o "${product_root}/harbor-installer" ./cmd/devbootstrap
           go build -trimpath -ldflags "$ldflags" -o "${product_root}/harbor-helper" ./cmd/helper
@@ -220,6 +221,7 @@ jobs:
             /usr/bin/harbor \
             /usr/lib/goforj-harbor \
             /usr/libexec/harbor-helper \
+            /usr/lib/systemd/user/harbord.service \
             /var/lib/goforj/harbor \
             /etc/systemd/resolved.conf.d/90-goforj-harbor.conf \
             /usr/local/share/ca-certificates/goforj-harbor.crt \
@@ -331,10 +333,12 @@ jobs:
             /usr/bin/harbor \
             /usr/lib/goforj-harbor/harbor-desktop \
             /usr/lib/goforj-harbor/harbord \
+            /usr/lib/goforj-harbor/daemon-launcher \
             /usr/lib/goforj-harbor/outputbroker \
             /usr/lib/goforj-harbor/harbor-helper \
             /usr/lib/goforj-harbor/harbor-installer \
             /usr/libexec/harbor-helper \
+            /usr/lib/systemd/user/harbord.service \
             /var/lib/goforj/harbor \
             /etc/systemd/resolved.conf.d/90-goforj-harbor.conf \
             /usr/local/share/ca-certificates/goforj-harbor.crt \

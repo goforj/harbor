@@ -3,7 +3,6 @@
 package daemonprerequisite
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -56,7 +55,7 @@ func (ensurer *linuxEnsurer) Ensure(ctx context.Context) error {
 		return fmt.Errorf("reload Harbor user service: %w", err)
 	}
 	output, err := ensurer.dependencies.run(ctx, "show", daemonservice.LinuxUnit,
-		"--property=FragmentPath", "--property=DropInPaths", "--property=LoadState")
+		"--all", "--property=FragmentPath", "--property=DropInPaths", "--property=LoadState")
 	if err != nil {
 		return fmt.Errorf("inspect Harbor user service: %w", err)
 	}
@@ -92,24 +91,19 @@ func admitLinuxUnit(output []byte) error {
 
 // inspectLinuxPackage admits direct root-owned unit and executable files at fixed package paths.
 func inspectLinuxPackage() error {
-	for _, path := range []string{daemonservice.LinuxUnitPath, daemonservice.LinuxDaemonPath} {
+	for _, path := range []string{daemonservice.LinuxUnitPath, daemonservice.LinuxDaemonPath, daemonservice.LinuxLauncherPath} {
 		file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			return fmt.Errorf("open installed Harbor component %q: %w", path, err)
 		}
 		information, err := file.Stat()
 		if err == nil {
-			status, ok := information.Sys().(*syscall.Stat_t)
-			if !ok || !information.Mode().IsRegular() || status.Uid != 0 || information.Mode().Perm()&0o022 != 0 || status.Nlink != 1 {
-				err = errors.New("component is not a direct root-owned package file")
-			} else if path == daemonservice.LinuxDaemonPath && information.Mode().Perm()&0o111 == 0 {
-				err = errors.New("installed Harbor daemon is not executable")
-			} else if path == daemonservice.LinuxUnitPath {
+			if path == daemonservice.LinuxUnitPath {
 				content := make([]byte, len(daemonservice.LinuxDefinition())+1)
 				n, readErr := file.Read(content)
-				if readErr != nil || !bytes.Equal(content[:n], daemonservice.LinuxDefinition()) {
-					err = errors.New("installed Harbor systemd unit differs from the package contract")
-				}
+				err = errors.Join(readErr, daemonservice.AdmitUnit(information, content[:n]))
+			} else {
+				err = daemonservice.AdmitExecutable(information)
 			}
 		}
 		closeErr := file.Close()

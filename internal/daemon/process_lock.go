@@ -10,7 +10,7 @@ import (
 	"github.com/goforj/harbor/internal/platform/runtimepath"
 )
 
-const processLockFilename = "harbord.lock"
+const processLockFilename = runtimepath.DaemonLockFilename
 
 // ErrAlreadyRunning identifies a live Harbor daemon that already owns the per-user process lock.
 var ErrAlreadyRunning = errors.New("Harbor daemon is already running")

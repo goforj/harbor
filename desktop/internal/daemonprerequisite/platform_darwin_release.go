@@ -114,8 +114,8 @@ func inspectDaemonLauncher(path string) error {
 	if err != nil {
 		return fmt.Errorf("inspect installed Harbor daemon launcher: %w", err)
 	}
-	if !information.Mode().IsRegular() || information.Mode().Perm()&0o111 == 0 {
-		return errors.New("installed Harbor daemon launcher is not a regular executable")
+	if err := daemonservice.AdmitExecutable(information); err != nil {
+		return err
 	}
 	return nil
 }

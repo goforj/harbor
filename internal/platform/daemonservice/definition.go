@@ -16,6 +16,8 @@ const (
 	LinuxUnitPath = "/usr/lib/systemd/user/harbord.service"
 	// LinuxDaemonPath is the fixed executable shipped by the Debian package.
 	LinuxDaemonPath = "/usr/lib/goforj-harbor/harbord"
+	// LinuxLauncherPath prepares the user's database before handing ownership to harbord.
+	LinuxLauncherPath = "/usr/lib/goforj-harbor/daemon-launcher"
 )
 
 // linuxDefinition is also installed verbatim by the native package workflow.

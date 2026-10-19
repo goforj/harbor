@@ -463,6 +463,8 @@ jobs:
       - name: Exercise ownership-aware package uninstall
         run: |
           set -euo pipefail
+          launchctl print "gui/$(id -u)/com.goforj.harbor.daemon" |
+            sed -n '/state = /p; /path = /p; /type = /p; /program = /p; /working directory = /p'
           installed_helper="/Library/PrivilegedHelperTools/com.goforj.harbor.helper"
           immutable_helper="/Library/Application Support/GoForj/Harbor/current/libexec/com.goforj.harbor.helper"
           printf '%s\n' "foreign helper ${GITHUB_RUN_ID}" |

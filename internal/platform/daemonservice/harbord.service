@@ -3,8 +3,7 @@ Description=GoForj Harbor daemon
 
 [Service]
 Type=simple
-ExecStartPre=/usr/lib/goforj-harbor/harbord migrate
-ExecStart=/usr/lib/goforj-harbor/harbord --foreground
+ExecStart=/usr/lib/goforj-harbor/daemon-launcher
 WorkingDirectory=/usr/lib/goforj-harbor
 Restart=on-failure
 RestartSec=5s
