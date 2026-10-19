@@ -1,5 +1,11 @@
 # Current Implementation State
 
+## Hosted capacity gate (2026-10-19)
+
+The hosted platform-network API workflow now includes an explicitly selected, initially absent `/24` on Ubuntu, macOS, and Windows. Its new acceptance case creates a partial range, replays exact assignments unchanged while completing all 256 aliases, proves 100 simultaneous same-port listeners with authenticated responses, and conditionally removes only the native fingerprints created by that test. It verifies that all 256 aliases are absent afterward. Existing legacy `/29` adapter coverage remains.
+
+Portable proof and range-validation tests pass locally. Native execution is pending CI. This is adapter and socket acceptance, separate from protected ownership expansion, installer consent, full application workloads, and reboot restoration.
+
 ## Interrupted network setup recovery (2026-10-19)
 
 Pending loopback setup, repair, and capacity expansion now appear in Overview and Settings, Daemon with one **Resume setup** action. The daemon projects the exact operation, intent, approval revision, and whether administrator approval or final confirmation remains. Polling only reads durable state and does not request host changes.

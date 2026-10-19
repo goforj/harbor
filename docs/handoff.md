@@ -4,6 +4,12 @@ Status: GitHub-hosted macOS, Linux, and Windows three-project trusted-HTTPS life
 
 Last updated: 2026-10-19
 
+## Publication and native gate continuation (2026-10-19)
+
+GoForj's schema/argument creation contract is committed as `dab970eb` in `/Users/cmiles/code/goforj-harbor-events` and published for review at https://github.com/goforj/goforj/pull/251. Focused project-creation tests pass in `/tmp/goforj-creation-contract-final.log`. The built CLI emits one schema JSON object, and every field matches Harbor's committed fixture. The contract has not been merged or released.
+
+The hosted platform-network workflow adds a `/24` adapter acceptance case with partial assignment replay, retained fingerprints, 100 simultaneous same-port listeners, and exact cleanup. It deliberately uses `127.77.253.0/24`, separate from the existing eight-address and three-project proof ranges, and refuses any pre-existing assignment before mutation. Portable proof and range-bound tests pass in `/tmp/harbor-native-capacity-{portable,bounds}.log`. Native CI results must be recorded before claiming this gate passes. Installer consent, protected ownership growth, and reboot acceptance remain separate.
+
 ## Interrupted setup continuation (2026-10-19)
 
 The accepted next slice adds durable loopback setup recovery. Work was isolated in `/tmp/harbor-setup-recovery-20261019` on `fix/setup-recovery`, seeded from the user's full active dirty checkout. `/tmp/harbor-setup-recovery-baseline.json` records source hashes so integration copies only this task's changes and preserves unrelated appearance, creator, icon, and capacity work. No source checkout was reset or stashed.

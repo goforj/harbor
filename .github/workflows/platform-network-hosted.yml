@@ -114,6 +114,21 @@ jobs:
               "$binary" -test.run '^TestPlatformLoopbackAdapterLifecycle$' -test.v
           fi
 
+      - name: Prove native capacity, partial retry, and exact cleanup
+        shell: bash
+        env:
+          HARBOR_CAPACITY_PROOF_POOL: 127.77.253.0/24
+        run: |
+          binary="${RUNNER_TEMP}/harbor-loopback-adapter-test"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            "${binary}.exe" -test.run '^TestPlatformLoopbackCapacityLifecycle$' -test.timeout=10m -test.v
+          else
+            sudo env \
+              HARBOR_CAPACITY_PROOF_POOL="${HARBOR_CAPACITY_PROOF_POOL}" \
+              HARBOR_PROOF_PORT="${HARBOR_PROOF_PORT}" \
+              "$binary" -test.run '^TestPlatformLoopbackCapacityLifecycle$' -test.timeout=10m -test.v
+          fi
+
       - name: Run portable proof tests
         run: go test ./internal/platformproof ./cmd/platformproof
 

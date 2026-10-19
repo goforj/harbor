@@ -14,9 +14,9 @@ import (
 func TestValidateProjectIdentityRequestRejectsInvalidRequests(t *testing.T) {
 	t.Parallel()
 
-	nineAddresses := make([]netip.Addr, 9)
-	for index := range nineAddresses {
-		nineAddresses[index] = netip.AddrFrom4([4]byte{127, 77, 0, byte(10 + index)})
+	excessAddresses := make([]netip.Addr, 257)
+	for index := range excessAddresses {
+		excessAddresses[index] = netip.AddrFrom4([4]byte{127, 77, byte(index / 256), byte(index % 256)})
 	}
 	tests := []struct {
 		name    string
@@ -24,7 +24,7 @@ func TestValidateProjectIdentityRequestRejectsInvalidRequests(t *testing.T) {
 	}{
 		{name: "missing addresses", request: ProjectIdentityRequest{Port: 3306}},
 		{name: "one address", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.MustParseAddr("127.77.0.10")}, Port: 3306}},
-		{name: "nine addresses", request: ProjectIdentityRequest{Addresses: nineAddresses, Port: 3306}},
+		{name: "257 addresses", request: ProjectIdentityRequest{Addresses: excessAddresses, Port: 3306}},
 		{name: "duplicate addresses", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.MustParseAddr("127.77.0.10"), netip.MustParseAddr("127.77.0.10")}, Port: 3306}},
 		{name: "nonadjacent duplicate addresses", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.MustParseAddr("127.77.0.10"), netip.MustParseAddr("127.77.0.11"), netip.MustParseAddr("127.77.0.10")}, Port: 3306}},
 		{name: "non-loopback", request: ProjectIdentityRequest{Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("127.77.0.11")}, Port: 3306}},
@@ -47,11 +47,11 @@ func TestValidateProjectIdentityRequestRejectsInvalidRequests(t *testing.T) {
 func TestValidateProjectIdentityRequestAcceptsSupportedAddressCounts(t *testing.T) {
 	t.Parallel()
 
-	addresses := make([]netip.Addr, 8)
+	addresses := make([]netip.Addr, 256)
 	for index := range addresses {
-		addresses[index] = netip.AddrFrom4([4]byte{127, 77, 0, byte(10 + index)})
+		addresses[index] = netip.AddrFrom4([4]byte{127, 77, byte(index / 256), byte(index % 256)})
 	}
-	for count := 2; count <= len(addresses); count++ {
+	for _, count := range []int{2, 3, 4, 5, 6, 7, 8, 9, 100, 256} {
 		count := count
 		t.Run(fmt.Sprintf("%d_addresses", count), func(t *testing.T) {
 			t.Parallel()
