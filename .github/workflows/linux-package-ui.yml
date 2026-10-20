@@ -73,6 +73,7 @@ jobs:
         id: package
         run: |
           python3 -m unittest discover -s scripts/packageui -v
+          python3 -m unittest discover -s scripts/packageui/linux -v
           python3 scripts/packageui/verify.py assets
 
       - name: Verify identical immutable product source

@@ -31,7 +31,7 @@ def main():
         files = [Path.home() / '.local/share/goforj/harbor/harbor.db']
         for project in data.get('projects', []):
             root = Path(project['path']).resolve()
-            if not root.is_relative_to('/tmp') or not root.parent.name.startswith('harbor-package-ui-'):
+            if not root.is_relative_to(Path('/tmp').resolve()) or not root.parent.name.startswith('harbor-package-ui-'):
                 raise RuntimeError('refusing cleanup of non-fixture project')
             for name in ['.goforj.yml', 'go.mod']:
                 path = root / name
