@@ -176,27 +176,46 @@ def collect_release_diagnostics(directory):
     (directory / "release-timeout-diagnostics.json").write_text(json.dumps(diagnostics, indent=2) + "\n")
 
 
+def run_recorded(arguments, directory, receipt):
+    """run_recorded preserves bounded command evidence before propagating a release timeout."""
+    try:
+        result = subprocess.run(arguments, text=True, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired as error:
+        receipt["commands"].append({"arguments": arguments, "timed_out": True, "timeout_seconds": 180,
+                                    "stdout": bounded_text(error.output), "stderr": bounded_text(error.stderr)})
+        if arguments == [CLI, "daemon", "release"]:
+            try:
+                collect_release_diagnostics(directory)
+            except Exception as diagnostic_error:
+                receipt["release_diagnostics_error"] = str(diagnostic_error)
+        raise
+    receipt["commands"].append({"arguments": arguments, "exit_code": result.returncode,
+                                "stdout": result.stdout, "stderr": result.stderr})
+    result.check_returncode()
+    return result
+
+
+def release_network(directory):
+    """release_network applies the recovery command bound and diagnostics to normal GUI completion too."""
+    directory.mkdir(parents=True, exist_ok=True)
+    receipt = {"completed": False, "commands": []}
+    try:
+        run_recorded([CLI, "daemon", "release"], directory, receipt)
+        receipt["completed"] = True
+    except Exception as error:
+        receipt["error"] = str(error)
+        raise
+    finally:
+        (directory / "network-release-command.json").write_text(json.dumps(receipt, indent=2) + "\n")
+
+
 def recover(directory):
     """recover uses production commands and retains partial failure evidence instead of forcing host changes."""
     directory.mkdir(parents=True, exist_ok=True)
     receipt = {"completed": False, "commands": [], "retained": {}}
 
     def run(arguments):
-        try:
-            result = subprocess.run(arguments, text=True, capture_output=True, timeout=180)
-        except subprocess.TimeoutExpired as error:
-            receipt["commands"].append({"arguments": arguments, "timed_out": True, "timeout_seconds": 180,
-                                        "stdout": bounded_text(error.output), "stderr": bounded_text(error.stderr)})
-            if arguments == [CLI, "daemon", "release"]:
-                try:
-                    collect_release_diagnostics(directory)
-                except Exception as diagnostic_error:
-                    receipt["release_diagnostics_error"] = str(diagnostic_error)
-            raise
-        receipt["commands"].append({"arguments": arguments, "exit_code": result.returncode,
-                                    "stdout": result.stdout, "stderr": result.stderr})
-        result.check_returncode()
-        return result
+        return run_recorded(arguments, directory, receipt)
 
     try:
         run(["/usr/bin/swift", "desktop/packageui/macos/QuitInstalledHarbor.swift"])
@@ -260,7 +279,9 @@ def recover(directory):
 if __name__ == "__main__":
     if not sys.argv[1:]:
         recover(Path("harbor-package-ui-evidence"))
+    elif sys.argv[1:] == ["release"]:
+        release_network(Path("harbor-package-ui-evidence"))
     elif sys.argv[1:] == ["absence"]:
         verify_service_absence()
     else:
-        raise ValueError("expected absence or no arguments")
+        raise ValueError("expected release, absence, or no arguments")
