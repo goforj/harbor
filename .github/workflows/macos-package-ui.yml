@@ -133,7 +133,7 @@ jobs:
       - name: Drive installed creation, HTTPS, hide, quit, and reopen
         run: |
           set -euo pipefail
-          xcodebuild -project desktop/packageui/macos/HarborPackageUI.xcodeproj \
+          python3 scripts/packageui/capture_macos.py xcodebuild -project desktop/packageui/macos/HarborPackageUI.xcodeproj \
             -scheme HarborPackageUITests -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/harbor-package-ui-build" \
             -resultBundlePath "$RUNNER_TEMP/harbor-package-ui.xcresult" \
