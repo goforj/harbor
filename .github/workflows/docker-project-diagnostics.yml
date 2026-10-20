@@ -3,6 +3,10 @@ name: Docker project diagnostics
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/docker-project-diagnostics.yml
+      - scripts/packageui/render_docker_workflow.py
 
 permissions:
   contents: read
