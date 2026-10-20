@@ -48,7 +48,12 @@ def main():
                         raise RuntimeError('fixture project did not stop before release: ' + project['id'])
                     time.sleep(.25)
         if data.get('network_setup', {}).get('configured'):
-            run('/usr/bin/harbor', 'daemon', 'release')
+            (evidence / 'failure-before-release-snapshot.json').write_text(json.dumps(snapshot(), indent=2) + '\n')
+            try:
+                run('/usr/bin/harbor', 'daemon', 'release')
+            except subprocess.SubprocessError:
+                (evidence / 'failure-after-release-snapshot.json').write_text(json.dumps(snapshot(), indent=2) + '\n')
+                raise
             report['network_release'] = 'completed'
         else:
             # The package prerm independently refuses removal while any owned
