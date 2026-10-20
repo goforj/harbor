@@ -154,7 +154,14 @@ def launch():
 
 def window(visible):
     result = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(process.pid), '--name', 'GoForj Harbor'], capture_output=True, text=True)
-    return result.stdout.strip() if visible else not result.stdout.strip()
+    clients = []
+    for identifier in result.stdout.split():
+        geometry = dict(line.split('=', 1) for line in command('xdotool', 'getwindowgeometry', '--shell', identifier).splitlines())
+        # The tray's XEmbed window shares Harbor's title and PID, but cannot be
+        # mistaken for the product's minimum 420 by 520 client window.
+        if int(geometry['WIDTH']) >= 420 and int(geometry['HEIGHT']) >= 520:
+            clients.append(identifier)
+    return '\n'.join(clients) if visible else not clients
 
 
 def activate():
