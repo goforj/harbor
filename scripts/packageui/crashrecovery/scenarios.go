@@ -83,7 +83,7 @@ func (driver *recovery) settled(ctx context.Context, before projectEvidence, lab
 		if err != nil {
 			return false, err
 		}
-		if after.ID != before.ID || after.Path != before.Path || after.Host != before.Host || after.Address != before.Address {
+		if after.ID != before.ID || after.Path != before.Path || after.Host != before.Host || after.Address != before.Address || after.ProjectAddress != before.ProjectAddress {
 			return false, errors.New("crash settlement changed project or DNS identity")
 		}
 		if err := settledObservation(after); err != nil {
@@ -184,7 +184,7 @@ func (driver *recovery) scenarios(ctx context.Context, original projectEvidence)
 	if err := driver.checkOriginal(ctx, original, "original_after_ready_crash_retries"); err != nil {
 		return err
 	}
-	driver.evidence.Assertions = append(driver.evidence.Assertions, "explicit retries restored both projects with fresh sessions, stable distinct DNS, and trusted HTTPS")
+	driver.evidence.Assertions = append(driver.evidence.Assertions, "explicit retries restored both projects with fresh sessions, stable DNS and distinct project addresses, and trusted HTTPS")
 	driver.evidence.Stage = "normal_peer_stop"
 	if err := driver.stop(ctx); err != nil {
 		return err
@@ -241,7 +241,7 @@ func (driver *recovery) scenarios(ctx context.Context, original projectEvidence)
 		return err
 	}
 	driver.evidence.Gate = &proof
-	if starting.Address != peer.Address || starting.Host != peer.Host || starting.SessionID == peer.SessionID {
+	if starting.Address != peer.Address || starting.ProjectAddress != peer.ProjectAddress || starting.Host != peer.Host || starting.SessionID == peer.SessionID {
 		return errors.New("second peer start changed DNS identity or reused the stopped session")
 	}
 	if err := distinctProjects(original, starting); err != nil {

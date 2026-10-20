@@ -94,7 +94,7 @@ func TestInitialProject(t *testing.T) {
 
 // TestContinuityAndDistinctProjects checks exact sessions, reconnect generations, and stable unique addresses.
 func TestContinuityAndDistinctProjects(t *testing.T) {
-	before := projectEvidence{ID: "original", Path: "/fixture/project", Host: "original.test", Address: "127.0.0.2", SessionID: "session-original", Generation: 2, HTTPS200: true}
+	before := projectEvidence{ID: "original", Path: "/fixture/project", Host: "original.test", Address: "127.0.0.1", ProjectAddress: "127.0.0.2", SessionID: "session-original", Generation: 2, HTTPS200: true}
 	after := before
 	after.Generation++
 	if err := continuity(before, after); err != nil {
@@ -102,7 +102,7 @@ func TestContinuityAndDistinctProjects(t *testing.T) {
 	}
 	for _, mutate := range []func(*projectEvidence){
 		func(e *projectEvidence) { e.ID = "other" }, func(e *projectEvidence) { e.Path = "/other" }, func(e *projectEvidence) { e.Host = "other.test" },
-		func(e *projectEvidence) { e.Address = "127.0.0.3" }, func(e *projectEvidence) { e.SessionID = "replacement" }, func(e *projectEvidence) { e.Generation-- }, func(e *projectEvidence) { e.HTTPS200 = false },
+		func(e *projectEvidence) { e.Address = "127.0.0.3" }, func(e *projectEvidence) { e.ProjectAddress = "127.0.0.4" }, func(e *projectEvidence) { e.SessionID = "replacement" }, func(e *projectEvidence) { e.Generation-- }, func(e *projectEvidence) { e.HTTPS200 = false },
 	} {
 		changed := before
 		mutate(&changed)
@@ -110,11 +110,11 @@ func TestContinuityAndDistinctProjects(t *testing.T) {
 			t.Fatal("continuity mismatch admitted")
 		}
 	}
-	peer := projectEvidence{ID: "peer", Host: "peer.test", Address: "127.0.0.3", SessionID: "peer-session"}
+	peer := projectEvidence{ID: "peer", Host: "peer.test", Address: "127.0.0.1", ProjectAddress: "127.0.0.3", SessionID: "peer-session"}
 	if err := distinctProjects(before, peer); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutate := range []func(*projectEvidence){func(e *projectEvidence) { e.ID = before.ID }, func(e *projectEvidence) { e.Host = before.Host }, func(e *projectEvidence) { e.Address = before.Address }, func(e *projectEvidence) { e.SessionID = before.SessionID }, func(e *projectEvidence) { e.SessionID = "" }} {
+	for _, mutate := range []func(*projectEvidence){func(e *projectEvidence) { e.ID = before.ID }, func(e *projectEvidence) { e.Host = before.Host }, func(e *projectEvidence) { e.ProjectAddress = before.ProjectAddress }, func(e *projectEvidence) { e.SessionID = before.SessionID }, func(e *projectEvidence) { e.SessionID = "" }} {
 		changed := peer
 		mutate(&changed)
 		if err := distinctProjects(before, changed); err == nil {
@@ -288,7 +288,7 @@ func TestProcessBackedSessionDistinguishesSupervisionFromAuthenticatedAttachment
 
 // TestFreshSessionRequiresExplicitRetryContinuity checks identity stability while requiring a new session.
 func TestFreshSessionRequiresExplicitRetryContinuity(t *testing.T) {
-	before := projectEvidence{ID: "original", Path: "/fixture/project", Host: "original.test", Address: "127.0.0.2", SessionID: "old"}
+	before := projectEvidence{ID: "original", Path: "/fixture/project", Host: "original.test", Address: "127.0.0.1", ProjectAddress: "127.0.0.2", SessionID: "old"}
 	after := before
 	after.SessionID = "new"
 	after.Generation = 2
@@ -300,7 +300,7 @@ func TestFreshSessionRequiresExplicitRetryContinuity(t *testing.T) {
 	}
 	for _, mutate := range []func(*projectEvidence){
 		func(e *projectEvidence) { e.ID = "other" }, func(e *projectEvidence) { e.Path = "/other" },
-		func(e *projectEvidence) { e.Host = "other.test" }, func(e *projectEvidence) { e.Address = "127.0.0.3" },
+		func(e *projectEvidence) { e.Host = "other.test" }, func(e *projectEvidence) { e.Address = "127.0.0.3" }, func(e *projectEvidence) { e.ProjectAddress = "127.0.0.4" },
 		func(e *projectEvidence) { e.SessionID = before.SessionID }, func(e *projectEvidence) { e.SessionID = "" },
 		func(e *projectEvidence) { e.SessionState = domain.SessionPlanned }, func(e *projectEvidence) { e.State = domain.ProjectFailed },
 		func(e *projectEvidence) { e.HTTPS200 = false },
@@ -423,6 +423,51 @@ func TestSettledObservationRejectsFinalReadDrift(t *testing.T) {
 		mutate(&changed)
 		if err := settledObservation(changed); err == nil {
 			t.Fatalf("admitted final observation drift: %#v", changed)
+		}
+	}
+}
+
+// TestAssignedProjectAddressSelectsOnlyCanonicalProviderAddress excludes unrelated environment material from evidence.
+func TestAssignedProjectAddressSelectsOnlyCanonicalProviderAddress(t *testing.T) {
+	environment := control.ProjectEnvironment{ProjectID: "peer", OverridesAvailable: true, Overrides: []control.ProjectEnvironmentVariable{
+		{Name: "IP_ADDRESS", Value: "127.77.0.10", Source: "runtime.provider"},
+		{Name: "DEV_SERVICE_IP_ADDRESS", Value: "127.77.0.10", Source: "runtime.provider"},
+		{Name: "APP_HOST", Value: "127.77.0.99", Source: "project.address"},
+		{Name: "PRIVATE_KEY", Value: "do-not-retain", Source: "provider"},
+	}, Files: []control.ProjectEnvironmentFile{{Name: ".env", Contents: "do-not-retain"}}}
+	address, err := assignedProjectAddress(environment, "peer", "127.0.0.1")
+	if err != nil || address != "127.77.0.10" {
+		t.Fatalf("address = %q, error = %v", address, err)
+	}
+	for _, mutate := range []func(*control.ProjectEnvironment){
+		func(e *control.ProjectEnvironment) { e.ProjectID = "other" },
+		func(e *control.ProjectEnvironment) { e.OverridesAvailable = false },
+		func(e *control.ProjectEnvironment) { e.Overrides = nil },
+		func(e *control.ProjectEnvironment) { e.Overrides = e.Overrides[1:] },
+		func(e *control.ProjectEnvironment) { e.Overrides = append(e.Overrides[:1], e.Overrides[2:]...) },
+		func(e *control.ProjectEnvironment) { e.Overrides[0].Source = "project.address" },
+		func(e *control.ProjectEnvironment) { e.Overrides[1].Source = "project.address" },
+		func(e *control.ProjectEnvironment) { e.Overrides[1].Value = "127.77.0.11" },
+		func(e *control.ProjectEnvironment) { e.Overrides = append(e.Overrides, e.Overrides[0]) },
+		func(e *control.ProjectEnvironment) { e.Overrides = append(e.Overrides, e.Overrides[1]) },
+	} {
+		changed := environment
+		changed.Overrides = append([]control.ProjectEnvironmentVariable{}, environment.Overrides...)
+		mutate(&changed)
+		if _, err := assignedProjectAddress(changed, "peer", "127.0.0.1"); err == nil {
+			t.Fatal("invalid project assignment accepted")
+		}
+	}
+	for _, value := range []string{"", "127.0.0.1", "127.077.0.10", "127.77.0.10 ", "::1", "::ffff:127.77.0.10", "192.0.2.1", "localhost"} {
+		if validProjectAddress(value, "127.0.0.1") {
+			t.Errorf("invalid assignment accepted: %q", value)
+		}
+		changed := environment
+		changed.Overrides = append([]control.ProjectEnvironmentVariable{}, environment.Overrides...)
+		changed.Overrides[0].Value = value
+		changed.Overrides[1].Value = value
+		if _, err := assignedProjectAddress(changed, "peer", "127.0.0.1"); err == nil {
+			t.Fatal("invalid provider assignment accepted")
 		}
 	}
 }

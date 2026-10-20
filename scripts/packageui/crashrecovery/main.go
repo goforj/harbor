@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 
 // projectEvidence retains only the bounded observations necessary to establish recovery continuity.
 type projectEvidence struct {
+	ProjectAddress string              `json:"project_address"`
 	ID             domain.ProjectID    `json:"id"`
 	Path           string              `json:"path"`
 	State          domain.ProjectState `json:"state"`
@@ -390,6 +392,43 @@ func probeResponse(ctx context.Context, url string) (int, string, error) {
 	return response.StatusCode, string(body), nil
 }
 
+// validProjectAddress requires a canonical private IPv4 loopback assignment separate from shared ingress.
+func validProjectAddress(value, ingress string) bool {
+	address, err := netip.ParseAddr(value)
+	return err == nil && address.Is4() && address.IsLoopback() && address.String() == value && value != ingress
+}
+
+// assignedProjectAddress retains only the agreeing provider address invariants without copying environment files or unrelated values.
+func assignedProjectAddress(environment control.ProjectEnvironment, id domain.ProjectID, ingress string) (string, error) {
+	if environment.ProjectID != id || !environment.OverridesAvailable {
+		return "", errors.New("project address overrides are unavailable or uncorrelated")
+	}
+	address, serviceAddress := "", ""
+	for _, override := range environment.Overrides {
+		if override.Name != "IP_ADDRESS" && override.Name != "DEV_SERVICE_IP_ADDRESS" {
+			continue
+		}
+		if override.Source != "runtime.provider" || !validProjectAddress(override.Value, ingress) {
+			return "", errors.New("provider project address is invalid")
+		}
+		if override.Name == "IP_ADDRESS" {
+			if address != "" {
+				return "", errors.New("provider project address is duplicated")
+			}
+			address = override.Value
+		} else {
+			if serviceAddress != "" {
+				return "", errors.New("provider service address is duplicated")
+			}
+			serviceAddress = override.Value
+		}
+	}
+	if address == "" || serviceAddress == "" || address != serviceAddress {
+		return "", errors.New("provider project address invariants are missing or disagree")
+	}
+	return address, nil
+}
+
 // processBackedSession recognizes supervised launch evidence without claiming authenticated managed attachment.
 // ProjectActivity deliberately omits native process facts; these states require persisted process evidence in Harbor.
 func processBackedSession(project projectEvidence) bool {
@@ -398,7 +437,7 @@ func processBackedSession(project projectEvidence) bool {
 
 // freshSession requires a successful explicit retry with a new lifecycle and the same public identity.
 func freshSession(before, after projectEvidence) error {
-	if before.ID != after.ID || before.Path != after.Path || before.Host != after.Host || before.Address != after.Address || after.SessionID == before.SessionID || !processBackedSession(after) || after.State != domain.ProjectReady || !after.HTTPS200 {
+	if before.ID != after.ID || before.Path != after.Path || before.Host != after.Host || before.Address != after.Address || before.ProjectAddress != after.ProjectAddress || after.SessionID == before.SessionID || !processBackedSession(after) || after.State != domain.ProjectReady || !after.HTTPS200 {
 		return errors.New("explicit retry did not create a fresh Ready session with stable public identity")
 	}
 	return nil
@@ -424,6 +463,14 @@ func (driver *recovery) observe(ctx context.Context, id domain.ProjectID, health
 	if err != nil {
 		return result, err
 	}
+	environment, err := driver.client.ProjectEnvironment(ctx, control.ProjectEnvironmentRequest{ProjectID: id})
+	if err != nil {
+		return result, err
+	}
+	result.ProjectAddress, err = assignedProjectAddress(environment, id, result.Address)
+	if err != nil {
+		return result, err
+	}
 	if healthy {
 		if project.State != domain.ProjectReady || !processBackedSession(result) {
 			return result, errors.New("project is not Ready with a process-backed session")
@@ -438,15 +485,15 @@ func (driver *recovery) observe(ctx context.Context, id domain.ProjectID, health
 
 // continuity checks that ordinary peer lifecycle work preserves the original session and public identity.
 func continuity(before, after projectEvidence) error {
-	if before.ID != after.ID || before.Path != after.Path || before.Host != after.Host || before.Address != after.Address || before.SessionID == "" || before.SessionID != after.SessionID || after.Generation < before.Generation || !after.HTTPS200 {
+	if before.ID != after.ID || before.Path != after.Path || before.Host != after.Host || before.Address != after.Address || before.ProjectAddress != after.ProjectAddress || before.SessionID == "" || before.SessionID != after.SessionID || after.Generation < before.Generation || !after.HTTPS200 {
 		return errors.New("ordinary peer lifecycle changed the original session or public identity")
 	}
 	return nil
 }
 
-// distinctProjects rejects a shared session or public address between the original and peer.
+// distinctProjects requires isolated project addresses and sessions while allowing shared public ingress.
 func distinctProjects(original, peer projectEvidence) error {
-	if original.ID == peer.ID || original.Host == peer.Host || original.Address == peer.Address || original.SessionID == "" || peer.SessionID == "" || original.SessionID == peer.SessionID {
+	if original.ID == peer.ID || original.Host == peer.Host || original.ProjectAddress == peer.ProjectAddress || !validProjectAddress(original.ProjectAddress, original.Address) || !validProjectAddress(peer.ProjectAddress, peer.Address) || original.SessionID == "" || peer.SessionID == "" || original.SessionID == peer.SessionID {
 		return errors.New("independent projects collided in identity, DNS, or session")
 	}
 	return nil
