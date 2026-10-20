@@ -14,6 +14,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/platform/windowsjob"
 	"golang.org/x/sys/windows"
 )
 
@@ -154,7 +155,7 @@ func (installation *Installation) startAdmitted(path, role string, arguments []s
 	child.job = job
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	limits.BasicLimitInformation.LimitFlags = installedRoleJobLimits(role)
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+	if err := windowsjob.Set(job, windows.JobObjectExtendedLimitInformation, unsafe.Pointer(&limits), uint32(unsafe.Sizeof(limits))); err != nil {
 		return nil, err
 	}
 	if err := windows.AssignProcessToJobObject(job, created.Process); err != nil {

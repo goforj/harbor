@@ -64,7 +64,7 @@ jobs:
 
       - name: Verify installed Windows session lifetime admission
         if: runner.os == 'Windows'
-        run: go test ./internal/platform/windowsinstallation -run '^TestInstalledRoleSessionLifetimeLimits$' -count=1
+        run: go test ./internal/platform/windowsinstallation ./internal/platform/windowsjob -run '^(TestInstalledRoleSessionLifetimeLimits|TestInformation)' -count=1
 
       - name: Build focused Windows NRPT resolver test
         if: runner.os == 'Windows'

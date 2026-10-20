@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/platform/windowsjob"
 	"golang.org/x/sys/windows"
 )
 
@@ -110,7 +111,7 @@ func prepareSessionPlatformProcess(command *exec.Cmd, projectID domain.ProjectID
 	}
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+	if err := windowsjob.Set(job, windows.JobObjectExtendedLimitInformation, unsafe.Pointer(&limits), uint32(unsafe.Sizeof(limits))); err != nil {
 		windows.CloseHandle(job)
 		return nil, err
 	}
@@ -134,7 +135,7 @@ func sessionProcessCreationFlags() (uint32, error) {
 		return 0, nil
 	}
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-	if err := windows.QueryInformationJobObject(0, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits)), nil); err != nil {
+	if err := windowsjob.Query(0, windows.JobObjectExtendedLimitInformation, unsafe.Pointer(&limits), uint32(unsafe.Sizeof(limits))); err != nil {
 		return 0, fmt.Errorf("observe parent job lifetime policy: %w", err)
 	}
 	return sessionBreakawayFlags(limits.BasicLimitInformation.LimitFlags), nil
@@ -163,7 +164,7 @@ func openOwnedSessionJob(projectID domain.ProjectID, sessionID domain.SessionID,
 	}
 	job := windows.Handle(handle)
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-	if err := windows.QueryInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits)), nil); err != nil {
+	if err := windowsjob.Query(job, windows.JobObjectExtendedLimitInformation, unsafe.Pointer(&limits), uint32(unsafe.Sizeof(limits))); err != nil {
 		windows.CloseHandle(job)
 		return 0, err
 	}

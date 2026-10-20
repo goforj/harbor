@@ -1384,6 +1384,7 @@ type managedProcess struct {
 	adopted           bool
 	detached          atomic.Bool
 	detachDone        chan struct{}
+	monitorDone       chan struct{}
 	brokerAttachment  OutputBrokerAttachment
 	command           *exec.Cmd
 	platform          *platformProcess

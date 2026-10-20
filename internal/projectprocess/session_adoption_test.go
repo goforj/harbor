@@ -113,6 +113,13 @@ func TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption(t *testing.T) 
 		if info := handle.Info(); info.Evidence.PID != session.Process.PID || info.Evidence.BirthToken != session.Process.BirthToken || info.SessionID != session.ID {
 			t.Fatalf("adoption changed the process or session: %#v", info)
 		}
+		if root, found := owner.serviceObservationCheckout(session.ProjectID, session.ID); !found || root != checkout {
+			t.Fatalf("adopted service observation checkout = %q, %t; want %q", root, found, checkout)
+		}
+		resources, err := owner.ObserveFrameworkResources(t.Context(), session.ProjectID, session.ID, EnvironmentOverrides{"IP_ADDRESS": "127.77.9.8"})
+		if err != nil || !resources.Supported || len(resources.Resources) != 1 || resources.Resources[0].URL != "http://127.77.9.8:8025" {
+			t.Fatalf("adopted resource observation = %#v, %v", resources, err)
+		}
 		waitForFreshSessionOutput(t, owner, session)
 		if _, err := owner.Start(t.Context(), StartRequest{ProjectID: session.ProjectID, SessionID: "session-duplicate", CheckoutRoot: checkout, EnvironmentOverrides: projectProcessTestEnvironment()}); !errors.Is(err, ErrProjectRunning) {
 			t.Fatalf("adopted scope did not fence a duplicate launch: %v", err)

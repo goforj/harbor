@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/platform/windowsjob"
 	"golang.org/x/sys/windows"
 )
 
@@ -41,10 +42,10 @@ func preparePlatformProcess(command *exec.Cmd) (*platformProcess, error) {
 	}
 	information := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	information.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(
+	if err := windowsjob.Set(
 		job,
 		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&information)),
+		unsafe.Pointer(&information),
 		uint32(unsafe.Sizeof(information)),
 	); err != nil {
 		windows.CloseHandle(job)
@@ -152,12 +153,11 @@ func (process *platformProcess) treeAlive(pid int) (bool, error) {
 		return false, nil
 	}
 	information := jobObjectBasicAccountingInformation{}
-	err := windows.QueryInformationJobObject(
+	err := windowsjob.Query(
 		process.job,
 		windows.JobObjectBasicAccountingInformation,
-		uintptr(unsafe.Pointer(&information)),
+		unsafe.Pointer(&information),
 		uint32(unsafe.Sizeof(information)),
-		nil,
 	)
 	if err != nil {
 		return false, err
