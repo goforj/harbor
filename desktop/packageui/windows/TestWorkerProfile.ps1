@@ -40,6 +40,13 @@ try {
 } catch {
     $receipt.error = $_.Exception.ToString()
     $originalFailure = $_
+    $nativeErrors = [Collections.Generic.List[int]]::new()
+    $exception = $originalFailure.Exception
+    while ($null -ne $exception) {
+        if ($exception -is [ComponentModel.Win32Exception]) { $nativeErrors.Add($exception.NativeErrorCode) }
+        $exception = $exception.InnerException
+    }
+    $receipt.native_error_codes = @($nativeErrors.ToArray())
 } finally {
     $receipt.child_token = [HarborUIProfile]::LastLaunchFacts
     $receipt.access_receipts = @([HarborUIProfile]::AccessReceipts)

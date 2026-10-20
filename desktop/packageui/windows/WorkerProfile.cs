@@ -179,6 +179,13 @@ public static class HarborUIProfile {
         try { return DescribeToken(token, Process.GetCurrentProcess().Id); }
         finally { CloseHandle(token); }
     }
+    static string EffectiveControllerFacts() {
+        using (WindowsIdentity identity=WindowsIdentity.GetCurrent()) {
+            List<string> privileges=new List<string>();
+            foreach (LuidAndAttributes privilege in Privileges(identity.Token)) privileges.Add(PrivilegeName(privilege.luid)+":"+privilege.attributes);
+            return DescribeToken(identity.Token, Process.GetCurrentProcess().Id)+";privileges="+String.Join(",", privileges.ToArray());
+        }
+    }
     public static void AssertProductProcess(int pid) {
         IntPtr process = OpenProcess(0x1000, false, pid);
         if (process == IntPtr.Zero) throw new System.ComponentModel.Win32Exception();
@@ -276,6 +283,7 @@ public static class HarborUIProfile {
         ProcessInfo probe=new ProcessInfo();
         Exception originalFailure=null;
         try {
+            AccessReceipts.Add("probe-controller:"+EffectiveControllerFacts());
             // The measured token may originate in a product grandchild, outside AsUser's direct restricted-token exemption.
             if (!CreateProcessWithTokenW(token, 0, executable, command, 4, IntPtr.Zero, privateRoot, ref startup, out probe)) throw new Win32Exception(Marshal.GetLastWin32Error(), "launch permission probe with the exact installed primary token");
             IntPtr actual;
