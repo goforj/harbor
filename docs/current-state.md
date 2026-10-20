@@ -1,5 +1,11 @@
 # Current Implementation State
 
+## Installed crash-recovery acceptance (2026-10-20, validation in progress)
+
+The existing macOS, Linux, and Windows installed GUI workflows now invoke one shared recovery driver against the admitted installed daemon. It registers a second released GoForj project, crashes only the authenticated installed daemon, and checks both projects' existing session identities, distinct OS-resolved loopback addresses, and system-trusted HTTPS. A native Go initializer in the disposable peer App then blocks startup after attachment. A second daemon crash must settle that exact interrupted operation and close its proof listener before a fresh Start can succeed with a new session and the same address. The original project must remain healthy throughout peer failure and retry. The driver stops and unregisters only its own peer, preserves its source, and leaves the original project for the real GUI Stop action.
+
+Native process facts and the installed service/job or retained Windows handle constrain crash authority. Recovery uses the ordinary installed manager start path; this does not establish unattended restart policy. The test adds no development shell hooks, product configuration, state migration, or alternate daemon. The local focused tests and native XCTest compilation pass; hosted installed execution is still pending. Existing package provenance, consent-profile, signing, and source-equivalence boundaries remain in force.
+
 ## Main integration (2026-10-20)
 
 [PR #13](https://github.com/goforj/harbor/pull/13) is merged into `main` at `e82e189b236bc56c51d357cf3a500e9f4d7773b7`, including PR #16. Supporting PRs #14 and #15 were closed as superseded after checking that their work was preserved. Their older Windows failures predate the passing installed Windows GUI run below. Fresh [main CI](https://github.com/goforj/harbor/actions/runs/39459846653), [native Windows three-project lifecycle](https://github.com/goforj/harbor/actions/runs/39459846523), and [native Linux three-project lifecycle](https://github.com/goforj/harbor/actions/runs/39459846560) pass. The merge also started [macOS lifecycle](https://github.com/goforj/harbor/actions/runs/39459846702) and [platform smoke](https://github.com/goforj/harbor/actions/runs/39459846564) checks. No Harbor tag or public release was created.

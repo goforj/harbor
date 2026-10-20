@@ -267,11 +267,27 @@ try:
     state('ready')
     https(row['slug'])
     capture('reopened-running-project')
+    # The driver uses authenticated control requests and native service identity.
+    # Keep this original graphical process alive across both daemon crashes.
+    recovery_tool = Path(os.environ['HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL'])
+    assert recovery_tool.is_absolute() and recovery_tool.is_file()
+    subprocess.run([
+        str(recovery_tool), '--project-id', row['id'],
+        '--project-directory', str(directory.resolve()),
+        '--evidence', str((EVIDENCE / 'installed-crash-recovery.json').resolve()),
+    ], check=True, timeout=900, stdout=LOG, stderr=subprocess.STDOUT)
+    assert process.poll() is None
+    state('ready')
+    https(row['slug'])
     if not find('Stop project'):
         click('Projects')
         app = application()
         link = wait('project link', lambda: next((node for node in nodes(application()) if node.getRoleName() == 'link' and 'Harbor Installed Linux UI' in node.name), None))
         assert link.queryAction().doAction(0)
+    # This product control requires a connected daemon and a fresh snapshot.
+    wait('graphical client reconnected with live project controls', lambda:
+         find('Stop project') and find('Stop project').getState().contains(pyatspi.STATE_ENABLED), 60)
+    capture('daemon-crash-recovered-live-ui')
     click('Stop project')
     state('stopped')
     quit_ui()
@@ -285,6 +301,7 @@ try:
         'quit_method': 'native GTK menu',
         'ctrl_q': 'unsupported by pinned Wails GTK3 menu accelerator implementation',
         'relaunch': 'new installed process, registration retained and HTTPS 200',
+        'daemon_crash_recovery': 'two main-process crashes, live GUI reconnect, HTTPS 200, and enabled Stop',
         'stop': 'stopped registration retained',
     }, indent=2) + '\n')
 except BaseException:

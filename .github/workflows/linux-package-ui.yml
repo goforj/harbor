@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/linux-package-ui.yml
       - scripts/packageui/linux/**
+      - scripts/packageui/crashrecovery/**
       - scripts/packageui/verify.py
       - scripts/packageui/test_verify.py
   workflow_dispatch:
@@ -105,7 +106,10 @@ jobs:
           test "$("$binary_directory/forj" --version)" = v0.35.1
           go test ./scripts/packageui/fixtureapproval
           go build -o "$binary_directory/harbor-fixture-approval" ./scripts/packageui/fixtureapproval
+          GOWORK=off go test ./scripts/packageui/crashrecovery
+          GOWORK=off go build -o "$binary_directory/harbor-installed-crash-recovery" ./scripts/packageui/crashrecovery
           printf 'HARBOR_PACKAGE_UI_APPROVAL_TOOL=%s\n' "$binary_directory/harbor-fixture-approval" >> "$GITHUB_ENV"
+          printf 'HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL=%s\n' "$binary_directory/harbor-installed-crash-recovery" >> "$GITHUB_ENV"
           printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
 
       - name: Install virtual X11 desktop and native accessibility prerequisites
@@ -153,7 +157,7 @@ jobs:
           sudo -n chmod 0644 "$rule"
           sudo -n systemctl restart polkit.service
 
-      - name: Drive installed native creation, Start, close, quit, relaunch, and Stop
+      - name: Drive installed native creation, Start, relaunch, daemon crash recovery, and Stop
         run: |
           set -euo pipefail
           test -S "$XDG_RUNTIME_DIR/bus"

@@ -2,6 +2,8 @@
 
 ## Current continuation (2026-10-20)
 
+The user authorized installed-app crash recovery and peer-isolation checks. Work is on `test/installed-crash-recovery-20261020` in `/tmp/harbor-package-ui-20261019`, isolated from the active developer checkouts and installations. The three existing installed GUI workflows share `scripts/packageui/crashrecovery`; no additional workflow was added. Both attached-session continuity and interrupted-start settlement/retry are asserted through the installed daemon and real GUI reconnect/Stop. Local focused Go/Python tests, Linux/Windows compilation, and native XCTest compilation pass. Hosted installed runs remain required before claiming recovery proof.
+
 The user authorized integration, and [PR #13](https://github.com/goforj/harbor/pull/13) is merged into `main` at `e82e189b236bc56c51d357cf3a500e9f4d7773b7`. PR #16 was included and is marked merged. PRs #14 and #15 were closed as superseded after verifying that their changes were preserved. Neither Harbor nor GoForj has an open PR at this checkpoint. GoForj v0.35.1 is released and installed locally. Fresh hosted installed GUI lifecycle, cleanup, and uninstall receipts pass for macOS, Ubuntu, and Windows; exact evidence and platform limits are in [current state](./current-state.md). The earlier Windows timeout remains unexplained. These receipts do not establish genuine consent, a supported Windows client/UAC profile, release readiness, or containment. No Harbor tag or publication was requested or created.
 
 ## Released CLI validation (2026-10-20)
@@ -10,7 +12,7 @@ GoForj PR #253 is merged and released as v0.35.1 at `09b41ca77b523c0724545ecc20b
 
 ## Immediate next goal
 
-Confirm the remaining main-branch macOS lifecycle and platform smoke checks for integration commit `e82e189`. [CI](https://github.com/goforj/harbor/actions/runs/39459846653) and the fresh native Windows and Linux lifecycle checks already pass. Production signing, genuine interactive consent, additional desktop profiles, and recovery/update proof remain separate work. Package source is `76662ca`, Windows harness is `006915c`, and the integration introduces no additional product changes. The Windows selector fix is harness-only and preserves ordinal matching and ambiguity rejection. Work is isolated in `/tmp/harbor-package-ui-20261019`; preserve the active developer checkouts and installations.
+Run the three installed GUI workflows for the recovery branch against the existing exact-source packages and fix any native failures without weakening admission or changing evidence expectations. The integration commit `e82e189` passed main CI, Windows/Linux/macOS native lifecycle, and all-platform smoke. Package source remains `76662ca`; the recovery work so far changes only test harnesses and documentation. Recovery starts the installed manager explicitly and does not prove unattended automatic restart. Production signing, genuine interactive consent, supported client profiles, reboot, and update proof remain separate work.
 
 Product-source admission remains strict. Documentation and test-harness edits are excluded from product-source comparisons.
 

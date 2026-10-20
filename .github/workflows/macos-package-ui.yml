@@ -6,6 +6,7 @@ on:
       - .github/workflows/macos-package-ui.yml
       - desktop/packageui/macos/**
       - scripts/packageui/*.py
+      - scripts/packageui/crashrecovery/**
   workflow_dispatch:
     inputs:
       package_run_id:
@@ -94,8 +95,11 @@ jobs:
           GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
           test "$("$binary_directory/forj" --version)" = v0.35.1
           GOWORK=off go build -o "$binary_directory/harbor-fixture-approval" ./scripts/packageui/fixtureapproval
+          GOWORK=off go test ./scripts/packageui/crashrecovery -count=1
+          GOWORK=off go build -o "$binary_directory/harbor-crash-recovery" ./scripts/packageui/crashrecovery
           printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
           printf 'HARBOR_PACKAGE_UI_APPROVAL_TOOL=%s/harbor-fixture-approval\n' "$binary_directory" >> "$GITHUB_ENV"
+          printf 'HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL=%s/harbor-crash-recovery\n' "$binary_directory" >> "$GITHUB_ENV"
 
       - name: Expose prerequisite toolchain to the graphical user session
         run: |
@@ -140,14 +144,18 @@ jobs:
       - name: Seed explicit foreign administrator trust baseline
         run: python3 scripts/packageui/foreign_trust_macos.py seed
 
-      - name: Drive installed creation, HTTPS, hide, quit, and reopen
+      - name: Drive installed creation, daemon crash recovery, and native UI lifecycle
         run: |
           set -euo pipefail
-          python3 scripts/packageui/capture_macos.py xcodebuild -project desktop/packageui/macos/HarborPackageUI.xcodeproj \
+          xcodebuild -project desktop/packageui/macos/HarborPackageUI.xcodeproj \
             -scheme HarborPackageUITests -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/harbor-package-ui-build" \
+            build-for-testing CODE_SIGN_IDENTITY=- ONLY_ACTIVE_ARCH=YES
+          runner_file="$(python3 scripts/packageui/capture_macos.py configure-runner "$RUNNER_TEMP/harbor-package-ui-build/Build/Products")"
+          python3 scripts/packageui/capture_macos.py xcodebuild test-without-building \
+            -xctestrun "$runner_file" -destination 'platform=macOS' \
             -resultBundlePath "$RUNNER_TEMP/harbor-package-ui.xcresult" \
-            -parallel-testing-enabled NO test CODE_SIGN_IDENTITY=- ONLY_ACTIVE_ARCH=YES
+            -parallel-testing-enabled NO
           shasum -a 256 -c "$RUNNER_TEMP/harbor-ui-installed-app.sha256"
           mkdir -p harbor-package-ui-evidence
           cp /tmp/harbor-package-ui-evidence.json harbor-package-ui-evidence/installed-ui.json
@@ -275,6 +283,7 @@ jobs:
             ${{ runner.temp }}/harbor-package-ui.xcresult
             harbor-package-ui-evidence/
             /tmp/harbor-package-ui-native-logs/
+            /tmp/harbor-package-ui-crash-recovery.json
             package-assets/provenance.json
             package-assets/SHA256SUMS
           if-no-files-found: error

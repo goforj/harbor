@@ -367,6 +367,24 @@ try {
     Await-ProjectState 'ready'
     Assert-HTTPS
     Save-Observation 'reopened-running-project'
+    $recoveryTool = $env:HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL
+    if (-not $recoveryTool -or -not (Test-Path -LiteralPath $recoveryTool -PathType Leaf)) { throw 'installed crash recovery client is missing' }
+    try {
+        & $recoveryTool --project-id (Get-Project).id --project-directory $projectDirectory --evidence (Join-Path $EvidenceDirectory 'crash-recovery.json')
+        if ($LASTEXITCODE -ne 0) { throw 'installed crash recovery client failed' }
+    } finally {
+        # The original retained process exited intentionally; refresh only the selected installed daemon for subsequent approval and cleanup.
+        $replacement = @(Get-Process -Name harbord -ErrorAction SilentlyContinue)
+        if ($replacement.Count -ne 1) { throw 'exactly one recovered installed daemon is required' }
+        $null = $replacement[0].Handle
+        [HarborUIProfile]::AssertProductProcess($replacement[0].Id)
+        if ($replacement[0].HasExited -or $replacement[0].Path -cne $daemonPath) { throw 'recovered daemon is outside admitted installation' }
+        if ($null -ne $daemonProcess) { $daemonProcess.Dispose() }
+        $daemonProcess = $replacement[0]
+    }
+    Await-ProjectState 'ready'
+    Assert-HTTPS
+    Invoke-Button 'Refresh Harbor state'
     if ($null -eq (Find-Control 'Stop project' ([System.Windows.Automation.ControlType]::Button))) {
         Invoke-Button 'Projects'
         $projectLink = $null
@@ -383,6 +401,8 @@ try {
         }
         $script:projectLink.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     }
+    $null = Await-Control 'Stop project' ([System.Windows.Automation.ControlType]::Button)
+    Save-Observation 'reconnected-after-crash-recovery'
     Invoke-Button 'Stop project'
     Await-ProjectState 'stopped'
     Invoke-NativeUIQuit $reopenedProcess
@@ -390,7 +410,7 @@ try {
         application=$desktopPath; launcher=$launcherPath; daemon=$daemonPath; bundle_digest=$selection.bundle_digest; project_directory=$projectDirectory; project_id=(Get-Project).id
         creation='production graphical wizard through native UIAutomation'; start='ready and system-trusted HTTPS 200'
         window_close='project remains ready'; second_launch='original process restored'
-        ui_quit='daemon and project remain ready'; ui_reopen='registration retained and HTTPS 200'; final_project_state='stopped'
+        crash_recovery='installed authenticated daemon crashes, safe retry, healthy peer and live GUI reconnect'; ui_quit='daemon and project remain ready'; ui_reopen='registration retained and HTTPS 200'; final_project_state='stopped'
     } | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'installed-ui.json') -Encoding utf8
 } catch {
     $originalFailure = $_

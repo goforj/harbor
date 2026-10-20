@@ -344,6 +344,8 @@ End-to-end desktop smoke runs inside real interactive sessions: a per-user Launc
 
 ## Install, uninstall, reboot, and update
 
+The installed GUI workflows include crash-recovery acceptance through `scripts/packageui/crashrecovery`. After graphical creation, a second isolated GoForj project supplies a healthy peer and a deterministic native Go startup gate. The driver crashes only the authenticated installed daemon, restarts through its installed service manager, and requires session continuity, stable distinct DNS identities, and trusted HTTPS. A second crash during the peer's gated startup must retire its operation and listener before a new intent can retry. The original project must remain healthy, peer removal must preserve source, and the graphical client must reconnect and perform the final Stop. Incomplete cleanup, quarantine, missing receipts, or changed sessions fail acceptance. These checks do not prove unattended restart, reboot, interactive consent, Docker-provider behavior, or signed update.
+
 Release candidates run from clean OS images:
 
 1. install the signed `N-1` package and record its committed sequence/bundle digest;

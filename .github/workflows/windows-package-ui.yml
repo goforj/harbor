@@ -6,6 +6,7 @@ on:
       - .github/workflows/windows-package-ui.yml
       - desktop/packageui/windows/**
       - scripts/packageui/windows/**
+      - scripts/packageui/crashrecovery/**
       - scripts/packageui/verify.py
       - scripts/packageui/test_verify.py
   workflow_dispatch:
@@ -58,7 +59,7 @@ jobs:
     if: (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && inputs.profile_only != true
     needs: worker-profile
     runs-on: windows-2025
-    timeout-minutes: 35
+    timeout-minutes: 50
     env:
       GOWORK: "off"
     steps:
@@ -207,6 +208,12 @@ jobs:
           go build -trimpath -ldflags "-X github.com/goforj/harbor/internal/platform/windowsinstallation.PublisherThumbprint=$thumbprint" -o $path ./scripts/packageui/windowsapproval
           if ($LASTEXITCODE -ne 0) { throw 'networking fixture client build failed' }
           "HARBOR_PACKAGE_UI_WINDOWS_APPROVAL_TOOL=$path" | Out-File $env:GITHUB_ENV -Append
+          go test ./scripts/packageui/crashrecovery -count=1
+          if ($LASTEXITCODE -ne 0) { throw 'installed crash recovery client tests failed' }
+          $recovery = "$env:RUNNER_TEMP\harbor-ui-tools\harbor-crash-recovery.exe"
+          go build -trimpath -ldflags "-X github.com/goforj/harbor/internal/platform/windowsinstallation.PublisherThumbprint=$thumbprint" -o $recovery ./scripts/packageui/crashrecovery
+          if ($LASTEXITCODE -ne 0) { throw 'installed crash recovery client build failed' }
+          "HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL=$recovery" | Out-File $env:GITHUB_ENV -Append
       - name: Release hosted runner canonical ingress sockets
         if: inputs.window_only != true
         shell: pwsh

@@ -10,7 +10,7 @@ final class HarborPackageUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        executionTimeAllowance = 600
+        executionTimeAllowance = 1200
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: cli))
         XCTAssertTrue(FileManager.default.fileExists(atPath: installedApplication.path))
         application = XCUIApplication(bundleIdentifier: "com.goforj.harbor")
@@ -111,6 +111,14 @@ final class HarborPackageUITests: XCTestCase {
         }
         try waitUntil("reopened project Stop control", timeout: 30) { self.application.buttons["Stop project"].exists }
         attach("reopened-running-project")
+        try exerciseCrashRecovery(identifier, projectDirectory: projectDirectory)
+        try click("Refresh Harbor state")
+        try awaitProject(identifier, state: "ready")
+        try waitUntil("live project Stop control after daemon recovery", timeout: 30) {
+            self.application.buttons["Stop project"].exists && self.application.buttons["Stop project"].isEnabled
+        }
+        try assertHTTPS(slug)
+        attach("daemon-crash-recovered-live-ui")
         try click("Stop project", timeout: 30)
         try awaitProject(identifier, state: "stopped")
         attach("project-stopped-registration-retained")
@@ -130,6 +138,7 @@ final class HarborPackageUITests: XCTestCase {
             "ui_reopen": "registration retained and HTTPS 200",
             "final_project_state": "stopped",
             "final_ui_quit": "Command-Q and native process absence",
+            "daemon_recovery": "two installed-daemon crashes, healthy peer, interrupted startup settlement and retry",
         ]
         try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
             .write(to: URL(fileURLWithPath: "/tmp/harbor-package-ui-evidence.json"), options: .withoutOverwriting)
@@ -137,6 +146,24 @@ final class HarborPackageUITests: XCTestCase {
 
     private func awaitWindow() throws {
         try waitUntil("installed Harbor window", timeout: 60) { self.application.windows.firstMatch.isHittable }
+    }
+
+    // exerciseCrashRecovery uses the installed daemon while XCTest retains the original native UI process.
+    private func exerciseCrashRecovery(_ identifier: String, projectDirectory: URL) throws {
+        let environment = ProcessInfo.processInfo.environment
+        let tool = try XCTUnwrap(environment["HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL"])
+        XCTAssertTrue(tool.hasPrefix("/"), "recovery tool must be an absolute workflow-selected executable")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: tool))
+        let evidence = "/tmp/harbor-package-ui-crash-recovery.json"
+        _ = try command(tool, ["--project-id", identifier, "--project-directory", projectDirectory.resolvingSymlinksInPath().path,
+                               "--evidence", evidence])
+        let data = try Data(contentsOf: URL(fileURLWithPath: evidence))
+        let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(receipt["complete"] as? Bool, true)
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        attachment.name = "installed-daemon-crash-recovery"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     // launchInstalledApplication retains native stderr even if startup exits before a window appears.
