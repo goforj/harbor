@@ -1,7 +1,10 @@
 // Package daemonservice defines Harbor's fixed installed per-user daemon services.
 package daemonservice
 
-import _ "embed"
+import (
+	"bytes"
+	_ "embed"
+)
 
 const (
 	// DarwinLabel identifies the per-user daemon independently of the desktop.
@@ -32,6 +35,17 @@ func LinuxDefinition() []byte {
 
 // DarwinDefinition is shared by first launch and ownership-aware uninstall.
 func DarwinDefinition() []byte {
+	// User-requested builds inherit the daemon's scheduling policy and must not be background-throttled.
+	return darwinDefinition("Standard")
+}
+
+// MatchesDarwinDefinition admits only current or exact previously shipped bytes for safe service reuse and removal.
+func MatchesDarwinDefinition(content []byte) bool {
+	return bytes.Equal(content, DarwinDefinition()) || bytes.Equal(content, darwinDefinition("Background"))
+}
+
+// darwinDefinition keeps the legacy identity identical except for its previously shipped scheduling policy.
+func darwinDefinition(processType string) []byte {
 	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -52,7 +66,7 @@ func DarwinDefinition() []byte {
     <false/>
   </dict>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>` + processType + `</string>
   <key>ThrottleInterval</key>
   <integer>5</integer>
 </dict>

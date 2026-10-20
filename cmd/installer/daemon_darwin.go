@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -128,11 +127,12 @@ func admitDarwinAgentFile(parent *os.File, name string, userID uint32) (os.FileI
 	if !ok || !information.Mode().IsRegular() || status.Uid != userID || status.Nlink != 1 || information.Mode().Perm() != 0o644 {
 		return nil, errors.New("preserve Harbor daemon LaunchAgent with foreign file identity")
 	}
-	content, err := io.ReadAll(io.LimitReader(file, int64(len(daemonservice.DarwinDefinition())+1)))
+	// Both exact serialized definitions fit below this bound, including the longer legacy policy.
+	content, err := io.ReadAll(io.LimitReader(file, 4096))
 	if err != nil {
 		return nil, err
 	}
-	if !bytes.Equal(content, daemonservice.DarwinDefinition()) {
+	if !daemonservice.MatchesDarwinDefinition(content) {
 		return nil, errors.New("preserve non-matching saved Harbor daemon LaunchAgent")
 	}
 	return information, nil
