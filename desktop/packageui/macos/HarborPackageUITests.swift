@@ -37,11 +37,9 @@ final class HarborPackageUITests: XCTestCase {
         try fill("Go module", with: "example.com/harbor-installed-ui")
         try fill("Project directory", with: projectDirectory.path)
         try click("Continue")
-        for label in ["Docker", "Mail", "Auth", "OAuth", "Metrics", "Observability", "Grafana", "Database (MySQL)", "Database (Postgres)", "Database (SQLite)", "Scheduler", "Cache", "Events", "File Storage", "Background Jobs"] {
-            try setCheckbox(label, selected: false)
-        }
-        for label in ["CLI", "Web API", "Web UI"] {
-            try setCheckbox(label, selected: true)
+        let minimalComponents: Set<String> = ["CLI", "Web API", "Web UI"]
+        for label in ["CLI", "Docker", "Mail", "Auth", "OAuth", "Web API", "Web UI", "Metrics", "Observability", "Grafana", "Database (MySQL)", "Database (Postgres)", "Database (SQLite)", "Scheduler", "Cache", "Events", "File Storage", "Background Jobs"] {
+            try setCheckbox(label, selected: minimalComponents.contains(label))
         }
         try select("Starter kit", option: "Vue")
         try click("Continue")
@@ -134,7 +132,7 @@ final class HarborPackageUITests: XCTestCase {
     private func fill(_ label: String, with value: String) throws {
         let field = application.textFields[label]
         XCTAssertTrue(field.waitForExistence(timeout: 20), "missing field: \(label)\n\(application.debugDescription)")
-        field.click()
+        try focus(field)
         field.typeKey("a", modifierFlags: .command)
         field.typeText(value)
     }
@@ -142,6 +140,7 @@ final class HarborPackageUITests: XCTestCase {
     private func select(_ label: String, option: String) throws {
         let field = application.popUpButtons[label]
         XCTAssertTrue(field.waitForExistence(timeout: 20), "missing select: \(label)\n\(application.debugDescription)")
+        try focus(field)
         field.click()
         let choice = application.menuItems[option]
         XCTAssertTrue(choice.waitForExistence(timeout: 10), "missing choice: \(option)\n\(application.debugDescription)")
@@ -152,9 +151,20 @@ final class HarborPackageUITests: XCTestCase {
         let checkbox = application.checkBoxes[label]
         XCTAssertTrue(checkbox.waitForExistence(timeout: 20), "missing checkbox: \(label)\n\(application.debugDescription)")
         if (checkbox.value as? String == "1") != selected {
-            checkbox.click()
+            try focus(checkbox)
+            checkbox.typeKey(" ", modifierFlags: [])
         }
         XCTAssertEqual(checkbox.value as? String, selected ? "1" : "0", label)
+    }
+
+    // focus uses the real keyboard path so WebKit scrolls fields above the fixed dialog footer.
+    private func focus(_ element: XCUIElement) throws {
+        for _ in 0..<60 {
+            if element.hasKeyboardFocus { return }
+            application.typeKey("\t", modifierFlags: [])
+        }
+        XCTFail("could not focus \(element.label)\n\(application.debugDescription)")
+        throw NSError(domain: "HarborPackageUI.Focus", code: 1)
     }
 
     private func snapshot() throws -> [String: Any] {

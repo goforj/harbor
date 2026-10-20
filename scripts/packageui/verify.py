@@ -65,20 +65,19 @@ def verify_product(expected, current):
         raise ValueError("package and verification product sources differ: " + ", ".join(changes[:12]))
 
 
-def tracked_files(root):
-    """tracked_files compares Git-owned bytes and link identities without traversing untracked caches or link targets."""
-    names = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z"]).decode().split("\0")
+def product_tree(revision):
+    """product_tree reads immutable Git objects without checking out or executing selected package source."""
+    entries = subprocess.check_output(["git", "ls-tree", "-r", "-z", revision]).split(b"\0")
     files = {}
-    for name in filter(None, names):
+    for entry in filter(None, entries):
+        metadata, path = entry.split(b"\t", 1)
+        mode, kind, identity = metadata.decode().split()
+        name = path.decode()
         if test_only_path(name):
             continue
-        path = root / name
-        if path.is_symlink():
-            files[name] = ("link", os.readlink(path))
-        elif path.is_file():
-            files[name] = ("file", hashlib.sha256(path.read_bytes()).hexdigest())
-        else:
-            raise ValueError("tracked product file is absent: " + name)
+        if kind != "blob" or mode not in ("100644", "100755", "120000"):
+            raise ValueError("unsupported product tree entry: " + name)
+        files[name] = (mode, identity)
     return files
 
 
@@ -88,8 +87,9 @@ def main():
         revision, package = verify_assets(Path("package-assets"), json.loads(Path("package-run.json").read_text()))
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write(f"source_commit={revision}\npackage={package}\n")
-    elif sys.argv[1:] == ["source"]:
-        verify_product(tracked_files(Path(".ci/package-source")), tracked_files(Path(".")))
+    elif len(sys.argv) == 3 and sys.argv[1] == "source" and re.fullmatch(r"[a-f0-9]{40}", sys.argv[2]):
+        subprocess.run(["git", "diff", "--exit-code", "HEAD", "--"], check=True)
+        verify_product(product_tree(sys.argv[2]), product_tree("HEAD"))
     else:
         raise ValueError("expected assets or source")
 

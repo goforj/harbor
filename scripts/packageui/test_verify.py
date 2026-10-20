@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import verify
 
@@ -81,6 +82,22 @@ class PackageVerificationTests(unittest.TestCase):
                         dict(expected, **{".github/workflows/macos-development-package.yml": "changed"})):
             with self.subTest(current=current), self.assertRaises(ValueError):
                 verify.verify_product(expected, current)
+
+    def test_product_tree_preserves_modes_and_links_without_checkout(self):
+        entries = (b"100644 blob abc\tdesktop/main.go\0"
+                   b"100755 blob def\tscripts/launcher\0"
+                   b"120000 blob ghi\tcurrent\0"
+                   b"100644 blob ignored\tdocs/current-state.md\0")
+        with patch.object(verify.subprocess, "check_output", return_value=entries):
+            self.assertEqual(verify.product_tree("a" * 40), {
+                "desktop/main.go": ("100644", "abc"),
+                "scripts/launcher": ("100755", "def"),
+                "current": ("120000", "ghi"),
+            })
+        for entry in (b"160000 commit abc\tnested\0", b"100600 blob abc\tapp\0"):
+            with self.subTest(entry=entry), patch.object(verify.subprocess, "check_output", return_value=entry):
+                with self.assertRaises(ValueError):
+                    verify.product_tree("a" * 40)
 
 
 if __name__ == "__main__":
