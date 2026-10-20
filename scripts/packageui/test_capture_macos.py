@@ -1,12 +1,14 @@
 """Keep failed-start evidence without following project paths outside the fixture."""
 
 from pathlib import Path
+import os
 import tempfile
 import unittest
 
 import capture_macos
 
 
+@unittest.skipIf(os.name == "nt", "macOS trace fixtures use POSIX paths and links")
 class CaptureTraceTests(unittest.TestCase):
     def test_retains_last_trace_after_runtime_removes_it(self):
         with tempfile.TemporaryDirectory() as directory:

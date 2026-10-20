@@ -11,6 +11,7 @@ from unittest.mock import patch
 import cleanup_macos
 
 
+@unittest.skipIf(os.name == "nt", "macOS recovery uses POSIX paths and user IDs")
 class CleanupFixtureTests(unittest.TestCase):
     def test_admits_only_disposable_project_directories(self):
         expected = Path("/private/tmp/harbor-package-ui-8591F1BE-D15A-4E9E-BE3D-71F45B32AFED/project")
