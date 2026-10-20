@@ -10,7 +10,11 @@ permissions:
 jobs:
   capacity:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
       GOWORK: "off"
@@ -31,17 +35,24 @@ jobs:
       - name: Validate native Windows ownership guards
         shell: pwsh
         run: go test ./internal/platform/loopback -run '^TestWindows' -count=1
+      - name: Capture native socket baseline
+        shell: pwsh
+        run: |
+          Get-NetTCPConnection -ErrorAction SilentlyContinue |
+            Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, State, OwningProcess |
+            ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\windows-native-sockets-before.json"
+          netsh interface ipv4 show dynamicportrange protocol=tcp |
+            Set-Content "$env:RUNNER_TEMP\windows-native-dynamic-ports.txt"
       - name: Capture repeated capacity readbacks and exact cleanup
         shell: pwsh
         run: |
-          go test -tags=platformmutation ./internal/platform/loopback -run '^TestWindowsNativeCapacityReadback$' -count=10 -timeout=10m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-native-capacity.log"
+          go test -tags=platformmutation ./internal/platform/loopback -run '^(TestWindowsNativeForcedSourceSelectionCreation|TestWindowsNativeCapacityReadback|TestWindowsNativeSkipAsSourceTransition|TestWindowsDiagnosticCreatedRowRejectsDrift)$' -count=10 -timeout=10m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-native-capacity.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain native socket state
         if: always()
         shell: pwsh
         run: |
           Get-NetTCPConnection -ErrorAction SilentlyContinue |
-            Where-Object { $_.LocalPort -eq 3306 -or $_.RemotePort -eq 3306 } |
             Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, State, OwningProcess |
             ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\windows-native-sockets.json"
           netsh interface ipv4 show excludedportrange protocol=tcp |
@@ -49,10 +60,12 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-native-capacity-readbacks
+          name: windows-native-capacity-readbacks-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/windows-native-capacity.log
             ${{ runner.temp }}/windows-native-sockets.json
+            ${{ runner.temp }}/windows-native-sockets-before.json
+            ${{ runner.temp }}/windows-native-dynamic-ports.txt
             ${{ runner.temp }}/windows-native-excluded-ports.txt
           if-no-files-found: error
           retention-days: 14

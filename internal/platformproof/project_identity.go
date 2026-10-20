@@ -453,7 +453,8 @@ func servePayload(ctx context.Context, listener net.Listener, payload signedPayl
 // receivePayload connects to one exact identity and reads one bounded response.
 func receivePayload(ctx context.Context, address netip.Addr, port uint16) (signedPayload, error) {
 	endpoint := net.JoinHostPort(address.String(), strconv.Itoa(int(port)))
-	dialer := net.Dialer{}
+	// Pin the proof client to its loopback source instead of a wildcard ConnectEx bind.
+	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}}
 	connection, err := dialer.DialContext(ctx, "tcp4", endpoint)
 	if err != nil {
 		return signedPayload{}, fmt.Errorf("connect to project identity %s: %w", endpoint, err)
@@ -463,8 +464,17 @@ func receivePayload(ctx context.Context, address netip.Addr, port uint16) (signe
 
 	reader := bufio.NewReader(io.LimitReader(connection, maximumPayloadBytes))
 	var payload signedPayload
-	if err := json.NewDecoder(reader).Decode(&payload); err != nil {
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(&payload); err != nil {
 		return signedPayload{}, fmt.Errorf("read proof payload from %s: %w", endpoint, err)
+	}
+	// Observe the server's FIN before closing so repeated proof clients do not race to enter TIME_WAIT.
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = fmt.Errorf("unexpected additional payload")
+		}
+		return signedPayload{}, fmt.Errorf("finish proof payload from %s: %w", endpoint, err)
 	}
 	return payload, nil
 }

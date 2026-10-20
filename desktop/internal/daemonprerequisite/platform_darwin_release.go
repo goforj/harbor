@@ -84,7 +84,7 @@ func (ensurer *darwinEnsurer) Ensure(ctx context.Context) error {
 	agent := daemonservice.DarwinDefinition()
 	current, readErr := ensurer.dependencies.readFile(agentPath)
 	switch {
-	case readErr == nil && string(current) != string(agent):
+	case readErr == nil && !daemonservice.MatchesDarwinDefinition(current):
 		return fmt.Errorf("preserve non-matching Harbor daemon LaunchAgent %q", agentPath)
 	case readErr == nil:
 	case errors.Is(readErr, os.ErrNotExist):

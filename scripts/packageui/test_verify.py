@@ -91,7 +91,7 @@ class PackageVerificationTests(unittest.TestCase):
         expected = {"desktop/main.go": ("file", "same"), "docs/current-state.md": "old"}
         verify.verify_product(expected, dict(expected, **{"docs/current-state.md": "new", "desktop/packageui/test.swift": "new"}))
         verify.verify_product(expected, dict(expected, **{".github/workflows/linux-package-ui.yml": "new"}))
-        for name in ("windows-package-ui.yml", "windows-native-capacity.yml"):
+        for name in ("windows-package-ui.yml", "windows-native-capacity.yml", "windows-installation-admission.yml"):
             verify.verify_product(expected, dict(expected, **{f".github/workflows/{name}": "new"}))
         verify.verify_product(expected, dict(expected, **{"internal/platform/loopback/backend_windows_diagnostic_integration_test.go": "new"}))
         for current in ({}, {"desktop/main.go": ("file", "changed")},

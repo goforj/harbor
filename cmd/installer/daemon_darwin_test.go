@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -15,6 +16,65 @@ import (
 
 	"github.com/goforj/harbor/internal/platform/daemonservice"
 )
+
+// TestRemoveDarwinUserAgentAdmitsOnlyExactLegacyPolicy preserves ownership checks during legacy cleanup.
+func TestRemoveDarwinUserAgentAdmitsOnlyExactLegacyPolicy(t *testing.T) {
+	for _, shape := range []string{"owned", "foreign owner", "foreign loaded identity", "drift", "oversized"} {
+		t.Run(shape, func(t *testing.T) {
+			path, uid, dependencies := darwinAgentFixture(t)
+			legacy := bytes.Replace(daemonservice.DarwinDefinition(), []byte("<string>Standard</string>"), []byte("<string>Background</string>"), 1)
+			if shape == "drift" {
+				legacy = append(legacy, '\n')
+			}
+			if shape == "oversized" {
+				legacy = append(legacy, bytes.Repeat([]byte(" "), 4096)...)
+			}
+			if err := os.WriteFile(path, legacy, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if shape == "foreign owner" {
+				uid++
+			}
+			calls := 0
+			dependencies.launchctl = func(_ context.Context, arguments ...string) ([]byte, error) {
+				calls++
+				if calls == 1 {
+					output := darwinAgentPrint(uid, path)
+					if shape == "foreign loaded identity" {
+						output = bytes.ReplaceAll(output, []byte(daemonservice.DarwinLauncher), []byte("/foreign"))
+					}
+					return output, nil
+				}
+				if arguments[0] == "print" {
+					return nil, errDarwinAgentAbsent
+				}
+				return nil, nil
+			}
+			err := removeDarwinUserAgent(uid, dependencies)
+			if shape == "owned" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if calls != 3 {
+					t.Fatalf("native calls = %d", calls)
+				}
+				if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("legacy file remains: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("foreign legacy service admitted")
+				}
+				if content, err := os.ReadFile(path); err != nil || !bytes.Equal(content, legacy) {
+					t.Fatalf("foreign file changed: %v", err)
+				}
+				if calls > 1 {
+					t.Fatalf("foreign service reached mutation: %d", calls)
+				}
+			}
+		})
+	}
+}
 
 // darwinAgentFixture retains real user-owned files while replacing only launchctl effects.
 func darwinAgentFixture(t *testing.T) (string, uint32, darwinAgentDependencies) {

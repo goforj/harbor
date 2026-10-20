@@ -12,8 +12,13 @@ on:
     inputs:
       package_run_id:
         description: Successful Windows packaged-product gate run whose exact tested NSIS installer will be installed
-        required: true
+        required: false
         type: string
+      profile_only:
+        description: Validate only the actual restricted child token and protected access fixture
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -24,9 +29,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  worker-profile:
+    name: Actual restricted Windows child permissions
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify independent actual-child effective access
+        shell: powershell
+        run: |
+          & .\desktop\packageui\windows\TestWorkerProfile.ps1 -EvidenceDirectory "$env:RUNNER_TEMP\harbor-worker-profile"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-restricted-worker-profile
+          path: ${{ runner.temp }}/harbor-worker-profile
+          retention-days: 14
   installed-ui:
     name: Real installed Windows window
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && inputs.profile_only != true
+    needs: worker-profile
     runs-on: windows-2025
     timeout-minutes: 35
     env:
