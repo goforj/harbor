@@ -59,15 +59,15 @@ func integrationShortcutPlan(installation *Installation) (integrationShortcutSpe
 // integrationShellLink emits the bounded MS-SHLLINK structures directly, avoiding elevated COM activation.
 func integrationShellLink(spec integrationShortcutSpec) ([]byte, error) {
 	for _, path := range []string{spec.Target, spec.WorkingDirectory, spec.Icon} {
-		if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.HasPrefix(path, `\\`) || len(utf16.Encode([]rune(path))) > 259 || strings.ContainsRune(path, 0) {
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.HasPrefix(path, `\\`) || len(utf16.Encode([]rune(path))) > 259 || strings.ContainsAny(path, "\x00%") {
 			return nil, errors.New("Windows shortcut path is not a bounded local absolute path")
 		}
 	}
 	header := make([]byte, 76)
 	binary.LittleEndian.PutUint32(header, 76)
 	copy(header[4:20], []byte{1, 0x14, 2, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46})
-	// HasLinkInfo, HasWorkingDir, HasIconLocation, IsUnicode and DisableLinkPathTracking.
-	binary.LittleEndian.PutUint32(header[20:], 0x001000d2)
+	// PreferEnvironmentPath loads the exact EXP_SZ_LINK target without PIDL tracking or resolution.
+	binary.LittleEndian.PutUint32(header[20:], 0x020002d2)
 	binary.LittleEndian.PutUint32(header[24:], windows.FILE_ATTRIBUTE_NORMAL)
 	binary.LittleEndian.PutUint32(header[60:], 1)
 	info := make([]byte, 36)
@@ -102,6 +102,22 @@ func integrationShellLink(spec integrationShortcutSpec) ([]byte, error) {
 		data = binary.LittleEndian.AppendUint16(data, uint16(len(units)))
 		data = append(data, integrationUTF16Bytes(value, false)...)
 	}
+	// EXP_SZ_LINK stores an absolute path with no percent tokens, so expansion cannot redirect it.
+	target := make([]byte, 0x314)
+	binary.LittleEndian.PutUint32(target, 0x314)
+	binary.LittleEndian.PutUint32(target[4:], 0xa0000001)
+	ansi := target[8:268]
+	index := 0
+	for _, character := range spec.Target {
+		if character > 127 {
+			ansi[index] = '?'
+		} else {
+			ansi[index] = byte(character)
+		}
+		index++
+	}
+	copy(target[268:], integrationUTF16Bytes(spec.Target, true))
+	data = append(data, target...)
 	return append(data, 0, 0, 0, 0), nil
 }
 
