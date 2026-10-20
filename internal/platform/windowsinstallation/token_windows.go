@@ -169,7 +169,7 @@ func restrictedRuntimeToken(source windows.Token) (windows.Token, error) {
 	return owned, nil
 }
 
-// configureRuntimeToken prevents elevated default ownership from leaking into a demoted user's new files.
+// configureRuntimeToken gives only the demoted user and SYSTEM authority over new private process objects.
 func configureRuntimeToken(token windows.Token, owner *windows.SID) error {
 	medium, err := windows.StringToSid("S-1-16-8192")
 	if err != nil {
@@ -183,7 +183,20 @@ func configureRuntimeToken(token windows.Token, owner *windows.SID) error {
 	if err := windows.SetTokenInformation(token, windows.TokenOwner, (*byte)(unsafe.Pointer(&ownerInformation)), uint32(unsafe.Sizeof(ownerInformation))); err != nil {
 		return fmt.Errorf("set Windows current-user default owner: %w", err)
 	}
+	descriptor, err := windows.SecurityDescriptorFromString(fmt.Sprintf("D:(A;;GA;;;%s)(A;;GA;;;SY)", owner.String()))
+	if err != nil {
+		return err
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	defaultDACL := struct{ DACL *windows.ACL }{dacl}
+	if err := windows.SetTokenInformation(token, windows.TokenDefaultDacl, (*byte)(unsafe.Pointer(&defaultDACL)), uint32(unsafe.Sizeof(defaultDACL))); err != nil {
+		return fmt.Errorf("set Windows current-user default object DACL: %w", err)
+	}
 	_, err = inspectRuntimeToken(token)
+	runtime.KeepAlive(descriptor)
 	runtime.KeepAlive(medium)
 	runtime.KeepAlive(owner)
 	return err

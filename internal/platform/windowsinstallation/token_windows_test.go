@@ -3,7 +3,10 @@
 package windowsinstallation
 
 import (
+	"fmt"
+	"runtime"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -62,4 +65,53 @@ func TestNativeRuntimeTokenRejectsHighAuthority(t *testing.T) {
 	if _, err := inspectRuntimeToken(current); err == nil {
 		t.Fatal("original high token admitted")
 	}
+}
+
+// TestNativeRestrictedDefaultDACL gives only newly derived objects user ownership without mutating the source token.
+func TestNativeRestrictedDefaultDACL(t *testing.T) {
+	var source windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE, &source); err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	original := nativeTokenDefaultDACL(t, source)
+	token, err := restrictedRuntimeToken(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer token.Close()
+	user, err := source.GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := windows.SecurityDescriptorFromString(fmt.Sprintf("D:(A;;GA;;;%s)(A;;GA;;;SY)", user.User.Sid.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual := nativeTokenDefaultDACL(t, token); actual != expected.String() {
+		t.Fatalf("restricted default object DACL=%s expected %s", actual, expected.String())
+	}
+	if actual := nativeTokenDefaultDACL(t, source); actual != original {
+		t.Fatalf("source default DACL changed: %s became %s", original, actual)
+	}
+}
+
+// nativeTokenDefaultDACL serializes a token's copied default ACL while its native backing bytes remain alive.
+func nativeTokenDefaultDACL(t *testing.T, token windows.Token) string {
+	t.Helper()
+	information, err := tokenInformation(token, windows.TokenDefaultDacl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultDACL := (*struct{ DACL *windows.ACL })(unsafe.Pointer(&information[0]))
+	descriptor, err := windows.NewSecurityDescriptor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := descriptor.SetDACL(defaultDACL.DACL, true, false); err != nil {
+		t.Fatal(err)
+	}
+	serialized := descriptor.String()
+	runtime.KeepAlive(information)
+	return serialized
 }

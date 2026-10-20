@@ -82,8 +82,11 @@ func TestNativeInstalledChild(t *testing.T) {
 		var own windows.Token
 		err := windows.OpenProcessToken(windows.CurrentProcess(), access, &own)
 		t.Logf("running own-token access %#x: %v", access, err)
-		if err == nil {
-			own.Close()
+		if err != nil {
+			t.Fatalf("running restricted child cannot access its own token %#x: %v", access, err)
+		}
+		if err := own.Close(); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if !*nativeNested {
