@@ -139,7 +139,7 @@ def state(expected):
         if row and row['state'] in ['failed', 'quarantined', 'unavailable']:
             raise RuntimeError('project failed: ' + json.dumps(row))
         return row and row['state'] == expected
-    wait('project ' + expected, check, 180)
+    wait('project ' + expected, check, 360 if expected == 'ready' else 180)
 
 
 def https(slug):

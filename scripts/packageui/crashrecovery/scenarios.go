@@ -45,13 +45,25 @@ func settledProject(project domain.ProjectSnapshot, activity control.ProjectActi
 }
 
 // withdrawnRoute requires Harbor's affirmative unknown-host response rather than accepting TLS or network failure.
-func withdrawnRoute(ctx context.Context, host string) error {
-	status, body, err := probeResponse(ctx, "http://"+host+"/-/ready")
+func withdrawnRoute(ctx context.Context, host, ingress string) error {
+	address, _, err := net.SplitHostPort(ingress)
+	if err != nil || !validProjectAddress(address, "") {
+		return errors.New("withdrawal probe requires a canonical loopback ingress endpoint")
+	}
+	status, body, err := probeHostResponse(ctx, "http://"+ingress+"/-/ready", host)
 	if err != nil {
 		return err
 	}
 	if status != 421 || body != "Harbor has no route for this host.\n" {
 		return fmt.Errorf("public route was not withdrawn: HTTP %d", status)
+	}
+	return nil
+}
+
+// inactiveIdentity preserves durable project identity without requiring withdrawn public DNS.
+func inactiveIdentity(before, after projectEvidence) error {
+	if before.ID != after.ID || before.Path != after.Path || before.Host != after.Host || before.ProjectAddress != after.ProjectAddress || !validProjectAddress(after.ProjectAddress, before.Address) {
+		return errors.New("inactive observation changed project identity or private assignment")
 	}
 	return nil
 }
@@ -83,13 +95,13 @@ func (driver *recovery) settled(ctx context.Context, before projectEvidence, lab
 		if err != nil {
 			return false, err
 		}
-		if after.ID != before.ID || after.Path != before.Path || after.Host != before.Host || after.Address != before.Address || after.ProjectAddress != before.ProjectAddress {
-			return false, errors.New("crash settlement changed project or DNS identity")
+		if err := inactiveIdentity(before, after); err != nil {
+			return false, err
 		}
 		if err := settledObservation(after); err != nil {
 			return false, err
 		}
-		if err := withdrawnRoute(attempt, after.Host); err != nil {
+		if err := withdrawnRoute(attempt, after.Host, net.JoinHostPort(before.Address, "80")); err != nil {
 			return false, err
 		}
 		after.RouteWithdrawn = true
@@ -241,8 +253,11 @@ func (driver *recovery) scenarios(ctx context.Context, original projectEvidence)
 		return err
 	}
 	driver.evidence.Gate = &proof
-	if starting.Address != peer.Address || starting.ProjectAddress != peer.ProjectAddress || starting.Host != peer.Host || starting.SessionID == peer.SessionID {
-		return errors.New("second peer start changed DNS identity or reused the stopped session")
+	if err := inactiveIdentity(peer, starting); err != nil {
+		return err
+	}
+	if starting.SessionID == peer.SessionID {
+		return errors.New("second peer start reused the stopped session")
 	}
 	if err := distinctProjects(original, starting); err != nil {
 		return err
@@ -279,7 +294,7 @@ func (driver *recovery) scenarios(ctx context.Context, original projectEvidence)
 	if err := driver.settled(ctx, original, "original_settled_after_starting_crash"); err != nil {
 		return err
 	}
-	if err := driver.settled(ctx, starting, "peer_settled_after_starting_crash"); err != nil {
+	if err := driver.settled(ctx, peer, "peer_settled_after_starting_crash"); err != nil {
 		return err
 	}
 	driver.evidence.Stage = "gate_absence_before_release"
@@ -294,12 +309,12 @@ func (driver *recovery) scenarios(ctx context.Context, original projectEvidence)
 	if err != nil {
 		return err
 	}
-	retry, err := driver.retry(ctx, starting, "peer_retry_after_starting_crash")
+	retry, err := driver.retry(ctx, peer, "peer_retry_after_starting_crash")
 	if err != nil {
 		return err
 	}
-	if retry.SessionID == peer.SessionID {
-		return errors.New("peer retry reused its previous ready session")
+	if retry.SessionID == starting.SessionID {
+		return errors.New("peer retry reused its interrupted starting session")
 	}
 	if err := distinctProjects(original, retry); err != nil {
 		return err

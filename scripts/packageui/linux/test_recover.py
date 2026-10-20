@@ -82,6 +82,13 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn('sudo -n dpkg --purge goforj-harbor', events)
         self.assertEqual(report['cleanup'], 'incomplete')
 
+    def test_failed_fixture_uses_authoritative_unregister_without_rejected_stop(self):
+        events, report, error = self.exercise(['failed'])
+        self.assertIsNone(error)
+        self.assertFalse(any(event.startswith('/usr/bin/harbor stop ') for event in events))
+        self.assertLess(events.index('fixture unregister'), events.index('/usr/bin/harbor daemon release'))
+        self.assertEqual(report['cleanup'], 'released and uninstalled')
+
     def test_stop_timeout_prevents_global_release_and_purge(self):
         events, report, error = self.exercise(['starting', 'stopping'], expired=True)
         self.assertIn('did not stop', str(error))

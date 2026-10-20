@@ -113,7 +113,7 @@ final class HarborPackageUITests: XCTestCase {
         try waitUntil("reopened project Stop control", timeout: 30) { self.application.buttons["Stop project"].exists }
         attach("reopened-running-project")
         try exerciseCrashRecovery(identifier, projectDirectory: projectDirectory)
-        try click("Refresh Harbor state")
+        try refreshThroughCommandMenu()
         try awaitProject(identifier, state: "ready")
         try waitUntil("live project Stop control after daemon recovery", timeout: 30) {
             self.application.buttons["Stop project"].exists && self.application.buttons["Stop project"].isEnabled
@@ -257,6 +257,16 @@ final class HarborPackageUITests: XCTestCase {
         XCTAssertEqual(running.bundleURL?.resolvingSymlinksInPath(), installedApplication.resolvingSymlinksInPath())
     }
 
+    // refreshThroughCommandMenu reaches the visible refresh action even when the narrow layout hides the context pane.
+    private func refreshThroughCommandMenu() throws {
+        try click("Open command menu")
+        let refresh = application.staticTexts["Refresh Harbor state"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 20), "missing command menu refresh action\n\(application.debugDescription)")
+        try waitUntil("visible enabled refresh command") { refresh.isEnabled && refresh.isHittable }
+        refresh.click()
+        try waitUntil("refresh command closes the menu") { !refresh.exists }
+    }
+
     private func click(_ label: String, timeout: TimeInterval = 20) throws {
         let button = application.buttons[label]
         XCTAssertTrue(button.waitForExistence(timeout: timeout), "missing button: \(label)\n\(application.debugDescription)")
@@ -333,7 +343,7 @@ final class HarborPackageUITests: XCTestCase {
     }
 
     private func awaitProject(_ identifier: String, state: String) throws {
-        try waitUntil("project \(identifier) reaches \(state)", timeout: 180) {
+        try waitUntil("project \(identifier) reaches \(state)", timeout: state == "ready" ? 360 : 180) {
             guard let projects = try? self.snapshot()["projects"] as? [[String: Any]] else { return false }
             guard let project = projects.first(where: { $0["id"] as? String == identifier }) else { return false }
             if let observed = project["state"] as? String, ["failed", "quarantined", "unavailable"].contains(observed) {

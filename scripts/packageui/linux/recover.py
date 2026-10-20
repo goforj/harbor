@@ -39,12 +39,14 @@ def main():
                 path = root / name
                 if path.is_file() and not path.is_symlink():
                     files.append(path)
-            if project['state'] != 'stopped':
+            # Failed startup or crash recovery can already have retired the
+            # process. Unregister retains the daemon's native absence checks.
+            if project['state'] not in ('stopped', 'failed'):
                 run('/usr/bin/harbor', 'stop', project['id'])
                 deadline = time.monotonic() + 120
                 while True:
                     current = next(row for row in snapshot().get('projects', []) if row['id'] == project['id'])
-                    if current['state'] == 'stopped':
+                    if current['state'] in ('stopped', 'failed'):
                         break
                     if time.monotonic() >= deadline:
                         raise RuntimeError('fixture project did not stop before release: ' + project['id'])

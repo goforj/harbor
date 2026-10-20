@@ -22,8 +22,14 @@ def remove_projects(projects, receipt):
         root = Path(project['path']).resolve()
         if root.name != 'project' or root.parent.parent != Path('/tmp').resolve() or not root.parent.name.startswith('harbor-package-ui-') or root.parent.name == 'harbor-package-ui-':
             raise RuntimeError('refusing removal of non-fixture project')
-        if project['state'] != 'stopped':
-            raise RuntimeError('fixture must be stopped before explicit unregister')
+        if project['state'] not in ('stopped', 'failed'):
+            raise RuntimeError('fixture must be inactive before explicit unregister')
+        if project['state'] == 'failed' and (project.get('resources') or
+                any(app.get('active') or app.get('state') != 'stopped' for app in project.get('apps', [])) or
+                any(service.get('state') != 'stopped' for service in project.get('services', []))):
+            raise RuntimeError('failed fixture retains runtime projections')
+        # The authoritative unregister operation still checks active sessions
+        # and native process absence before issuing any host cleanup approval.
         roots.append(root)
     report = {'boundary': 'explicit fixture unregister after GUI registration retention; uninstall preservation is post-unregister', 'projects': []}
     try:

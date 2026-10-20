@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	defaultProjectStartupTimeout     = 2 * time.Minute
+	// defaultProjectStartupTimeout leaves room for cold builds after a measured Windows dependency install took about 98 seconds.
+	defaultProjectStartupTimeout     = 5 * time.Minute
 	defaultProjectLaunchTimeout      = 30 * time.Second
 	defaultProjectResetTimeout       = 2 * time.Minute
 	defaultProjectProcessJoinTimeout = 15 * time.Second

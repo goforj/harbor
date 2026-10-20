@@ -389,9 +389,23 @@ func TestWithdrawnRouteRequiresAffirmativeIngressResponse(t *testing.T) {
 		{"foreign response", 421, "other server", false}, {"not found", 404, "missing", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(test.status); w.Write([]byte(test.body)) }))
+			requests := make(chan *http.Request, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests <- r
+				w.WriteHeader(test.status)
+				w.Write([]byte(test.body))
+			}))
 			defer server.Close()
-			err := withdrawnRoute(context.Background(), strings.TrimPrefix(server.URL, "http://"))
+			// The absent .test record must not prevent reaching the last Ready ingress.
+			err := withdrawnRoute(context.Background(), "withdrawn-no-record.test", strings.TrimPrefix(server.URL, "http://"))
+			select {
+			case request := <-requests:
+				if request.Host != "withdrawn-no-record.test" || request.URL.Path != "/-/ready" {
+					t.Fatalf("withdrawal probe lost public route identity: host %q, path %q", request.Host, request.URL.Path)
+				}
+			default:
+				t.Fatalf("last Ready ingress was not reached: %v", err)
+			}
 			if (err == nil) != test.accepted {
 				t.Fatalf("route result = %v", err)
 			}
@@ -400,8 +414,45 @@ func TestWithdrawnRouteRequiresAffirmativeIngressResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	address := strings.TrimPrefix(server.URL, "http://")
 	server.Close()
-	if err := withdrawnRoute(context.Background(), address); err == nil {
+	if err := withdrawnRoute(context.Background(), "withdrawn-no-record.test", address); err == nil {
 		t.Fatal("network failure counted as route absence")
+	}
+	for _, invalid := range []string{"withdrawn-no-record.test:80", "192.0.2.1:80", "127.00.0.1:80", "[::1]:80", "127.0.0.1"} {
+		if err := withdrawnRoute(context.Background(), "withdrawn-no-record.test", invalid); err == nil {
+			t.Fatalf("invalid ingress endpoint accepted: %q", invalid)
+		}
+	}
+}
+
+// TestInactiveIdentityAcceptsWithdrawnDNS requires stable private facts independently of public DNS.
+func TestInactiveIdentityAcceptsWithdrawnDNS(t *testing.T) {
+	before := projectEvidence{ID: "peer", Path: "/fixture/peer", Host: "withdrawn-no-record.test", Address: "127.0.0.1", ProjectAddress: "127.77.0.10", State: domain.ProjectReady, SessionID: "ready-session"}
+	for _, state := range []domain.ProjectState{domain.ProjectStarting, domain.ProjectFailed} {
+		after := before
+		after.State = state
+		after.Address = ""
+		if err := inactiveIdentity(before, after); err != nil {
+			t.Fatalf("inactive %s without public DNS: %v", state, err)
+		}
+		for _, mutate := range []func(*projectEvidence){
+			func(p *projectEvidence) { p.ID = "other" },
+			func(p *projectEvidence) { p.Path = "/other" },
+			func(p *projectEvidence) { p.Host = "other.test" },
+			func(p *projectEvidence) { p.ProjectAddress = "" },
+			func(p *projectEvidence) { p.ProjectAddress = "127.77.0.11" },
+			func(p *projectEvidence) { p.ProjectAddress = before.Address },
+		} {
+			changed := after
+			mutate(&changed)
+			if err := inactiveIdentity(before, changed); err == nil {
+				t.Fatalf("inactive identity drift accepted: %#v", changed)
+			}
+		}
+	}
+	invalid := before
+	invalid.ProjectAddress = "127.077.0.10"
+	if err := inactiveIdentity(invalid, invalid); err == nil {
+		t.Fatal("noncanonical private assignment accepted")
 	}
 }
 

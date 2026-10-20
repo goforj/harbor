@@ -370,12 +370,20 @@ func probe(ctx context.Context, url string, expected string) error {
 
 // probeResponse bounds direct HTTP observations without converting network failures into route absence.
 func probeResponse(ctx context.Context, url string) (int, string, error) {
+	return probeHostResponse(ctx, url, "")
+}
+
+// probeHostResponse preserves the public Host when an ingress check must bypass withdrawn DNS.
+func probeHostResponse(ctx context.Context, url, host string) (int, string, error) {
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("unexpected probe redirect") }}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, "", err
+	}
+	if host != "" {
+		request.Host = host
 	}
 	response, err := client.Do(request)
 	if err != nil {
@@ -443,7 +451,7 @@ func freshSession(before, after projectEvidence) error {
 	return nil
 }
 
-// observe records session and DNS facts and optionally verifies a Ready project's trusted HTTPS route.
+// observe requires DNS only for Ready proof because inactive projects have no public route authority.
 func (driver *recovery) observe(ctx context.Context, id domain.ProjectID, healthy bool) (projectEvidence, error) {
 	project, err := driver.project(ctx, id)
 	if err != nil {
@@ -454,14 +462,19 @@ func (driver *recovery) observe(ctx context.Context, id domain.ProjectID, health
 	if err != nil {
 		return result, err
 	}
+	if activity.ProjectID != id {
+		return result, errors.New("project activity identity differs")
+	}
 	if activity.Session != nil {
 		result.SessionID = activity.Session.ID
 		result.SessionState = activity.Session.State
 		result.Generation = activity.Session.Generation
 	}
-	result.Address, err = resolveAddress(ctx, result.Host)
-	if err != nil {
-		return result, err
+	if healthy {
+		result.Address, err = resolveAddress(ctx, result.Host)
+		if err != nil {
+			return result, err
+		}
 	}
 	environment, err := driver.client.ProjectEnvironment(ctx, control.ProjectEnvironmentRequest{ProjectID: id})
 	if err != nil {
@@ -502,7 +515,7 @@ func distinctProjects(original, peer projectEvidence) error {
 // healthy waits for the authoritative Ready state and verifies the public route using system trust.
 func (driver *recovery) healthy(ctx context.Context, id domain.ProjectID) (projectEvidence, error) {
 	var result projectEvidence
-	err := waitFor(ctx, 4*time.Minute, func(attempt context.Context) (bool, error) {
+	err := waitFor(ctx, 6*time.Minute, func(attempt context.Context) (bool, error) {
 		var err error
 		result, err = driver.observe(attempt, id, true)
 		return err == nil, err
@@ -518,6 +531,17 @@ func (driver *recovery) start(ctx context.Context, id domain.ProjectID) (domain.
 
 // stop settles only this invocation's peer through the normal lifecycle request.
 func (driver *recovery) stop(ctx context.Context) error {
+	project, err := driver.project(ctx, driver.peer)
+	if err != nil {
+		return err
+	}
+	if project.State == domain.ProjectFailed {
+		activity, err := driver.client.ProjectActivity(ctx, control.ProjectActivityRequest{ProjectID: driver.peer})
+		if err != nil {
+			return err
+		}
+		return settledProject(project, activity)
+	}
 	if _, err := driver.client.StopProject(ctx, control.StopProjectRequest{ProjectID: driver.peer, IntentID: domain.IntentID("recovery-stop-" + nonce())}); err != nil {
 		return err
 	}

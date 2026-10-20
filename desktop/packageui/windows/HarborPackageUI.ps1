@@ -269,7 +269,7 @@ function Await-ProjectState([string]$Expected) {
             throw "project entered $($project.state)"
         }
         return $project.state -ceq $Expected
-    } 240
+    } $(if ($Expected -ceq 'ready') { 360 } else { 240 })
 }
 function Unregister-Fixture($Project) {
     if (-not [string]::Equals($Project.path, $projectDirectory, [StringComparison]::OrdinalIgnoreCase)) { throw 'refusing removal outside the exact created fixture' }
