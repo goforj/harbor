@@ -363,7 +363,7 @@ try {
     try { [HarborUIProfile]::QuiesceLaunchedUIs() } catch { Write-Warning "failed to quiesce exact launched UI handles: $_" }
     throw $originalFailure
 } finally {
-    $cleanup = [ordered]@{ launched_token_facts=[HarborUIProfile]::LastLaunchFacts; gui_quiescent=$false; approval_indeterminate=$script:approvalIndeterminate; fixtures_stopped=$false; fixture_unregistered=$false; network_released=$false; daemon_absent=$false; retained_files=@{}; missing_files=@() }
+    $cleanup = [ordered]@{ launched_token_facts=[HarborUIProfile]::LastLaunchFacts; gui_quiescent=$false; approval_indeterminate=$script:approvalIndeterminate; fixtures_stopped=$false; fixture_settlement_method='unproved'; fixture_source_state=$null; fixture_unregistered=$false; network_released=$false; daemon_absent=$false; retained_files=@{}; missing_files=@() }
     try {
         [HarborUIProfile]::QuiesceLaunchedUIs()
         $cleanup.gui_quiescent = $true
@@ -371,18 +371,27 @@ try {
         $remaining = @(Get-Process -Name harbor-desktop -ErrorAction SilentlyContinue)
         if ($remaining.Count -ne 0) { throw 'an unrecorded desktop process prevents host cleanup' }
         $registered = Get-Project
-        if ($null -ne $registered -and $registered.state -cne 'stopped') {
+        if ($null -ne $registered) {
+            $cleanup.fixture_source_state = $registered.state
+            if ($registered.state -ceq 'quarantined') { throw 'quarantined fixture cannot be settled by GUI cleanup' }
+        }
+        if ($null -ne $registered -and $registered.state -cnotin @('stopped', 'failed')) {
             & $cliPath stop $registered.id 1> (Join-Path $EvidenceDirectory 'cleanup-stop-stdout.txt') 2> (Join-Path $EvidenceDirectory 'cleanup-stop-stderr.txt')
             $stopExit = $LASTEXITCODE
             try { Get-Snapshot | ConvertTo-Json -Depth 30 | Set-Content (Join-Path $EvidenceDirectory 'cleanup-stop-snapshot.json') -Encoding UTF8 } catch { Write-Warning "stop-state diagnostics failed: $_" }
             if ($stopExit -ne 0) { throw 'fixture stop was not admitted' }
             Wait-Until 'stopped cleanup fixture' { (Get-Project).state -ceq 'stopped' } 120
         }
-        $cleanup.fixtures_stopped = $true
         if ($null -ne $registered) {
+            # Failed startup can have no active session, so production unregister must prove settlement instead of inventing Stopped.
             Unregister-Fixture $registered
             if ($null -ne (Get-Project)) { throw 'removed fixture registration remains' }
+            $cleanup.fixture_settlement_method = if ($registered.state -ceq 'failed') { 'terminal-failed-authoritative-unregister' } else { 'stopped-authoritative-unregister' }
+        } else {
+            $cleanup.fixture_settlement_method = 'authoritative-registration-absent'
         }
+        # This compatibility field means no active fixture only after authoritative registration removal succeeds.
+        $cleanup.fixtures_stopped = $true
         $cleanup.fixture_unregistered = $true
         Invoke-PreauthorizedNetworking 'release'
         $cleanup.network_released = $true
