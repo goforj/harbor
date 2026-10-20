@@ -8,7 +8,7 @@ At product source `a537b52`, full CI passed all 15 jobs, the exact-source Unix p
 
 The source includes read-only machine Root-store snapshots, Windows-only Wails application-menu registration, and tray status updates serialized on the native main queue without destructive `Menu.Update`. Hosted Server 2025 evidence does not prove genuine Windows GUI consent or supported client/UAC behavior, and public signing remains gated. macOS genuine consent and full trust-store restoration remain unproved; Ubuntu evidence uses XFCE/X11 on Xvfb, not GNOME Wayland or genuine PolicyKit consent. Failure recovery and update proof remain separate gates. Docker acceptance now selects released [GoForj v0.35.1](https://github.com/goforj/goforj/releases/tag/v0.35.1), which includes the first-boot readiness fix. Fresh full CI, native platform smoke, Docker lifecycle, and installed GUI lifecycle plus normal cleanup/uninstall pass against that release; exact runs and package digests are recorded in current state. The installed GUI receipts above retain their original CLI baseline. Details are under [Docker project lifecycle and diagnostics](#docker-project-lifecycle-and-diagnostics).
 
-No merge, tag, public release, or publication is authorized by this status.
+The user separately authorized integration, and [PR #13](https://github.com/goforj/harbor/pull/13) is merged into `main` at `e82e189`. PR #16 was included; PRs #14 and #15 were closed as superseded with their work preserved. No Harbor tag or public release was requested or created. See [current state](./current-state.md#main-integration-2026-10-20) for the main-branch checks.
 
 ## Rehearse without publishing
 

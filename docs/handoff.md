@@ -2,7 +2,7 @@
 
 ## Current continuation (2026-10-20)
 
-The exact-source hosted GUI lifecycle and normal cleanup receipts now pass for macOS, Ubuntu, and Windows at product source `a537b52`. See the evidence matrix and platform limits in [current state](./current-state.md). Three same-package Windows GUI runs passed lifecycle and cleanup. Readiness took about 102.85, 103.23, and 109.30 seconds; the earlier roughly 128-second timeout did not recur, but its exact cause remains unknown. No npm logs met the attribution rules for retention. No product timing, configuration, or cache warmup was changed. Do not infer genuine consent, a supported Windows client/UAC profile, release readiness, or containment from the hosted fixture. No Harbor merge, tag, or publication is authorized by that evidence. The user separately authorized the GoForj merge, release, local installation, and Harbor validation; GoForj v0.35.1 is now released and installed locally.
+The user authorized integration, and [PR #13](https://github.com/goforj/harbor/pull/13) is merged into `main` at `e82e189b236bc56c51d357cf3a500e9f4d7773b7`. PR #16 was included and is marked merged. PRs #14 and #15 were closed as superseded after verifying that their changes were preserved. Neither Harbor nor GoForj has an open PR at this checkpoint. GoForj v0.35.1 is released and installed locally. Fresh hosted installed GUI lifecycle, cleanup, and uninstall receipts pass for macOS, Ubuntu, and Windows; exact evidence and platform limits are in [current state](./current-state.md). The earlier Windows timeout remains unexplained. These receipts do not establish genuine consent, a supported Windows client/UAC profile, release readiness, or containment. No Harbor tag or publication was requested or created.
 
 ## Released CLI validation (2026-10-20)
 
@@ -10,7 +10,7 @@ GoForj PR #253 is merged and released as v0.35.1 at `09b41ca77b523c0724545ecc20b
 
 ## Immediate next goal
 
-Review [PR #13](https://github.com/goforj/harbor/pull/13) for integration against the accepted evidence matrix. The earlier Windows timeout remains unexplained. Production signing, genuine interactive consent, additional desktop profiles, and recovery/update proof remain separate work. Harbor now selects released GoForj v0.35.1 across generated fixtures and CLI workflow pins. Fresh full CI, Docker lifecycle, native platform smoke, and installed GUI lifecycle/cleanup/uninstall pass on all three hosted profiles; exact receipts are in current state. Package source is `76662ca`, Windows harness is `006915c`, and the remaining changes are documentation. The Windows selector fix is harness-only and preserves ordinal matching and ambiguity rejection. Preserve active developer installations.
+Confirm the remaining main-branch macOS lifecycle and platform smoke checks for integration commit `e82e189`. [CI](https://github.com/goforj/harbor/actions/runs/39459846653) and the fresh native Windows and Linux lifecycle checks already pass. Production signing, genuine interactive consent, additional desktop profiles, and recovery/update proof remain separate work. Package source is `76662ca`, Windows harness is `006915c`, and the integration introduces no additional product changes. The Windows selector fix is harness-only and preserves ordinal matching and ambiguity rejection. Work is isolated in `/tmp/harbor-package-ui-20261019`; preserve the active developer checkouts and installations.
 
 Product-source admission remains strict. Documentation and test-harness edits are excluded from product-source comparisons.
 

@@ -1,5 +1,9 @@
 # Current Implementation State
 
+## Main integration (2026-10-20)
+
+[PR #13](https://github.com/goforj/harbor/pull/13) is merged into `main` at `e82e189b236bc56c51d357cf3a500e9f4d7773b7`, including PR #16. Supporting PRs #14 and #15 were closed as superseded after checking that their work was preserved. Their older Windows failures predate the passing installed Windows GUI run below. Fresh [main CI](https://github.com/goforj/harbor/actions/runs/39459846653), [native Windows three-project lifecycle](https://github.com/goforj/harbor/actions/runs/39459846523), and [native Linux three-project lifecycle](https://github.com/goforj/harbor/actions/runs/39459846560) pass. The merge also started [macOS lifecycle](https://github.com/goforj/harbor/actions/runs/39459846702) and [platform smoke](https://github.com/goforj/harbor/actions/runs/39459846564) checks. No Harbor tag or public release was created.
+
 ## Released GoForj baseline (2026-10-20)
 
 GoForj [PR #253](https://github.com/goforj/goforj/pull/253) is merged and published as [v0.35.1](https://github.com/goforj/goforj/releases/tag/v0.35.1), at commit `09b41ca77b523c0724545ecc20b18581d9cae06c`. Harbor's generated-project fixtures, hosted test workflows, and package GUI CLI installs now select that release. This replaces the acceptance-only candidate pin. The published CLI is installed locally with canonical module metadata and no local replacement. Fresh Harbor validation passed against this release: [all 15 CI jobs](https://github.com/goforj/harbor/actions/runs/39427059491), [three-project Docker lifecycle and cleanup](https://github.com/goforj/harbor/actions/runs/39423903409), and [generated-project platform smoke on Windows, macOS, and Linux](https://github.com/goforj/harbor/actions/runs/39423865346). Package source is `76662ca`; subsequent changes are limited to the Windows GUI harness and documentation.
@@ -31,7 +35,7 @@ The source includes three product corrections: machine Root-store snapshots open
 
 The earlier Docker acceptance lifecycle passed all three MySQL projects and cleanup in [run 39396134671](https://github.com/goforj/harbor/actions/runs/39396134671), using candidate `7e38e5f041cc2f449f5ec33baaaa2139ac4b6b50` from GoForj PR #253. The released v0.35.1 implementation additionally passed twelve pinned native MySQL/MariaDB version fixtures in [GoForj CI](https://github.com/goforj/goforj/actions/runs/39421351506). Fresh Harbor evidence for the released CLI is tracked above. This test-baseline update changes no Harbor API, generated configuration, persisted data, or minimum Go version.
 
-These receipts establish hosted functional lifecycles, not release readiness. Genuine interactive consent, platform-specific profiles beyond those named above, recovery, signing, and update proof remain separate gates. No merge, tag, public release, or publication is authorized by this status.
+These receipts establish hosted functional lifecycles, not release readiness. Genuine interactive consent, platform-specific profiles beyond those named above, recovery, signing, and update proof remain separate gates. Integration was separately authorized and is recorded above; a Harbor tag or publication still requires an explicit request.
 
 ## Earlier implementation notes
 
