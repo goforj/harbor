@@ -808,6 +808,14 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		stopComplete:      make(chan struct{}),
 		managedLaunchPath: managedLaunchPath,
 	}
+	if brokerAttachment != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
+		pipeReaders.Add(1)
+		// The request context ends with the Start RPC; broker observation must instead last until the
+		// inherited child pipes reach EOF so a normal client disconnect cannot retire live output.
+		go readOutputBrokerAttachment(context.Background(), brokerAttachment, relay, &pipeReaders)
+	}
 	supervisor.mu.Lock()
 	if supervisor.closed {
 		supervisor.mu.Unlock()
@@ -832,14 +840,6 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	promoted = true
 	supervisor.mu.Unlock()
 	traceCleanup = false
-	if brokerAttachment != nil {
-		_ = stdout.Close()
-		_ = stderr.Close()
-		pipeReaders.Add(1)
-		// The request context ends with the Start RPC; broker observation must instead last until the
-		// inherited child pipes reach EOF so a normal client disconnect cannot retire live output.
-		go readOutputBrokerAttachment(context.Background(), brokerAttachment, relay, &pipeReaders)
-	}
 	managedLaunchCleanup = false
 	go supervisor.wait(process)
 	return handle, nil

@@ -114,8 +114,38 @@ func prepareSessionPlatformProcess(command *exec.Cmd, projectID domain.ProjectID
 		windows.CloseHandle(job)
 		return nil, err
 	}
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED | windows.CREATE_BREAKAWAY_FROM_JOB}
+	flags, err := sessionProcessCreationFlags()
+	if err != nil {
+		windows.CloseHandle(job)
+		return nil, err
+	}
+	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED | flags}
 	return &platformProcess{job: job, retainedScope: true}, nil
+}
+
+// sessionProcessCreationFlags leaves unrelated outer jobs intact and explicitly leaves Harbor's permissive lifetime wrappers.
+func sessionProcessCreationFlags() (uint32, error) {
+	var member int32
+	ok, _, nativeErr := processInJob.Call(uintptr(windows.CurrentProcess()), 0, uintptr(unsafe.Pointer(&member)))
+	if ok == 0 {
+		return 0, fmt.Errorf("observe current process job: %w", nativeErr)
+	}
+	if member == 0 {
+		return 0, nil
+	}
+	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	if err := windows.QueryInformationJobObject(0, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits)), nil); err != nil {
+		return 0, fmt.Errorf("observe parent job lifetime policy: %w", err)
+	}
+	return sessionBreakawayFlags(limits.BasicLimitInformation.LimitFlags), nil
+}
+
+// sessionBreakawayFlags requests explicit breakaway only where the enclosing job actually permits it.
+func sessionBreakawayFlags(limits uint32) uint32 {
+	if limits&windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK != 0 {
+		return windows.CREATE_BREAKAWAY_FROM_JOB
+	}
+	return 0
 }
 
 // retainsProcessScope requests a broker-held query handle only for independently created session jobs.

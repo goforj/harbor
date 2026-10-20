@@ -48,6 +48,9 @@ func (coordinator *ProjectLifecycleCoordinator) adoptRecoveredSession(ctx contex
 		(session.State != domain.SessionAwaitingAttach && session.State != domain.SessionAttached) {
 		return false, nil
 	}
+	if coordinator.handle(project.ID, session.ID) != nil {
+		return true, nil
+	}
 	handle, err := adopter.AdoptSession(ctx, projectruntime.SessionAdoptionRequest{Session: session, CheckoutRoot: project.Path})
 	if errors.Is(err, projectruntime.ErrSessionAdoptionUnsupported) {
 		return false, nil
@@ -94,7 +97,12 @@ func (coordinator *ProjectLifecycleCoordinator) recoveredRuntimePlan(project dom
 	if err != nil || !initialized {
 		return projectruntime.Plan{}
 	}
-	lease, found := primaryLeaseForKey(network.Leases, identity.LeaseKey{ProjectID: project.ID})
+	return runtimePlanForRecoveredResources(project, network.Leases)
+}
+
+// runtimePlanForRecoveredResources admits only the persisted primary resource on this project's exact reserved address.
+func runtimePlanForRecoveredResources(project domain.ProjectSnapshot, leases []identity.Lease) projectruntime.Plan {
+	lease, found := primaryLeaseForKey(leases, identity.LeaseKey{ProjectID: project.ID})
 	if !found {
 		return projectruntime.Plan{}
 	}

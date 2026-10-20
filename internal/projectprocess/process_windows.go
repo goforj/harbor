@@ -59,7 +59,7 @@ func preparePlatformProcess(command *exec.Cmd) (*platformProcess, error) {
 // attach assigns the process tree to Harbor's Job Object and captures its creation time.
 func (process *platformProcess) attach(child *os.Process) (string, error) {
 	handle, err := windows.OpenProcess(
-		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE,
+		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.SYNCHRONIZE,
 		false,
 		uint32(child.Pid),
 	)

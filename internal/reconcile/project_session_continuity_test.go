@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/domain"
+	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/projectruntime"
 	"github.com/goforj/harbor/internal/state"
@@ -106,6 +107,9 @@ func TestProjectSessionContinuityPreservesReadySessionAndSupportsExplicitStop(t 
 			if err := coordinator.Recover(t.Context()); err != nil {
 				t.Fatal(err)
 			}
+			if err := coordinator.Recover(t.Context()); err != nil {
+				t.Fatalf("repeated recovery: %v", err)
+			}
 			if err := coordinator.Resume(t.Context()); err != nil {
 				t.Fatal(err)
 			}
@@ -178,5 +182,28 @@ func TestProjectSessionContinuitySettlesInterruptedStartScope(t *testing.T) {
 	operation, err := journal.Operation(t.Context(), seed.operation.Operation.ID)
 	if err != nil || operation.Operation.State != domain.OperationFailed {
 		t.Fatalf("interrupted operation = %#v, %v", operation, err)
+	}
+}
+
+// TestRecoveredRuntimePlanRequiresExactPrimaryResource keeps refreshed resource and native routes tied to the surviving lease.
+func TestRecoveredRuntimePlanRequiresExactPrimaryResource(t *testing.T) {
+	resource := domain.ResourceSnapshot{ID: "app-http", Name: "Application", Kind: "application", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}, URL: "http://127.77.0.42:3000"}
+	project := domain.ProjectSnapshot{ID: "project-recovered", Resources: []domain.ResourceSnapshot{resource}}
+	leases := []identity.Lease{{Key: identity.LeaseKey{ProjectID: project.ID}, Address: netip.MustParseAddr("127.77.0.42")}}
+	plan := runtimePlanForRecoveredResources(project, leases)
+	if plan.NetworkAssignment.Address != leases[0].Address || plan.NetworkAssignment.PrimaryPort != 3000 || plan.Presentation.AppID != "app" || plan.Presentation.ResourceURL != resource.URL {
+		t.Fatalf("lost recovered observation plan: %#v", plan)
+	}
+	for _, mutate := range []func(*domain.ResourceSnapshot){func(r *domain.ResourceSnapshot) { r.ID = "other" }, func(r *domain.ResourceSnapshot) { r.Owner.Kind = domain.ResourceOwnedByService }, func(r *domain.ResourceSnapshot) { r.URL = "http://[invalid" }, func(r *domain.ResourceSnapshot) { r.URL = "http://127.77.0.43:3000" }, func(r *domain.ResourceSnapshot) { r.URL = "http://127.77.0.42" }, func(r *domain.ResourceSnapshot) { r.URL = "http://127.77.0.42:0" }} {
+		changed := resource
+		mutate(&changed)
+		project.Resources = []domain.ResourceSnapshot{changed}
+		if actual := runtimePlanForRecoveredResources(project, leases); actual.NetworkAssignment.Address.IsValid() {
+			t.Fatalf("unadmitted recovered resource: %#v", changed)
+		}
+	}
+	project.Resources = []domain.ResourceSnapshot{resource}
+	if actual := runtimePlanForRecoveredResources(project, nil); actual.NetworkAssignment.Address.IsValid() {
+		t.Fatal("resource acquired address authority without a lease")
 	}
 }

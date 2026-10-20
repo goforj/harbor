@@ -40,7 +40,11 @@ func prepareOutputBrokerProcess(executable, configPath string, stdout, stderr *o
 		return nil, nil, err
 	}
 	if config.RetainProcessScope {
-		command.SysProcAttr.CreationFlags = windows.CREATE_BREAKAWAY_FROM_JOB
+		flags, err := sessionProcessCreationFlags()
+		if err != nil {
+			return nil, nil, err
+		}
+		command.SysProcAttr.CreationFlags = flags
 	}
 	process := &outputBrokerProcess{}
 	process.start = func() error {

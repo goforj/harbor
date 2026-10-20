@@ -55,3 +55,13 @@ func TestSessionScopeRejectsUncontainedDescendantPolicy(t *testing.T) {
 		t.Fatal("scope with escaping descendants was accepted")
 	}
 }
+
+// TestSessionScopeBreakawayPolicyDoesNotEscapeAnUnrelatedRestrictiveJob keeps CI and external service scopes intact.
+func TestSessionScopeBreakawayPolicyDoesNotEscapeAnUnrelatedRestrictiveJob(t *testing.T) {
+	for _, limits := range []uint32{0, windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK, windows.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK} {
+		got := sessionBreakawayFlags(limits)
+		if (got == windows.CREATE_BREAKAWAY_FROM_JOB) != (limits&windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK != 0) {
+			t.Fatalf("wrong explicit breakaway policy %#x for job %#x", got, limits)
+		}
+	}
+}

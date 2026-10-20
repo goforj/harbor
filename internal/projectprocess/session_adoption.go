@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -44,7 +43,7 @@ func (supervisor *Supervisor) AdoptSession(ctx context.Context, session domain.P
 		(session.State != domain.SessionAwaitingAttach && session.State != domain.SessionAttached && session.State != domain.SessionStopping) {
 		return nil, ErrSessionAdoptionUnsupported
 	}
-	canonical, err := filepath.EvalSymlinks(checkoutRoot)
+	canonical, err := canonicalDirectory(checkoutRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve session adoption checkout: %w", err)
 	}
@@ -162,6 +161,12 @@ func (supervisor *Supervisor) DetachSession(ctx context.Context, projectID domai
 		supervisor.mu.Unlock()
 		return errors.Join(errors.New("session scope is not live at detach"), err)
 	}
+	if alive, err := process.platform.rootAlive(process.command.Process.Pid); err != nil || !alive {
+		supervisor.mu.Unlock()
+		return errors.Join(errors.New("session leader is not live at detach"), err)
+	}
+	// Detachment is a shutdown boundary; this owner must never admit a duplicate after relinquishing its maps.
+	supervisor.closed = true
 	process.acceptingStop = false
 	process.detached.Store(true)
 	close(process.detachDone)

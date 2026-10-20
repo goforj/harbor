@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,9 @@ func TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption(t *testing.T) 
 		if err := owner.DetachSession(t.Context(), session.ProjectID, session.ID); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := owner.Start(t.Context(), StartRequest{ProjectID: session.ProjectID, SessionID: "session-forbidden-after-detach", CheckoutRoot: checkout, EnvironmentOverrides: projectProcessTestEnvironment()}); !errors.Is(err, ErrClosed) {
+			t.Fatalf("detached owner admitted another launch: %v", err)
+		}
 		if err := owner.Close(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -86,13 +90,7 @@ func TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption(t *testing.T) 
 		if info := handle.Info(); info.Evidence.PID != session.Process.PID || info.Evidence.BirthToken != session.Process.BirthToken || info.SessionID != session.ID {
 			t.Fatalf("adoption changed the process or session: %#v", info)
 		}
-		cursor := owner.ReadOutput(session.ProjectID, session.ID, 0).NextCursor
-		deadline, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-		chunk, readErr := owner.WaitOutput(deadline, session.ProjectID, session.ID, cursor)
-		cancel()
-		if readErr != nil || !chunk.Available || !strings.Contains(chunk.Text, "stream=") {
-			t.Fatalf("fresh live output after adoption: %#v, %v", chunk, readErr)
-		}
+		waitForFreshSessionOutput(t, owner, session)
 		if _, err := owner.Start(t.Context(), StartRequest{ProjectID: session.ProjectID, SessionID: "session-duplicate", CheckoutRoot: checkout, EnvironmentOverrides: projectProcessTestEnvironment()}); !errors.Is(err, ErrProjectRunning) {
 			t.Fatalf("adopted scope did not fence a duplicate launch: %v", err)
 		}
@@ -128,7 +126,7 @@ func TestSessionAdoptionRejectsDriftWithoutStoppingTheOriginal(t *testing.T) {
 	if session.OutputBroker == nil {
 		t.Fatal("test requires its real broker")
 	}
-	for _, drift := range []string{"root birth", "broker birth", "broker ticket", "missing broker"} {
+	for _, drift := range []string{"root birth", "broker birth", "broker ticket", "missing broker", "broker arguments", "broker image", "wrong project", "wrong session", "noncanonical checkout", "file checkout", "cancelled", "closed"} {
 		t.Run(drift, func(t *testing.T) {
 			candidate := session
 			process, broker := *session.Process, *session.OutputBroker
@@ -142,10 +140,36 @@ func TestSessionAdoptionRejectsDriftWithoutStoppingTheOriginal(t *testing.T) {
 				broker.CredentialDigest = strings.Repeat("c", 64)
 			case "missing broker":
 				candidate.OutputBroker = nil
+			case "broker arguments":
+				broker.Process.ArgumentDigest = strings.Repeat("d", 64)
+			case "broker image":
+				broker.Process.ExecutableIdentity = filepath.Join(checkout, "another-broker")
+			case "wrong project":
+				candidate.ProjectID = "project-foreign"
+			case "wrong session":
+				candidate.ID = "session-foreign"
 			}
 			replacement := newTestSupervisor(options)
 			defer replacement.Close(t.Context())
-			if _, err := replacement.AdoptSession(t.Context(), candidate, checkout); err == nil {
+			adoptionCheckout := checkout
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			switch drift {
+			case "noncanonical checkout":
+				adoptionCheckout = checkout + string(os.PathSeparator) + "."
+			case "file checkout":
+				adoptionCheckout = filepath.Join(checkout, "not-a-directory")
+				if err := os.WriteFile(adoptionCheckout, []byte("source"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "cancelled":
+				cancel()
+			case "closed":
+				if err := replacement.Close(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := replacement.AdoptSession(ctx, candidate, adoptionCheckout); err == nil {
 				t.Fatal("changed ownership proof was accepted")
 			}
 			observation, err := owner.ObservePriorProcess(t.Context(), *session.Process)
@@ -248,18 +272,42 @@ func TestSessionSurvivesHardSupervisorCrash(t *testing.T) {
 	if info := handle.Info(); info.Evidence.PID != session.Process.PID || info.Evidence.BirthToken != session.Process.BirthToken {
 		t.Fatalf("crash recovery replaced the original process: %#v", info)
 	}
-	cursor := replacement.ReadOutput(session.ProjectID, session.ID, 0).NextCursor
+	waitForFreshSessionOutput(t, replacement, session)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	chunk, err := replacement.WaitOutput(ctx, session.ProjectID, session.ID, cursor)
-	if err != nil || !strings.Contains(chunk.Text, "stream=") {
-		t.Fatalf("live output after owner crash: %#v, %v", chunk, err)
-	}
 	if err := replacement.Stop(ctx, session.ProjectID, session.ID); err != nil {
 		t.Fatal(err)
 	}
 	result, err := handle.Wait(ctx)
 	if err != nil || result.ScopeSettlementErr != nil || !result.StopRequested {
 		t.Fatalf("Stop after actual owner crash: %#v, %v", result, err)
+	}
+}
+
+// waitForFreshSessionOutput excludes replayed history by requiring a helper timestamp after this observation began.
+func waitForFreshSessionOutput(t *testing.T, supervisor *Supervisor, session domain.ProjectSession) {
+	t.Helper()
+	notBefore := time.Now().UnixNano()
+	cursor := supervisor.ReadOutput(session.ProjectID, session.ID, 0).NextCursor
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	for {
+		chunk, err := supervisor.WaitOutput(ctx, session.ProjectID, session.ID, cursor)
+		if err != nil {
+			t.Fatalf("fresh live output after adoption: %#v, %v", chunk, err)
+		}
+		cursor = chunk.NextCursor
+		for _, line := range strings.Split(chunk.Text, "\n") {
+			if !strings.HasPrefix(line, "stream=") {
+				continue
+			}
+			timestamp, err := strconv.ParseInt(strings.TrimPrefix(line, "stream="), 10, 64)
+			if err == nil && timestamp >= notBefore {
+				return
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatal("reconnected output contains only history")
+		}
 	}
 }
