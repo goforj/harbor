@@ -145,6 +145,18 @@ jobs:
           set -euo pipefail
           /usr/local/bin/harbor release
           /usr/local/bin/harbor daemon stop
+          python3 - <<'PY'
+          import os, re, subprocess, time
+          service = f'gui/{os.getuid()}/com.goforj.harbor.daemon'
+          deadline = time.monotonic() + 30
+          while time.monotonic() < deadline:
+              state = subprocess.run(['launchctl', 'print', service], text=True, capture_output=True, check=True).stdout
+              if not re.search(r'^\s*pid = [0-9]+$', state, re.M):
+                  break
+              time.sleep(0.1)
+          else:
+              raise RuntimeError('installed daemon did not exit after shutdown acknowledgement')
+          PY
           shasum -a 256 "$HOME/Library/Application Support/GoForj/Harbor/harbor.db" > "$RUNNER_TEMP/harbor-ui-retained.sha256"
           python3 - <<'PY'
           import json, subprocess, os
