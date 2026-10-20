@@ -87,7 +87,7 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
-          go test ./cmd/daemonlauncher ./cmd/desktoplauncher ./cmd/clilauncher ./cmd/installer -count=1 -v
+          go test ./cmd/daemonlauncher ./cmd/desktoplauncher ./cmd/clilauncher ./cmd/installer ./cmd/windowssetup -count=1 -v
           if ($LASTEXITCODE -ne 0) { throw "native stable launcher tests failed" }
       - name: Validate native desktop task activation adapter
         if: ${{ !cancelled() }}
