@@ -105,10 +105,10 @@ func TestNativeIntegrationShortcut(t *testing.T) {
 }
 
 // integrationTestCOMCall invokes only interfaces returned by the explicit system Shell Link server.
-func integrationTestCOMCall(object uintptr, index int, args ...uintptr) uintptr {
-	table := *(*uintptr)(unsafe.Pointer(object))
-	method := *(*uintptr)(unsafe.Pointer(table + uintptr(index)*unsafe.Sizeof(uintptr(0))))
-	result, _, _ := syscall.SyscallN(method, append([]uintptr{object}, args...)...)
+func integrationTestCOMCall(object unsafe.Pointer, index int, args ...uintptr) uintptr {
+	table := *(*unsafe.Pointer)(object)
+	method := *(*uintptr)(unsafe.Add(table, uintptr(index)*unsafe.Sizeof(uintptr(0))))
+	result, _, _ := syscall.SyscallN(method, append([]uintptr{uintptr(object)}, args...)...)
 	return result
 }
 
@@ -127,7 +127,7 @@ func integrationTestShellParser(t *testing.T, path string, spec integrationShort
 	factoryID, _ := windows.GUIDFromString("{00000001-0000-0000-C000-000000000046}")
 	linkID, _ := windows.GUIDFromString("{000214F9-0000-0000-C000-000000000046}")
 	persistID, _ := windows.GUIDFromString("{0000010B-0000-0000-C000-000000000046}")
-	var factory, link, persist uintptr
+	var factory, link, persist unsafe.Pointer
 	factoryProcedure := integrationTestShellFactory(t)
 	status, _, _ = syscall.SyscallN(factoryProcedure, uintptr(unsafe.Pointer(&class)), uintptr(unsafe.Pointer(&factoryID)), uintptr(unsafe.Pointer(&factory)))
 	if int32(status) < 0 {

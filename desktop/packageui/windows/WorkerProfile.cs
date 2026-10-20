@@ -89,7 +89,48 @@ public static class HarborUIProfile {
             return Marshal.ReadInt32(GetSidSubAuthority(sid, (uint)(count-1)));
         } finally { Marshal.FreeHGlobal(data); }
     }
+    static byte[] DefaultDaclBytes(IntPtr token) {
+        IntPtr information=TokenBuffer(token, 6);
+        try {
+            IntPtr acl=Marshal.ReadIntPtr(information);
+            if (acl == IntPtr.Zero) throw new Exception("token default DACL is null");
+            int length=(ushort)Marshal.ReadInt16(acl, 2);
+            if (length < 8) throw new Exception("token default DACL has an invalid size");
+            byte[] bytes=new byte[length];
+            Marshal.Copy(acl, bytes, 0, length);
+            return bytes;
+        } finally { Marshal.FreeHGlobal(information); }
+    }
+    static void AssertPrivateDefaultDacl(IntPtr token) {
+        RawAcl acl=new RawAcl(DefaultDaclBytes(token), 0);
+        string user;
+        using (WindowsIdentity identity=new WindowsIdentity(token)) { user=identity.User.Value; }
+        if (acl.Count != 2) throw new Exception("token default DACL must contain exactly user and SYSTEM");
+        HashSet<string> seen=new HashSet<string>();
+        foreach (GenericAce entry in acl) {
+            CommonAce ace=entry as CommonAce;
+            if (ace == null || ace.AceQualifier != AceQualifier.AccessAllowed || ace.AceFlags != AceFlags.None || ace.AccessMask != 0x10000000) throw new Exception("token default DACL has unexpected rights or inheritance");
+            string sid=ace.SecurityIdentifier.Value;
+            if ((sid != user && sid != "S-1-5-18") || !seen.Add(sid)) throw new Exception("token default DACL has a foreign or duplicate principal");
+        }
+    }
+    static void ConfigurePrivateDefaultDacl(IntPtr token) {
+        string user;
+        using (WindowsIdentity identity=new WindowsIdentity(token)) { user=identity.User.Value; }
+        RawAcl acl=new RawSecurityDescriptor("D:(A;;GA;;;"+user+")(A;;GA;;;SY)").DiscretionaryAcl;
+        byte[] bytes=new byte[acl.BinaryLength];
+        acl.GetBinaryForm(bytes, 0);
+        IntPtr nativeAcl=Marshal.AllocHGlobal(bytes.Length);
+        IntPtr information=Marshal.AllocHGlobal(IntPtr.Size);
+        try {
+            Marshal.Copy(bytes, 0, nativeAcl, bytes.Length);
+            Marshal.WriteIntPtr(information, nativeAcl);
+            if (!SetTokenInformation(token, 6, information, IntPtr.Size)) throw new Win32Exception();
+        } finally { Marshal.FreeHGlobal(information); Marshal.FreeHGlobal(nativeAcl); }
+        AssertPrivateDefaultDacl(token);
+    }
     static void AssertEffectiveToken(IntPtr token) {
+        AssertPrivateDefaultDacl(token);
         string userSID;
         using (WindowsIdentity identity = new WindowsIdentity(token)) {
             userSID=identity.User.Value;
@@ -377,8 +418,11 @@ public static class HarborUIProfile {
             SidAndAttributes[] disable = { new SidAndAttributes { Sid=administrators, Attributes=0 } };
             List<LuidAndAttributes> deleted=new List<LuidAndAttributes>();
             foreach (LuidAndAttributes privilege in Privileges(original)) if (PrivilegeName(privilege.luid) != "SeChangeNotifyPrivilege") deleted.Add(privilege);
+            byte[] sourceDefaultDacl=DefaultDaclBytes(original);
             // DISABLE_MAX_PRIVILEGE ignores the deletion list and leaves reenableable entries behind.
             if (!CreateRestrictedToken(original, 4, 1, disable, (uint)deleted.Count, deleted.ToArray(), 0, IntPtr.Zero, out restricted)) throw new Win32Exception();
+            ConfigurePrivateDefaultDacl(restricted);
+            if (Convert.ToBase64String(sourceDefaultDacl) != Convert.ToBase64String(DefaultDaclBytes(original))) throw new Exception("restricted fixture changed the source default DACL");
             IntPtr user=TokenBuffer(restricted, 1);
             try { if (!SetTokenInformation(restricted, 4, user, IntPtr.Size)) throw new Win32Exception(); }
             finally { Marshal.FreeHGlobal(user); }
