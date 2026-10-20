@@ -94,13 +94,16 @@ class PackageVerificationTests(unittest.TestCase):
         for name in ("windows-package-ui.yml", "windows-native-capacity.yml", "windows-installation-admission.yml", "ci.yml", "docker-project-diagnostics.yml"):
             verify.verify_product(expected, dict(expected, **{f".github/workflows/{name}": "new"}))
         verify.verify_product(expected, dict(expected, **{"internal/platform/loopback/backend_windows_diagnostic_integration_test.go": "new"}))
-        for path in ("internal/reconcile/project_docker_acceptance_test.go", "internal/reconcile/project_docker_diagnostics_test.go"):
+        for path in ("internal/reconcile/project_docker_acceptance_test.go", "internal/reconcile/project_docker_diagnostics_test.go",
+                     "internal/testkit/goforjproject/project.go", "internal/testkit/goforjproject/project_test.go"):
             verify.verify_product(expected, dict(expected, **{path: "diagnostics"}))
         for current in ({}, {"desktop/main.go": ("file", "changed")},
                         dict(expected, **{"cmd/harbord/main.go": "new"}),
                         dict(expected, **{"internal/platform/loopback/backend_windows.go": "changed"}),
                         dict(expected, **{".github/workflows/macos-development-package.yml": "changed"}),
                         dict(expected, **{".github/workflows/windows-development-package.yml": "changed"}),
+                        dict(expected, **{"internal/testkit/goforjproject/snapshot.go": "changed"}),
+                        dict(expected, **{"internal/testkit/goforjproject/doc.go": "changed"}),
                         dict(expected, **{"internal/reconcile/project_docker.go": "changed"}),
                         dict(expected, **{"internal/reconcile/project_docker_diagnostics.go": "changed"})):
             with self.subTest(current=current), self.assertRaises(ValueError):
