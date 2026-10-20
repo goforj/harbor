@@ -58,7 +58,7 @@ jobs:
           . .\desktop\packageui\windows\WorkerProfile.ps1
           $session = (Get-Process -Id $PID).SessionId
           $shells = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session })
-          @{ session_id=$session; user_interactive=[Environment]::UserInteractive; uac=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA; explorer=@($shells | ForEach-Object { @{ pid=$_.Id; integrity=[HarborUIProfile]::Integrity($_.Id) } }) } |
+          @{ session_id=$session; user_interactive=[Environment]::UserInteractive; token_context=[HarborUIProfile]::CurrentTokenFacts(); uac=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA; explorer=@($shells | ForEach-Object { @{ pid=$_.Id; integrity=[HarborUIProfile]::Integrity($_.Id) } }) } |
             ConvertTo-Json -Depth 4 | Set-Content "$env:RUNNER_TEMP\harbor-installed-ui-evidence\worker-profile.json"
           Assert-InteractiveWorker
           if (Test-Path "$env:ProgramFiles\GoForj\Harbor") { throw 'Harbor is already installed' }
@@ -203,6 +203,7 @@ jobs:
           foreach ($fact in @('gui_quiescent','fixtures_stopped','network_released','daemon_absent')) {
             if ($cleanup.$fact -ne $true) { throw "partial installed cleanup: $fact was not verified" }
           }
+          if ($cleanup.error) { throw "partial installed cleanup: $($cleanup.error)" }
           'ready=true' | Out-File $env:GITHUB_OUTPUT -Append
       - name: Uninstall exact admitted package
         if: always() && steps.cleanup.outputs.ready == 'true'
@@ -232,7 +233,7 @@ jobs:
             if (Test-Path (Join-Path $store $signerThumbprint)) { throw 'disposable package signer remains trusted' }
           }
           if ((Get-FileHash $sentinel -Algorithm SHA256).Hash -cne $sentinelHash) { throw 'foreign package sentinel changed' }
-          @('retained_user_files=preserved','foreign_package_sentinel=preserved','package_receipt=absent','installed_components=absent','harbor_machine_state=absent') | Set-Content "$evidence\uninstall.txt"
+          @('observed_retained_user_files=preserved','foreign_package_sentinel=preserved','package_receipt=absent','installed_components=absent','harbor_machine_state=absent') | Set-Content "$evidence\uninstall.txt"
           Remove-Item $sentinel
           Remove-Item $env:HARBOR_INSTALL_ROOT
       - uses: actions/upload-artifact@v7

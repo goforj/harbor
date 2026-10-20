@@ -30,17 +30,41 @@ public static class HarborUIProfile {
         try { int needed; if (!GetTokenInformation(token, kind, data, 4, out needed)) throw new System.ComponentModel.Win32Exception(); return Marshal.ReadInt32(data); }
         finally { Marshal.FreeHGlobal(data); }
     }
+    public static string LastLaunchFacts = "not launched";
+    static string LinkedTokenFacts(IntPtr token) {
+        IntPtr data = Marshal.AllocHGlobal(IntPtr.Size);
+        IntPtr linked = IntPtr.Zero;
+        try {
+            int needed;
+            if (!GetTokenInformation(token, 19, data, IntPtr.Size, out needed)) return "unavailable:"+Marshal.GetLastWin32Error();
+            linked = Marshal.ReadIntPtr(data);
+            if (linked == IntPtr.Zero) return "unavailable:null";
+            return "available:elevation="+TokenInteger(linked, 20);
+        } finally { if (linked != IntPtr.Zero) CloseHandle(linked); Marshal.FreeHGlobal(data); }
+    }
+    static string DescribeToken(IntPtr token, int pid) {
+        using (WindowsIdentity identity = new WindowsIdentity(token)) {
+            return "elevation="+TokenInteger(token, 20)+";integrity="+Integrity(pid)+";administrator="+new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)+";elevation_type="+TokenInteger(token, 18)+";linked_token="+LinkedTokenFacts(token);
+        }
+    }
+    public static string CurrentTokenFacts() {
+        IntPtr token;
+        if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 10, out token)) throw new System.ComponentModel.Win32Exception();
+        try { return DescribeToken(token, Process.GetCurrentProcess().Id); }
+        finally { CloseHandle(token); }
+    }
     public static void AssertProductProcess(int pid) {
         IntPtr process = OpenProcess(0x1000, false, pid);
         if (process == IntPtr.Zero) throw new System.ComponentModel.Win32Exception();
         IntPtr token = IntPtr.Zero;
         try {
             if (!OpenProcessToken(process, 10, out token)) throw new System.ComponentModel.Win32Exception();
+            LastLaunchFacts = DescribeToken(token, pid);
             using (WindowsIdentity identity = new WindowsIdentity(token)) {
                 if (identity.User.Value != WindowsIdentity.GetCurrent().User.Value) throw new Exception("product changed user SID");
                 if (new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)) throw new Exception("product retains administrator membership");
             }
-            if (TokenInteger(token, 20) != 0 || Integrity(pid) != 8192) throw new Exception("product must have a non-elevated medium-integrity token");
+            if (TokenInteger(token, 20) != 0 || Integrity(pid) != 8192) throw new Exception("product must have a non-elevated medium-integrity token: "+LastLaunchFacts);
             if (TokenInteger(token, 12) != Process.GetCurrentProcess().SessionId) throw new Exception("product changed interactive session");
         } finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
     }
