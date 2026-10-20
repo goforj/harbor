@@ -360,7 +360,7 @@ func (helper *windowsForcedSourceSelection) createAddress(row *windows.MibUnicas
 	}
 	helper.t.Cleanup(func() {
 		cleanup := &platformBackend{ipHelper: helper.windowsIPHelper, reconciliationAttempts: windowsReconciliationAttempts, reconciliationInterval: windowsReconciliationInterval}
-		if err := cleanup.rollbackCreatedAddress(*row, &windowsAddressCreation{birth: birth}); err != nil {
+		if err := cleanup.rollbackCreatedAddress(*row, &windowsAddressCreation{birth: birth, observed: observed}); err != nil {
 			helper.t.Error(err)
 		}
 	})
