@@ -102,7 +102,7 @@ func writeSignedFixture(t *testing.T, root, publisher string, payloads map[strin
 	manifest.SignerThumbprint, selection.SignerThumbprint = publisher, publisher
 	for _, path := range []string{root, filepath.Join(root, "releases"), filepath.Join(root, "releases", "1")} {
 		if err := os.Mkdir(path, 0700); err != nil {
-			t.Fatal(err)
+			t.Fatalf("create fixture directory %q: %v", path, err)
 		}
 		setFixtureSecurity(t, path, "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;GRGX;;;BU)")
 	}
@@ -114,7 +114,7 @@ func writeSignedFixture(t *testing.T, root, publisher string, payloads map[strin
 		}
 		path := filepath.Join(root, filepath.FromSlash(component.Path))
 		if err := os.WriteFile(path, data, 0600); err != nil {
-			t.Fatal(err)
+			t.Fatalf("write fixture file %q: %v", path, err)
 		}
 		setFixtureSecurity(t, path, "O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;BU)")
 		digest := sha256.Sum256(data)
@@ -160,10 +160,10 @@ func setFixtureSecurity(t *testing.T, path, sddl string) {
 	}
 	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.WRITE_OWNER|windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open fixture security %q: %v", path, err)
 	}
 	err = windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, owner, nil, dacl, nil)
 	if err := errors.Join(err, windows.CloseHandle(handle)); err != nil {
-		t.Fatal(err)
+		t.Fatalf("set fixture security %q: %v", path, err)
 	}
 }

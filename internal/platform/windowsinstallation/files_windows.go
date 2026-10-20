@@ -215,7 +215,7 @@ func openRetained(path string, directory bool) (*os.File, error) {
 		return nil, errors.Join(err, file.Close())
 	}
 	if !strings.EqualFold(final, `\\?\`+path) {
-		return nil, errors.Join(errors.New("Windows installation path resolves outside its exact admitted destination"), file.Close())
+		return nil, errors.Join(fmt.Errorf("Windows installation path resolves to %q instead of %q", final, `\\?\`+path), file.Close())
 	}
 	return file, nil
 }

@@ -5,8 +5,10 @@ package windowsinstallation
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/goforj/harbor/internal/platform/windowsfile"
 	"golang.org/x/sys/windows"
 )
 
@@ -40,6 +42,19 @@ func TestInstalledDescriptorRefusesForeignMutationAndOwnership(t *testing.T) {
 // TestRetainedFileRefusesAliasesAndPinsReplacement verifies the kernel handle remains authoritative until close.
 func TestRetainedFileRefusesAliasesAndPinsReplacement(t *testing.T) {
 	root := t.TempDir()
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := windowsfile.FinalPath(windows.Handle(directory.Fd()))
+	closeErr := directory.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	root = strings.TrimPrefix(canonical, `\\?\`)
 	path := filepath.Join(root, "component.exe")
 	if err := os.WriteFile(path, []byte("component"), 0600); err != nil {
 		t.Fatal(err)
