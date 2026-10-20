@@ -5,16 +5,24 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/goforj/harbor/internal/platform/windowsinstallation"
 	"golang.org/x/sys/windows"
 )
+
+// maintenanceParentChild selects only the owned native parent-receipt subprocess in tests.
+var maintenanceParentChild = flag.Uint64("harbor-maintenance-parent", 0, "inherited native parent receipt test handle")
 
 // TestWindowsMaintenanceDispatch rejects additional authority arguments before session admission.
 func TestWindowsMaintenanceDispatch(t *testing.T) {
@@ -357,5 +365,58 @@ func TestWindowsCompleteInstallOrdering(t *testing.T) {
 	}
 	if err := completeMaintenanceSteps(func() error { return nil }, func() error { return nil }); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestNativeMaintenanceParentRoundtrip exercises the exact inherited parent receipt before the package bootstrap relies on it.
+func TestNativeMaintenanceParentRoundtrip(t *testing.T) {
+	if os.Getenv("HARBOR_ADMISSION_FIXTURE_ROOT") == "" {
+		t.Skip("disposable interactive native fixture was not configured")
+	}
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parent windows.Handle
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), windows.CurrentProcess(), windows.CurrentProcess(), &parent, maintenanceParentRights, true, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(parent)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, path, "-test.run=^TestNativeMaintenanceParentChild$", "-test.v", "-harbor-maintenance-parent="+strconv.FormatUint(uint64(parent), 10))
+	command.SysProcAttr = &syscall.SysProcAttr{AdditionalInheritedHandles: []syscall.Handle{syscall.Handle(parent)}}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("exact inherited parent receipt refused: %v\n%s", err, output)
+	}
+	t.Logf("exact native child parent receipt: %s", output)
+}
+
+// TestNativeMaintenanceParentChild admits only its real earlier-born parent and prevents onward receipt inheritance.
+func TestNativeMaintenanceParentChild(t *testing.T) {
+	if *maintenanceParentChild == 0 {
+		t.Skip("only the owned parent-receipt subprocess runs this assertion")
+	}
+	parent := windows.Handle(*maintenanceParentChild)
+	defer windows.CloseHandle(parent)
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admitMaintenanceParent(parent, path, user.User.Sid.String()); err != nil {
+		t.Fatal(err)
+	}
+	var flags uint32
+	ok, _, err := windows.NewLazySystemDLL("kernel32.dll").NewProc("GetHandleInformation").Call(uintptr(parent), uintptr(unsafe.Pointer(&flags)))
+	if ok == 0 {
+		t.Fatal(err)
+	}
+	if flags&windows.HANDLE_FLAG_INHERIT != 0 {
+		t.Fatal("admitted parent receipt can be inherited again")
 	}
 }

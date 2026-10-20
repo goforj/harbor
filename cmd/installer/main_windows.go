@@ -579,11 +579,12 @@ func admitMaintenanceParent(parent windows.Handle, original, userSID string) err
 	if flags&windows.HANDLE_FLAG_INHERIT == 0 {
 		return errors.New("uninstall parent receipt was not inherited")
 	}
-	var object [128]byte
+	// NtQueryObject rejects buffers that differ from the exact PUBLIC_OBJECT_BASIC_INFORMATION layout.
+	var object [56]byte
 	var length uint32
 	status, _, _ := windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryObject").Call(uintptr(parent), 0, uintptr(unsafe.Pointer(&object[0])), uintptr(len(object)), uintptr(unsafe.Pointer(&length)))
-	if status != 0 || length < 8 || binary.LittleEndian.Uint32(object[4:8]) != maintenanceParentRights {
-		return errors.New("uninstall parent receipt has unexpected native access rights")
+	if status != 0 || length != uint32(len(object)) || binary.LittleEndian.Uint32(object[4:8]) != maintenanceParentRights {
+		return fmt.Errorf("uninstall parent receipt has unexpected native access rights: status=%#x length=%d granted=%#x", status, length, binary.LittleEndian.Uint32(object[4:8]))
 	}
 	var basic [6]uintptr
 	status, _, _ = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryInformationProcess").Call(uintptr(windows.CurrentProcess()), 0, uintptr(unsafe.Pointer(&basic[0])), unsafe.Sizeof(basic), uintptr(unsafe.Pointer(&length)))
