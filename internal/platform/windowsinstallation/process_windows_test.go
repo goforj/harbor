@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"golang.org/x/sys/windows"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,6 +45,18 @@ func TestNativeAdmittedProcessLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer child.Close()
+	var actualToken windows.Token
+	if err := windows.OpenProcessToken(child.process, windows.TOKEN_QUERY|windows.READ_CONTROL, &actualToken); err != nil {
+		t.Fatal(err)
+	}
+	security, err := windows.GetSecurityInfo(windows.Handle(actualToken), windows.SE_KERNEL_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("actual child token object descriptor: %s", security.String())
+	if err := actualToken.Close(); err != nil {
+		t.Fatal(err)
+	}
 	facts, _ := json.Marshal(child.Facts)
 	t.Logf("actual suspended child admitted before resume: %s", facts)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -64,6 +77,14 @@ func TestNativeInstalledChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("running installed child: %+v", facts)
+	for _, access := range []uint32{windows.TOKEN_QUERY, windows.TOKEN_DUPLICATE, windows.TOKEN_ADJUST_DEFAULT, windows.TOKEN_ALL_ACCESS} {
+		var own windows.Token
+		err := windows.OpenProcessToken(windows.CurrentProcess(), access, &own)
+		t.Logf("running own-token access %#x: %v", access, err)
+		if err == nil {
+			own.Close()
+		}
+	}
 	if !*nativeNested {
 		return
 	}

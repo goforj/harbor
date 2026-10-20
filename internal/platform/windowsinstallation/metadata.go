@@ -27,6 +27,7 @@ const (
 var (
 	digestPattern     = regexp.MustCompile(`^[a-f0-9]{64}$`)
 	thumbprintPattern = regexp.MustCompile(`^[A-F0-9]{40}$`)
+	userSIDPattern    = regexp.MustCompile(`^S-1-(?:5-21-[0-9]+-[0-9]+-[0-9]+-[0-9]+|12-1-[0-9]+-[0-9]+-[0-9]+-[0-9]+)$`)
 	identityPattern   = regexp.MustCompile(`^[a-f0-9]{32}$`)
 	revisionPattern   = regexp.MustCompile(`^[a-f0-9]{40}$`)
 	versionPattern    = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+-(dev|rc)\.[0-9]+$`)
@@ -40,6 +41,8 @@ type Selection struct {
 	ProductID string `json:"product_id"`
 	// InstallationID binds owned task definitions to this machine installation.
 	InstallationID string `json:"installation_id"`
+	// UserSID binds this first same-user Windows installation to its intended interactive account.
+	UserSID string `json:"user_sid"`
 	// ReleaseSequence selects one immutable payload directory.
 	ReleaseSequence uint64 `json:"release_sequence"`
 	// BundleDigest binds the complete selected component set.
@@ -128,6 +131,9 @@ func Decode(reader io.Reader, destination any) error {
 
 // ValidateSelection rejects incomplete, foreign, or mutable installed selections before selecting paths.
 func ValidateSelection(selection Selection) error {
+	if !validUserSID(selection.UserSID) {
+		return errors.New("Windows installation requires its intended interactive account SID")
+	}
 	if selection.SchemaVersion != SchemaVersion || selection.ProductID != ProductID || !identityPattern.MatchString(selection.InstallationID) || selection.ReleaseSequence == 0 || !digestPattern.MatchString(selection.BundleDigest) || !thumbprintPattern.MatchString(selection.SignerThumbprint) {
 		return errors.New("Windows installation selection has incompatible or incomplete identity")
 	}
@@ -180,4 +186,18 @@ func ComponentPath(manifest Manifest, role string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("Windows installed role %q is unavailable", role)
+}
+
+// validUserSID accepts canonical account identifiers without adopting system, service or builtin group principals.
+func validUserSID(value string) bool {
+	if !userSIDPattern.MatchString(value) {
+		return false
+	}
+	for _, part := range strings.Split(value, "-")[2:] {
+		parsed, err := strconv.ParseUint(part, 10, 32)
+		if err != nil || strconv.FormatUint(parsed, 10) != part {
+			return false
+		}
+	}
+	return true
 }

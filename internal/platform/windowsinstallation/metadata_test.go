@@ -19,7 +19,7 @@ func fixtureMetadata(t *testing.T) (Manifest, Selection) {
 		t.Fatal(err)
 	}
 	manifest.BundleDigest = digest
-	return manifest, Selection{SchemaVersion: 1, ProductID: ProductID, InstallationID: strings.Repeat("b", 32), ReleaseSequence: 1, BundleDigest: digest, SignerThumbprint: manifest.SignerThumbprint}
+	return manifest, Selection{SchemaVersion: 1, ProductID: ProductID, InstallationID: strings.Repeat("b", 32), UserSID: "S-1-5-21-1-2-3-1000", ReleaseSequence: 1, BundleDigest: digest, SignerThumbprint: manifest.SignerThumbprint}
 }
 
 // TestMetadataSelectionAndManifestRejectDrift keeps every authority-bearing installation field fail closed.
@@ -28,7 +28,7 @@ func TestMetadataSelectionAndManifestRejectDrift(t *testing.T) {
 	if err := ValidateManifest(manifest, selection); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutate := range []func(*Selection){func(s *Selection) { s.SchemaVersion++ }, func(s *Selection) { s.ProductID = "foreign" }, func(s *Selection) { s.InstallationID = "../escape" }, func(s *Selection) { s.ReleaseSequence = 0 }, func(s *Selection) { s.BundleDigest = strings.Repeat("B", 64) }, func(s *Selection) { s.SignerThumbprint = "" }} {
+	for _, mutate := range []func(*Selection){func(s *Selection) { s.UserSID = "S-1-5-18" }, func(s *Selection) { s.UserSID = "S-1-5-21-1-2-3-4294967296" }, func(s *Selection) { s.UserSID = "S-1-5-21-01-2-3-1000" }, func(s *Selection) { s.SchemaVersion++ }, func(s *Selection) { s.ProductID = "foreign" }, func(s *Selection) { s.InstallationID = "../escape" }, func(s *Selection) { s.ReleaseSequence = 0 }, func(s *Selection) { s.BundleDigest = strings.Repeat("B", 64) }, func(s *Selection) { s.SignerThumbprint = "" }} {
 		changed := selection
 		mutate(&changed)
 		if ValidateManifest(manifest, changed) == nil {

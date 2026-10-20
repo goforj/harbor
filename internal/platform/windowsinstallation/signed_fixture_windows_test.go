@@ -99,6 +99,11 @@ func TestNativeSignedInstallationAdmission(t *testing.T) {
 func writeSignedFixture(t *testing.T, root, publisher string, payloads map[string][]byte) (Manifest, Selection) {
 	t.Helper()
 	manifest, selection := fixtureMetadata(t)
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.UserSID = user.User.Sid.String()
 	manifest.SignerThumbprint, selection.SignerThumbprint = publisher, publisher
 	for _, path := range []string{root, filepath.Join(root, "releases"), filepath.Join(root, "releases", "1")} {
 		if err := os.Mkdir(path, 0700); err != nil {

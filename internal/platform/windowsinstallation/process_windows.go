@@ -44,7 +44,7 @@ func (installation *Installation) Start(role string, arguments []string) (_ *Chi
 	}
 	var source windows.Token
 	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_ALL_ACCESS, &source); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open installed source token: %w", err)
 	}
 	defer func() { result = errors.Join(result, source.Close()) }()
 	user, err := source.GetTokenUser()
@@ -55,7 +55,7 @@ func (installation *Installation) Start(role string, arguments []string) (_ *Chi
 	if err := tokenInteger(source, windows.TokenSessionId, &session); err != nil {
 		return nil, err
 	}
-	if session == 0 || user.User.Sid.String() == systemSID {
+	if session == 0 || user.User.Sid.String() == systemSID || user.User.Sid.String() != installation.selection.UserSID {
 		return nil, errors.New("installed product launch requires its interactive user session")
 	}
 	token, err := restrictedRuntimeToken(source)
