@@ -38,6 +38,7 @@ var maintenanceStageName = regexp.MustCompile(`^HarborUninstall-[a-f0-9]{32}$`)
 type maintenanceOperations struct {
 	verify    func(bool) error
 	register  func(context.Context) error
+	complete  func(context.Context) error
 	remove    func(context.Context) error
 	bootstrap func(context.Context) error
 	finish    func(context.Context, windows.Handle) error
@@ -48,7 +49,7 @@ type maintenanceOperations struct {
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	operations := maintenanceOperations{verify: verifyMaintenanceSession, register: registerMaintenanceTask, remove: removeMaintenanceTask, bootstrap: func(ctx context.Context) error {
+	operations := maintenanceOperations{verify: verifyMaintenanceSession, register: registerMaintenanceTask, complete: completeMaintenanceInstall, remove: removeMaintenanceTask, bootstrap: func(ctx context.Context) error {
 		return requestMaintenanceUninstall(ctx, len(os.Args) == 2 && os.Args[1] == "--silent")
 	}, finish: finishUninstall, guard: func(ready, release windows.Handle) error {
 		return windowsinstallation.RunUninstallGuard(ready, release, daemonservice.PrepareDatabase)
@@ -85,7 +86,7 @@ func runMaintenance(ctx context.Context, arguments []string, operations maintena
 		if err != nil {
 			return err
 		}
-	} else if len(arguments) != 1 || (action != "--register-task" && action != "--remove-task" && action != "--uninstall") {
+	} else if len(arguments) != 1 || (action != "--register-task" && action != "--complete-install" && action != "--remove-task" && action != "--uninstall") {
 		return errors.New("Windows maintenance operation or arguments are not admitted")
 	}
 	if err := operations.verify(action == "--uninstall"); err != nil {
@@ -94,6 +95,8 @@ func runMaintenance(ctx context.Context, arguments []string, operations maintena
 	switch action {
 	case "--register-task":
 		return operations.register(ctx)
+	case "--complete-install":
+		return operations.complete(ctx)
 	case "--remove-task":
 		return operations.remove(ctx)
 	case "--uninstall":
@@ -141,8 +144,13 @@ func admitMaintenance() (*windowsinstallation.Installation, error) {
 	return installation, nil
 }
 
-// registerMaintenanceTask delegates only the fixed signed policy's create-only task operation.
-func registerMaintenanceTask(ctx context.Context) (result error) {
+// registerMaintenanceTask serializes the compatibility task operation with machine installation and removal.
+func registerMaintenanceTask(ctx context.Context) error {
+	return windowsinstallation.WithMachineTransaction(ctx, func() error { return registerMaintenanceTaskLocked(ctx) })
+}
+
+// registerMaintenanceTaskLocked delegates only the fixed signed policy's create-only task operation under its machine lease.
+func registerMaintenanceTaskLocked(ctx context.Context) (result error) {
 	installation, err := admitMaintenance()
 	if err != nil {
 		return err
@@ -151,8 +159,13 @@ func registerMaintenanceTask(ctx context.Context) (result error) {
 	return installation.Task(ctx, "register")
 }
 
-// removeMaintenanceTask verifies stopped user authority through a restricted worker before removing an exact owned task.
-func removeMaintenanceTask(ctx context.Context) (result error) {
+// removeMaintenanceTask serializes stopped-state verification and task removal against machine installation.
+func removeMaintenanceTask(ctx context.Context) error {
+	return windowsinstallation.WithMachineTransaction(ctx, func() error { return removeMaintenanceTaskLocked(ctx) })
+}
+
+// removeMaintenanceTaskLocked verifies stopped user authority through a restricted worker before removing an exact owned task.
+func removeMaintenanceTaskLocked(ctx context.Context) (result error) {
 	installation, err := admitMaintenance()
 	if err != nil {
 		return err
@@ -865,4 +878,27 @@ func parseUninstallGuardHandles(arguments []string) (windows.Handle, windows.Han
 		return 0, 0, errors.New("uninstall guard requires distinct event handles")
 	}
 	return ready, release, nil
+}
+
+// completeMaintenanceInstall commits machine integration and task registration while one machine lease excludes removal and helper writers.
+func completeMaintenanceInstall(ctx context.Context) error {
+	return windowsinstallation.WithMachineTransaction(ctx, func() (result error) {
+		installation, err := admitMaintenance()
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, installation.Close()) }()
+		return completeMaintenanceSteps(func() error { return installation.InstallMachineIntegration(ctx) }, func() error { return installation.Task(ctx, "register") })
+	})
+}
+
+// completeMaintenanceSteps refuses task creation until the exact machine integration has been committed or revalidated.
+func completeMaintenanceSteps(integrate, register func() error) error {
+	if err := integrate(); err != nil {
+		return fmt.Errorf("complete Windows machine integration: %w", err)
+	}
+	if err := register(); err != nil {
+		return fmt.Errorf("register installed daemon task: %w", err)
+	}
+	return nil
 }

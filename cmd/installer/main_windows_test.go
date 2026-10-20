@@ -23,12 +23,13 @@ func TestWindowsMaintenanceDispatch(t *testing.T) {
 			t.Fatalf("admitted arguments %q", arguments)
 		}
 	}
-	for _, action := range []string{"--register-task", "--remove-task", "--uninstall", "--finish-uninstall"} {
+	for _, action := range []string{"--register-task", "--complete-install", "--remove-task", "--uninstall", "--finish-uninstall"} {
 		t.Run(action, func(t *testing.T) {
 			var events []string
 			operations := maintenanceOperations{
 				verify:    func(bool) error { events = append(events, "verify"); return nil },
 				register:  func(context.Context) error { events = append(events, "register"); return nil },
+				complete:  func(context.Context) error { events = append(events, "complete"); return nil },
 				remove:    func(context.Context) error { events = append(events, "remove"); return nil },
 				bootstrap: func(context.Context) error { events = append(events, "bootstrap"); return nil },
 				finish: func(_ context.Context, parent windows.Handle) error {
@@ -44,6 +45,8 @@ func TestWindowsMaintenanceDispatch(t *testing.T) {
 			switch action {
 			case "--register-task":
 				expected = "register"
+			case "--complete-install":
+				expected = "complete"
 			case "--remove-task":
 				expected = "remove"
 			case "--uninstall":
@@ -271,7 +274,7 @@ func TestWindowsMaintenanceUserEntrypoints(t *testing.T) {
 	if !interactiveMaintenance(nil) || !interactiveMaintenance([]string{"--uninstall"}) {
 		t.Fatal("interactive uninstall error would be hidden")
 	}
-	for _, arguments := range [][]string{{"--silent"}, {"--finish-uninstall"}, {"--register-task"}, {"--remove-task"}, {"--hold-stopped"}} {
+	for _, arguments := range [][]string{{"--silent"}, {"--finish-uninstall"}, {"--complete-install"}, {"--register-task"}, {"--remove-task"}, {"--hold-stopped"}} {
 		if interactiveMaintenance(arguments) {
 			t.Fatalf("internal/quiet role would display modal error: %q", arguments)
 		}
@@ -296,6 +299,27 @@ func TestWindowsUninstallGuardDispatch(t *testing.T) {
 		return failure
 	}}
 	if err := runMaintenance(context.Background(), []string{"--hold-stopped", "--ready-handle=4", "--release-handle=8"}, operations); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+}
+
+// TestWindowsCompleteInstallOrdering preserves integration and registration failures without creating a task for failed machine state.
+func TestWindowsCompleteInstallOrdering(t *testing.T) {
+	denied := errors.New("foreign machine integration")
+	if err := completeMaintenanceSteps(func() error { return denied }, func() error { t.Fatal("task registered before integration admission"); return nil }); !errors.Is(err, denied) {
+		t.Fatal(err)
+	}
+	taskFailure := errors.New("foreign daemon task")
+	integrated := false
+	if err := completeMaintenanceSteps(func() error { integrated = true; return nil }, func() error {
+		if !integrated {
+			t.Fatal("task preceded machine integration")
+		}
+		return taskFailure
+	}); !errors.Is(err, taskFailure) {
+		t.Fatal(err)
+	}
+	if err := completeMaintenanceSteps(func() error { return nil }, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 }
