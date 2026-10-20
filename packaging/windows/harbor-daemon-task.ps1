@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][ValidateSet('register', 'start', 'inspect', 'remove')][string]$Action)
+param([Parameter(Mandatory=$true)][ValidateSet('register', 'start', 'inspect', 'remove', 'absent')][string]$Action)
 $ErrorActionPreference = 'Stop'
 $PSModuleAutoLoadingPreference = 'None'
 $env:PSModulePath = ''
@@ -89,6 +89,11 @@ function Get-OwnedTask($Folder, [string]$Name, $Definition, [string]$SDDL) {
     return $task
 }
 
+# Assert-TaskAbsent prevents machine cleanup from proceeding after another transaction restored any task.
+function Assert-TaskAbsent($Task) {
+    if ($null -ne $Task) { throw 'installed Harbor daemon task is still registered' }
+}
+
 # Assert-InstallerParent permits mutation only through the selected same-user maintenance executable.
 function Assert-InstallerParent([string]$SID, [int]$Session, [string]$Installer) {
     Import-Module -Name ([IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\Modules\CimCmdlets\CimCmdlets.psd1'))
@@ -165,6 +170,7 @@ switch ($Action) {
         if ($null -eq $task) { throw 'installed Harbor daemon task is missing; repair the same-user installation' }
         $null = $task.RunEx($null, 4 -bor 8, $session, $sid)
     }
+    'absent' { Assert-TaskAbsent $task }
     'inspect' {
         if ($null -eq $task) { throw 'installed Harbor daemon task is missing' }
     }

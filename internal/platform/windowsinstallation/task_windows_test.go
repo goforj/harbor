@@ -14,7 +14,7 @@ import (
 
 // TestTaskActionAdmission rejects attempts to select a different task or inject policy arguments.
 func TestTaskActionAdmission(t *testing.T) {
-	for _, action := range []string{"register", "start", "inspect", "remove"} {
+	for _, action := range []string{"register", "start", "inspect", "remove", "absent"} {
 		if err := admitTaskAction(action); err != nil {
 			t.Fatal(err)
 		}
@@ -103,6 +103,7 @@ $selection = @{ installation_id = ('a' * 32); bundle_digest = ('b' * 64) }
 $definition = New-OwnedTaskDefinition $service 'C:\HarborNativeFixture' $sid $name $selection
 $sddl = Get-OwnedTaskSDDL $sid
 if ($null -ne (Get-OwnedTask $folder $name $definition $sddl)) { throw 'fresh fixture task exists' }
+Assert-TaskAbsent (Get-OwnedTask $folder $name $definition $sddl)
 $lock = Enter-OwnedTaskLock $sid
 $lock.ReleaseMutex()
 $lock.Dispose()
@@ -120,6 +121,12 @@ try {
         throw
     }
     if ($null -eq $task) { throw 'exact registered task absent' }
+    $absentRefused = $false
+    try { Assert-TaskAbsent $task } catch {
+        if ($_.Exception.Message -notlike '*still registered*') { throw }
+        $absentRefused = $true
+    }
+    if (-not $absentRefused) { throw 'registered task was admitted absent' }
     $originalXML = Convert-TaskXML $task.Definition.XmlText
     $originalACL = Convert-TaskACL $task.GetSecurityDescriptor(7)
     $mutations = @(
@@ -161,6 +168,7 @@ try {
     $folder.DeleteTask($name, 0)
     $created = $false
     if ($null -ne (Get-OwnedTask $folder $name $definition $sddl)) { throw 'deleted fixture still exists' }
+    Assert-TaskAbsent (Get-OwnedTask $folder $name $definition $sddl)
     $unconnected = [Activator]::CreateInstance([Type]::GetTypeFromProgID('Schedule.Service'))
     $errorPreserved = $false
     try { $null = Get-OwnedTask $unconnected $name $definition $sddl } catch { $errorPreserved = $true }

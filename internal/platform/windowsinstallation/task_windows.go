@@ -80,7 +80,7 @@ func (installation *Installation) Task(ctx context.Context, action string) error
 // admitTaskAction prevents caller-selected scripts, task names, principals, or scheduler operations.
 func admitTaskAction(action string) error {
 	switch action {
-	case "register", "start", "inspect", "remove":
+	case "register", "start", "inspect", "remove", "absent":
 		return nil
 	default:
 		return errors.New("Windows installed task action is not admitted")
