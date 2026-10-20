@@ -366,6 +366,11 @@ class CleanupDiagnosticsTests(RecordedRunFixture):
 
 @unittest.skipIf(os.name == "nt", "macOS recovery uses POSIX process identity")
 class LiveReleaseDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        selected = patch.object(cleanup_macos.os, "getuid", return_value=501)
+        selected.start()
+        self.addCleanup(selected.stop)
+
     def cli_facts(self):
         return {"pid": 123, "parent_pid": os.getpid(), "uid": os.getuid(), "real_uid": os.getuid(),
                 "executable": "/admitted/harbor", "birth_seconds": 100, "birth_microseconds": 123}
@@ -431,7 +436,8 @@ class LiveReleaseDiagnosticsTests(unittest.TestCase):
                     sampled.append(pid)
                     Path(arguments[-1]).write_text("native stack")
                     return subprocess.CompletedProcess(arguments, 0, "tool summary only for admitted process", "")
-                with patch.object(cleanup_macos, "installed_executable", return_value="/admitted/helper"), \
+                with patch.object(cleanup_macos, "installed_executable", side_effect=lambda path, **kw: "/admitted/harbor" if path == cleanup_macos.CLI else "/admitted/helper"), \
+                        patch.object(cleanup_macos, "helper_process_facts", side_effect=lambda initial, pid: cleanup_macos.read_admitted_helper_facts(initial, pid)), \
                         patch.object(cleanup_macos, "daemon_process_facts", side_effect=facts), \
                         patch.object(cleanup_macos.subprocess, "run", side_effect=run):
                     cleanup_macos.collect_live_release_diagnostics(evidence, initial)
@@ -499,6 +505,31 @@ class LiveReleaseDiagnosticsTests(unittest.TestCase):
                         cleanup_macos.installed_executable("/fixed/helper", setuid=True)
                 else:
                     self.assertEqual(cleanup_macos.installed_executable("/fixed/helper", setuid=True), "/admitted/helper")
+
+
+    def test_protected_helper_probe_is_isolated_bounded_and_has_only_scope_metadata(self):
+        initial = self.cli_facts()
+        expected = dict(initial, pid=456, parent_pid=123, uid=0, real_uid=0, executable="/admitted/helper")
+        with patch.object(cleanup_macos.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(expected), "")) as run:
+            self.assertEqual(cleanup_macos.helper_process_facts(initial, 456), expected)
+        arguments = run.call_args.args[0]
+        self.assertEqual(arguments[:4], ["/usr/bin/sudo", "-n", "/usr/bin/python3", "-I"])
+        self.assertEqual(arguments[-2:], ["helper-facts", "456"])
+        self.assertEqual(json.loads(run.call_args.kwargs["input"]), initial)
+        self.assertEqual(run.call_args.kwargs["timeout"], 5)
+        with patch.object(cleanup_macos.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "denied")):
+            with self.assertRaises(subprocess.CalledProcessError):
+                cleanup_macos.helper_process_facts(initial, 456)
+
+    def test_root_probe_rejects_changed_or_privileged_cli_before_reading_child(self):
+        initial = self.cli_facts()
+        for changes in ({"birth_microseconds": 124}, {"uid": 0, "real_uid": 0}, {"executable": "/foreign"}):
+            with self.subTest(changes=changes), \
+                    patch.object(cleanup_macos, "installed_executable", return_value="/admitted/harbor"), \
+                    patch.object(cleanup_macos, "daemon_process_facts", return_value=dict(initial, **changes)) as facts:
+                with self.assertRaises(RuntimeError):
+                    cleanup_macos.read_admitted_helper_facts(initial, 456)
+                facts.assert_called_once_with(123)
 
 
 if __name__ == "__main__":
