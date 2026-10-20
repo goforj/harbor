@@ -3,7 +3,10 @@
 package windowsinstallation
 
 import (
+	"fmt"
+	"runtime"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -61,5 +64,90 @@ func TestNativeRuntimeTokenRejectsHighAuthority(t *testing.T) {
 	}
 	if _, err := inspectRuntimeToken(current); err == nil {
 		t.Fatal("original high token admitted")
+	}
+}
+
+// TestNativeRestrictedDefaultDACL gives only newly derived objects user ownership without mutating the source token.
+func TestNativeRestrictedDefaultDACL(t *testing.T) {
+	var source windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE, &source); err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	original := nativeTokenDefaultDACL(t, source)
+	token, err := restrictedRuntimeToken(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer token.Close()
+	user, err := source.GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := windows.SecurityDescriptorFromString(fmt.Sprintf("D:(A;;GA;;;%s)(A;;GA;;;SY)", user.User.Sid.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual := nativeTokenDefaultDACL(t, token); actual != expected.String() {
+		t.Fatalf("restricted default object DACL=%s expected %s", actual, expected.String())
+	}
+	if actual := nativeTokenDefaultDACL(t, source); actual != original {
+		t.Fatalf("source default DACL changed: %s became %s", original, actual)
+	}
+}
+
+// nativeTokenDefaultDACL serializes a token's copied default ACL while its native backing bytes remain alive.
+func nativeTokenDefaultDACL(t *testing.T, token windows.Token) string {
+	t.Helper()
+	information, err := tokenInformation(token, windows.TokenDefaultDacl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultDACL := (*struct{ DACL *windows.ACL })(unsafe.Pointer(&information[0]))
+	descriptor, err := windows.NewSecurityDescriptor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := descriptor.SetDACL(defaultDACL.DACL, true, false); err != nil {
+		t.Fatal(err)
+	}
+	serialized := descriptor.String()
+	runtime.KeepAlive(information)
+	return serialized
+}
+
+// TestRuntimeObjectACLRejectsDrift covers every admitted default grant and rejection branch without mutating source tokens.
+func TestRuntimeObjectACLRejectsDrift(t *testing.T) {
+	const user = "S-1-5-21-1-2-3-1000"
+	for _, test := range []struct {
+		name, sddl string
+		allowed    bool
+	}{
+		{"user-system", "D:(A;;GA;;;" + user + ")(A;;GA;;;SY)", true},
+		{"system-user", "D:(A;;GA;;;SY)(A;;GA;;;" + user + ")", true},
+		{"null", "D:NO_ACCESS_CONTROL", false},
+		{"empty", "D:", false},
+		{"missing-system", "D:(A;;GA;;;" + user + ")", false},
+		{"extra", "D:(A;;GA;;;" + user + ")(A;;GA;;;SY)(A;;GA;;;BA)", false},
+		{"duplicate", "D:(A;;GA;;;" + user + ")(A;;GA;;;" + user + ")", false},
+		{"foreign", "D:(A;;GA;;;BU)(A;;GA;;;SY)", false},
+		{"deny", "D:(D;;GA;;;" + user + ")(A;;GA;;;SY)", false},
+		{"inherited", "D:(A;ID;GA;;;" + user + ")(A;;GA;;;SY)", false},
+		{"inherit-only", "D:(A;IO;GA;;;" + user + ")(A;;GA;;;SY)", false},
+		{"reduced", "D:(A;;GR;;;" + user + ")(A;;GA;;;SY)", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			descriptor, err := windows.SecurityDescriptorFromString(test.sddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dacl, _, err := descriptor.DACL()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := admitRuntimeObjectACL(dacl, user); (err == nil) != test.allowed {
+				t.Fatalf("default object DACL admission=%v expected allowed=%t", err, test.allowed)
+			}
+		})
 	}
 }
