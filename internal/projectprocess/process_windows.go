@@ -162,6 +162,12 @@ func (process *platformProcess) treeAlive(pid int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if information.ActiveProcesses == 0 {
+		var member int32
+		ok, _, memberErr := processInJob.Call(uintptr(process.process), uintptr(process.job), uintptr(unsafe.Pointer(&member)))
+		state, waitErr := windows.WaitForSingleObject(process.process, 0)
+		fmt.Printf("EMPTY JOB OBSERVATION pid=%d job=%d process=%d info=%#v member=%d ok=%d memberErr=%v wait=%d waitErr=%v\n", pid, process.job, process.process, information, member, ok, memberErr, state, waitErr)
+	}
 	return information.ActiveProcesses != 0, nil
 }
 
