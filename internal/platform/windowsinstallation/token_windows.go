@@ -151,10 +151,22 @@ func restrictedRuntimeToken(source windows.Token) (windows.Token, error) {
 		}
 		return 0, callErr
 	}
-	if err := configureRuntimeToken(token, user.User.Sid); err != nil {
-		return 0, errors.Join(err, token.Close())
+
+	// CreateRestrictedToken inherits the source handle's access mask. Duplicate only
+	// the already restricted object so configuring it never requires modifying or
+	// broadening access to the original source token.
+	owned, err := duplicateRuntimeToken(token, user.User.Sid)
+	closeErr := token.Close()
+	if err := errors.Join(err, closeErr); err != nil {
+		if owned != 0 {
+			err = errors.Join(err, owned.Close())
+		}
+		return 0, err
 	}
-	return token, nil
+	if err := configureRuntimeToken(owned, user.User.Sid); err != nil {
+		return 0, errors.Join(err, owned.Close())
+	}
+	return owned, nil
 }
 
 // configureRuntimeToken prevents elevated default ownership from leaking into a demoted user's new files.
@@ -212,4 +224,20 @@ func admitRuntimeFacts(facts TokenFacts) error {
 		return errors.New("Harbor installed role requires interactive medium integrity, no-write-up and no UIAccess")
 	}
 	return nil
+}
+
+// duplicateRuntimeToken authors private configuration rights on only an already restricted token object.
+func duplicateRuntimeToken(source windows.Token, user *windows.SID) (windows.Token, error) {
+	descriptor, err := windows.SecurityDescriptorFromString(fmt.Sprintf("O:%sD:P(A;;0xf01ff;;;%s)(A;;0xf01ff;;;SY)", user.String(), user.String()))
+	if err != nil {
+		return 0, err
+	}
+	attributes := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
+	var token windows.Token
+	err = windows.DuplicateTokenEx(source, windows.TOKEN_ALL_ACCESS, &attributes, windows.SecurityImpersonation, windows.TokenPrimary, &token)
+	runtime.KeepAlive(descriptor)
+	if err != nil {
+		return 0, fmt.Errorf("duplicate already restricted Windows token: %w", err)
+	}
+	return token, nil
 }
