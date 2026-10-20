@@ -137,6 +137,10 @@ func TestNativeMaintenanceMappedImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	current, err = filepath.EvalSymlinks(current)
+	if err != nil {
+		t.Fatal(err)
+	}
 	file, err := openMaintenanceObject(current, false)
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +201,7 @@ func TestNativeMaintenanceProtectedStage(t *testing.T) {
 	if err := os.Remove(root); err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := windows.SecurityDescriptorFromString(maintenanceStageSDDL)
+	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(maintenanceStageSDDL, "S:")[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +214,7 @@ func TestNativeMaintenanceProtectedStage(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	directory, err := openMaintenanceObject(root, true)
+	directory, err := labelMaintenanceDirectory(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,11 +223,15 @@ func TestNativeMaintenanceProtectedStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "fixture.exe")
-	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL, 0, attributes, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL|windows.WRITE_OWNER, 0, attributes, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	labelErr := labelMaintenanceObject(handle)
 	windows.CloseHandle(handle)
+	if labelErr != nil {
+		t.Fatal(labelErr)
+	}
 	defer func() {
 		if err := os.Remove(path); err != nil {
 			t.Error(err)

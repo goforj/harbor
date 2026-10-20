@@ -283,7 +283,7 @@ func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 		t.Fatal(err)
 	}
 	root := filepath.Join(system, "Temp", "HarborUninstall-"+hex.EncodeToString(nonce[:]))
-	descriptor, err := windows.SecurityDescriptorFromString(uninstallGuardStageSDDL)
+	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(uninstallGuardStageSDDL, "S:")[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,6 +291,7 @@ func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 	if err := windows.CreateDirectory(windows.StringToUTF16Ptr(root), attributes); err != nil {
 		t.Fatal(err)
 	}
+	labelNativeGuardStage(t, root, true)
 	t.Cleanup(func() {
 		if err := os.Remove(root); err != nil {
 			t.Error(err)
@@ -306,6 +307,7 @@ func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
 		t.Fatal(err)
 	}
+	labelNativeGuardStage(t, path, false)
 	t.Cleanup(func() {
 		if err := os.Remove(path); err != nil {
 			t.Error(err)
@@ -321,4 +323,29 @@ func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 		}
 	})
 	return retained
+}
+
+// labelNativeGuardStage exercises the production label-only policy without requiring the audit SACL privilege in the elevated fixture process.
+func labelNativeGuardStage(t *testing.T, path string, directory bool) {
+	t.Helper()
+	flags := uint32(windows.FILE_FLAG_OPEN_REPARSE_POINT)
+	if directory {
+		flags |= windows.FILE_FLAG_BACKUP_SEMANTICS
+	}
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.WRITE_OWNER, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(handle)
+	descriptor, err := windows.SecurityDescriptorFromString(uninstallGuardStageSDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	label, _, err := descriptor.SACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.LABEL_SECURITY_INFORMATION, nil, nil, nil, label); err != nil {
+		t.Fatal(err)
+	}
 }

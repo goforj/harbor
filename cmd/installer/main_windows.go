@@ -259,7 +259,7 @@ func createMaintenanceStage(installation *windowsinstallation.Installation, sour
 		return files, err
 	}
 	root := filepath.Join(system, "Temp", "HarborUninstall-"+hex.EncodeToString(random[:]))
-	descriptor, err := windows.SecurityDescriptorFromString(maintenanceStageSDDL)
+	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(maintenanceStageSDDL, "S:")[0])
 	if err != nil {
 		return files, err
 	}
@@ -267,7 +267,7 @@ func createMaintenanceStage(installation *windowsinstallation.Installation, sour
 	if err := windows.CreateDirectory(windows.StringToUTF16Ptr(root), attributes); err != nil {
 		return files, err
 	}
-	directory, err := openMaintenanceObject(root, true)
+	directory, err := labelMaintenanceDirectory(root)
 	if err != nil {
 		return files, err
 	}
@@ -276,12 +276,15 @@ func createMaintenanceStage(installation *windowsinstallation.Installation, sour
 		return files, err
 	}
 	path := filepath.Join(root, "HarborUninstall.exe")
-	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL, 0, attributes, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL|windows.WRITE_OWNER, 0, attributes, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	runtime.KeepAlive(descriptor)
 	if err != nil {
 		return files, err
 	}
 	destination := os.NewFile(uintptr(handle), path)
+	if err := labelMaintenanceObject(handle); err != nil {
+		return files, errors.Join(err, destination.Close())
+	}
 	if _, err := source.Seek(0, io.SeekStart); err != nil {
 		return files, errors.Join(err, destination.Close())
 	}
@@ -430,13 +433,18 @@ func admitMaintenanceStagePath(current, system string) error {
 
 // openMaintenanceObject retains an exact non-reparse native object with write and delete sharing denied.
 func openMaintenanceObject(path string, directory bool) (*os.File, error) {
+	return openMaintenanceObjectAccess(path, directory, 0)
+}
+
+// openMaintenanceObjectAccess preserves exact object admission while granting label initialization only to its creating installer.
+func openMaintenanceObjectAccess(path string, directory bool, extra uint32) (*os.File, error) {
 	access := uint32(windows.GENERIC_READ | windows.READ_CONTROL)
 	flags := uint32(windows.FILE_FLAG_OPEN_REPARSE_POINT)
 	if directory {
 		access = windows.READ_CONTROL | windows.FILE_READ_ATTRIBUTES
 		flags |= windows.FILE_FLAG_BACKUP_SEMANTICS
 	}
-	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), access, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), access|extra, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -453,6 +461,33 @@ func openMaintenanceObject(path string, directory bool) (*os.File, error) {
 		return nil, errors.Join(errors.New("uninstall staging object has a canonical path, type, link or reparse conflict"), file.Close())
 	}
 	return file, nil
+}
+
+// labelMaintenanceDirectory pins the new machine-only directory before applying the mandatory label independently of audit SACL privileges.
+func labelMaintenanceDirectory(path string) (*os.File, error) {
+	file, err := openMaintenanceObjectAccess(path, true, windows.WRITE_OWNER)
+	if err != nil {
+		return nil, err
+	}
+	if err := labelMaintenanceObject(windows.Handle(file.Fd())); err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	return file, nil
+}
+
+// labelMaintenanceObject sets only the mandatory label, which requires WRITE_OWNER rather than the unrelated audit SACL privilege.
+func labelMaintenanceObject(handle windows.Handle) error {
+	descriptor, err := windows.SecurityDescriptorFromString(maintenanceStageSDDL)
+	if err != nil {
+		return err
+	}
+	label, _, err := descriptor.SACL()
+	if err != nil {
+		return err
+	}
+	err = windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.LABEL_SECURITY_INFORMATION, nil, nil, nil, label)
+	runtime.KeepAlive(descriptor)
+	return err
 }
 
 // admitMaintenanceStage refuses ordinary-user mutation or a missing high-integrity write barrier on a staged object.
@@ -666,19 +701,22 @@ type maintenanceResult struct {
 // recordMaintenanceResult creates an immutable one-shot outcome so detached continuation failure remains observable.
 func recordMaintenanceResult(root string, selection windowsinstallation.Selection, original, continuation *maintenanceProcessIdentity, failure error) (result error) {
 	receipt := maintenanceReceipt(selection, original, continuation, failure)
-	descriptor, err := windows.SecurityDescriptorFromString(maintenanceStageSDDL)
+	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(maintenanceStageSDDL, "S:")[0])
 	if err != nil {
 		return err
 	}
 	attributes := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
 	path := filepath.Join(root, "result.json")
-	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_WRITE, windows.FILE_SHARE_READ, attributes, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_WRITE|windows.WRITE_OWNER, windows.FILE_SHARE_READ, attributes, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	runtime.KeepAlive(descriptor)
 	if err != nil {
 		return fmt.Errorf("create protected uninstall result: %w", err)
 	}
 	file := os.NewFile(uintptr(handle), path)
 	defer func() { result = errors.Join(result, file.Close()) }()
+	if err := labelMaintenanceObject(handle); err != nil {
+		return err
+	}
 	if err := json.NewEncoder(file).Encode(receipt); err != nil {
 		return err
 	}

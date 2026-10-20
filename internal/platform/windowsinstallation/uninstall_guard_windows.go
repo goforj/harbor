@@ -4,7 +4,6 @@ package windowsinstallation
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -290,11 +289,14 @@ func admitUninstallGuardEvent(handle windows.Handle, rights uint32) error {
 		return errors.New("uninstall guard event was not inherited")
 	}
 	query := windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryObject")
-	var basic [128]byte
+	var basic struct {
+		Attributes, GrantedAccess, HandleCount, PointerCount uint32
+		Reserved                                             [10]uint32
+	}
 	var length uint32
-	status, _, _ := query.Call(uintptr(handle), 0, uintptr(unsafe.Pointer(&basic[0])), uintptr(len(basic)), uintptr(unsafe.Pointer(&length)))
-	if status != 0 || length < 8 || binary.LittleEndian.Uint32(basic[4:8]) != rights {
-		return errors.New("uninstall guard event has unexpected native access rights")
+	status, _, _ := query.Call(uintptr(handle), 0, uintptr(unsafe.Pointer(&basic)), unsafe.Sizeof(basic), uintptr(unsafe.Pointer(&length)))
+	if status != 0 || length != uint32(unsafe.Sizeof(basic)) || basic.GrantedAccess != rights {
+		return fmt.Errorf("uninstall guard event has unexpected native access rights: status=%#x length=%d granted=%#x expected=%#x", status, length, basic.GrantedAccess, rights)
 	}
 	var information [1024]byte
 	status, _, _ = query.Call(uintptr(handle), 2, uintptr(unsafe.Pointer(&information[0])), uintptr(len(information)), uintptr(unsafe.Pointer(&length)))
