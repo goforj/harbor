@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"golang.org/x/sys/windows"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func TestNativeInstallTransaction(t *testing.T) {
 		t.Skip("disposable signed native fixture was not configured")
 	}
 	publisher, payload := signedInstallPayload(t)
-	for _, name := range []string{"complete", "foreign", "digest", "publisher"} {
+	for _, name := range []string{"complete", "foreign", "digest", "missing", "publisher"} {
 		t.Run(name, func(t *testing.T) {
 			root := filepath.Join(base, "install-"+name, "Harbor")
 			candidate := make(fstest.MapFS)
@@ -77,6 +78,9 @@ func TestNativeInstallTransaction(t *testing.T) {
 			if name == "digest" {
 				candidate["desktop-launcher.exe"].Data = []byte("changed")
 			}
+			if name == "missing" {
+				delete(candidate, "desktop-launcher.exe")
+			}
 			if name == "publisher" {
 				candidate["harbor-helper-signing-thumbprint.txt"].Data = []byte("wrong")
 			}
@@ -96,12 +100,16 @@ func TestNativeInstallTransaction(t *testing.T) {
 						t.Fatal("publisher failure created machine state")
 					}
 				}
-				if name == "digest" {
-					if _, err := os.Stat(filepath.Join(root, "installation.json")); !os.IsNotExist(err) {
-						t.Fatal("partial payload selected")
+				if name == "digest" || name == "missing" {
+					if _, err := os.Stat(root); !os.IsNotExist(err) {
+						t.Fatal("failed payload committed fixed root")
 					}
-					if _, err := installAt(root, publisher, payload); err == nil {
-						t.Fatal("interrupted partial state adopted")
+					retry, err := installAt(root, publisher, payload)
+					if err != nil {
+						t.Fatalf("valid retry after failed staging: %v", err)
+					}
+					if err := retry.Close(); err != nil {
+						t.Fatal(err)
 					}
 				}
 				return
@@ -129,6 +137,59 @@ func TestNativeInstallTransaction(t *testing.T) {
 				}
 				if _, err := fs.Stat(os.DirFS(root), path); err != nil {
 					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// TestNativeStageCommitPreservesReplacementAndExistingDestination exercises handle identity and no-replace rename before a selection can become canonical.
+func TestNativeStageCommitPreservesReplacementAndExistingDestination(t *testing.T) {
+	base := os.Getenv("HARBOR_ADMISSION_FIXTURE_ROOT")
+	if base == "" {
+		t.Skip("disposable signed native fixture was not configured")
+	}
+	for _, name := range []string{"replaced", "existing"} {
+		t.Run(name, func(t *testing.T) {
+			stage, destination := filepath.Join(base, "stage-"+name), filepath.Join(base, "destination-"+name)
+			if err := createMachineDirectoryNew(stage); err != nil {
+				t.Fatal(err)
+			}
+			file, err := openRetained(stage, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity, err := identifyFile(windows.Handle(file.Fd()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if name == "replaced" {
+				if err := os.Rename(stage, stage+"-original"); err != nil {
+					t.Fatal(err)
+				}
+				if err := createMachineDirectoryNew(stage); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := createMachineDirectoryNew(destination); err != nil {
+					t.Fatal(err)
+				}
+				if err := writeMachineBytes(filepath.Join(destination, "foreign.txt"), []byte("preserve")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := commitStagedDirectory(stage, destination, identity); err == nil {
+				t.Fatal("replacement or existing destination admitted")
+			}
+			if _, err := os.Stat(stage); err != nil {
+				t.Fatal("source stage changed")
+			}
+			if name == "existing" {
+				if data, err := os.ReadFile(filepath.Join(destination, "foreign.txt")); err != nil || string(data) != "preserve" {
+					t.Fatalf("foreign destination changed: %q %v", data, err)
 				}
 			}
 		})

@@ -85,8 +85,8 @@ func installAt(root, publisher string, payload fs.FS) (_ *Installation, result e
 	if err := parents.retainDirectoryChain(vendor); err != nil {
 		return nil, err
 	}
-	if err := createMachineDirectoryNew(root); err != nil {
-		if !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+	if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
+		if err != nil {
 			return nil, err
 		}
 		installed, admitErr := admitAt(root, publisher)
@@ -98,10 +98,24 @@ func installAt(root, publisher string, payload fs.FS) (_ *Installation, result e
 		}
 		return installed, nil
 	}
-	if err := parents.retainDirectoryChain(root); err != nil {
+	stage := filepath.Join(vendor, ".Harbor-stage-"+selection.InstallationID)
+	if err := createMachineDirectoryNew(stage); err != nil {
 		return nil, err
 	}
-	releases := filepath.Join(root, "releases")
+	staged := &Installation{root: stage}
+	defer func() { result = errors.Join(result, staged.Close()) }()
+	if err := staged.retainDirectoryChain(stage); err != nil {
+		return nil, err
+	}
+	stageDirectory, err := openRetained(stage, true)
+	if err != nil {
+		return nil, err
+	}
+	stageIdentity, identityErr := identifyFile(windows.Handle(stageDirectory.Fd()))
+	if err := errors.Join(identityErr, stageDirectory.Close()); err != nil {
+		return nil, err
+	}
+	releases := filepath.Join(stage, "releases")
 	if err := createMachineDirectoryNew(releases); err != nil {
 		return nil, err
 	}
@@ -109,7 +123,7 @@ func installAt(root, publisher string, payload fs.FS) (_ *Installation, result e
 	if err := createMachineDirectoryNew(release); err != nil {
 		return nil, err
 	}
-	if err := parents.retainDirectoryChain(release); err != nil {
+	if err := staged.retainDirectoryChain(release); err != nil {
 		return nil, err
 	}
 	for _, component := range manifest.Components {
@@ -117,11 +131,11 @@ func installAt(root, publisher string, payload fs.FS) (_ *Installation, result e
 		if err != nil {
 			return nil, err
 		}
-		writeErr := writeMachineFile(filepath.Join(root, filepath.FromSlash(component.Path)), source, component.Size, component.SHA256)
+		writeErr := writeMachineFile(filepath.Join(stage, filepath.FromSlash(component.Path)), source, component.Size, component.SHA256)
 		if err := errors.Join(writeErr, source.Close()); err != nil {
 			return nil, err
 		}
-		file, err := parents.retain(filepath.FromSlash(component.Path), false)
+		file, err := staged.retain(filepath.FromSlash(component.Path), false)
 		if err != nil {
 			return nil, err
 		}
@@ -138,7 +152,17 @@ func installAt(root, publisher string, payload fs.FS) (_ *Installation, result e
 	if err != nil {
 		return nil, err
 	}
-	if err := writeMachineBytes(filepath.Join(root, "installation.json"), selectionData); err != nil {
+	if err := writeMachineBytes(filepath.Join(stage, "installation.json"), selectionData); err != nil {
+		return nil, err
+	}
+	complete, err := admitAt(stage, publisher)
+	if err != nil {
+		return nil, err
+	}
+	if err := errors.Join(complete.Close(), staged.Close()); err != nil {
+		return nil, err
+	}
+	if err := commitStagedDirectory(stage, root, stageIdentity); err != nil {
 		return nil, err
 	}
 	return admitAt(root, publisher)
@@ -258,4 +282,47 @@ func writeMachineFile(path string, source io.Reader, size int64, digest string) 
 		return errors.New("embedded component size or digest differs from sealed manifest")
 	}
 	return file.Sync()
+}
+
+// commitStagedDirectory atomically selects only the exact fully validated staged directory without replacing any existing root.
+func commitStagedDirectory(stage, destination string, identity fileIdentity) (result error) {
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(stage), windows.DELETE|windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, windows.CloseHandle(handle)) }()
+	var information windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &information); err != nil {
+		return err
+	}
+	if information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || information.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		return errors.New("preserve aliased staging directory")
+	}
+	actual, err := identifyFile(handle)
+	if err != nil {
+		return err
+	}
+	if actual != identity {
+		return errors.New("preserve replaced staging directory")
+	}
+	if err := admitSecurity(handle, true); err != nil {
+		return err
+	}
+	name, err := windows.UTF16FromString(destination)
+	if err != nil {
+		return err
+	}
+	// FILE_RENAME_INFO has an eight-byte aligned root handle followed by byte length and UTF-16 name.
+	type renameInformation struct {
+		flags  uint32
+		root   windows.Handle
+		length uint32
+		name   [1]uint16
+	}
+	offset := unsafe.Offsetof(renameInformation{}.name)
+	buffer := make([]byte, int(offset)+len(name)*2)
+	informationHeader := (*renameInformation)(unsafe.Pointer(&buffer[0]))
+	informationHeader.length = uint32((len(name) - 1) * 2)
+	copy(unsafe.Slice((*uint16)(unsafe.Pointer(&buffer[offset])), len(name)), name)
+	return windows.SetFileInformationByHandle(handle, windows.FileRenameInfo, &buffer[0], uint32(len(buffer)))
 }
