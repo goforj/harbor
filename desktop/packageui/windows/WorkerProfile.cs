@@ -9,6 +9,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Security.AccessControl;
 public static class HarborUIProfile {
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
@@ -130,7 +131,7 @@ public static class HarborUIProfile {
     }
     public static string CurrentTokenFacts() {
         IntPtr token;
-        if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 10, out token)) throw new System.ComponentModel.Win32Exception();
+        if (!OpenProcessToken(GetCurrentProcess(), 10, out token)) throw new System.ComponentModel.Win32Exception();
         try { return DescribeToken(token, Process.GetCurrentProcess().Id); }
         finally { CloseHandle(token); }
     }
@@ -164,7 +165,7 @@ public static class HarborUIProfile {
     }
     public static void ProveNativeProcessRights(int highPID) {
         IntPtr token;
-        if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 10, out token)) throw new Win32Exception();
+        if (!OpenProcessToken(GetCurrentProcess(), 10, out token)) throw new Win32Exception();
         try { AssertEffectiveToken(token); } finally { CloseHandle(token); }
         foreach (uint right in new uint[] { 1, 2, 0x20, 0x40, 0x40000, 0x80000 }) RequireDeniedProcess(highPID, right);
         IntPtr highProcess=OpenProcess(0x1000, false, highPID);
@@ -213,7 +214,7 @@ public static class HarborUIProfile {
         IAsyncResult connection=null;
         ProcessInfo highFixture=new ProcessInfo();
         try {
-            if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 8, out ownToken)) throw new Win32Exception();
+            if (!OpenProcessToken(GetCurrentProcess(), 8, out ownToken)) throw new Win32Exception();
             if (TokenIntegrity(ownToken) <= 8192) throw new Exception("hosted fixture requires an independently high parent for direct authority probes");
             string sid=WindowsIdentity.GetCurrent().User.Value;
             string systemRoot=Environment.GetFolderPath(Environment.SpecialFolder.System);
@@ -299,7 +300,7 @@ public static class HarborUIProfile {
         try {
             if (ProtectedDirectories.Length == 0) ProtectedDirectories = new string[] { directory, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GoForj", "Harbor", "Privileged") };
             if (ProtectedFiles.Length == 0) ProtectedFiles = new string[] { application };
-            if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 0xF01FF, out original)) throw new System.ComponentModel.Win32Exception();
+            if (!OpenProcessToken(GetCurrentProcess(), 0xF01FF, out original)) throw new System.ComponentModel.Win32Exception();
             if (!ConvertStringSidToSid("S-1-5-32-544", out administrators)) throw new System.ComponentModel.Win32Exception();
             SidAndAttributes[] disable = { new SidAndAttributes { Sid=administrators, Attributes=0 } };
             List<LuidAndAttributes> deleted=new List<LuidAndAttributes>();

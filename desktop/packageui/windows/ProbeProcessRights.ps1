@@ -4,9 +4,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WorkerProfile.ps1')
-$receipt = [ordered]@{ actual_process=[Diagnostics.Process]::GetCurrentProcess().Id; token=[HarborUIProfile]::CurrentTokenFacts(); complete=$false; rights=@() }
+$receipt = [ordered]@{ actual_process=[Diagnostics.Process]::GetCurrentProcess().Id; token=$null; complete=$false; rights=@() }
 $exitCode = 1
 try {
+    $receipt.token = [HarborUIProfile]::CurrentTokenFacts()
     [HarborUIProfile]::ProveNativeProcessRights($HighProcessId)
     $receipt.complete = $true
     $exitCode = 0
