@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"github.com/goforj/harbor/internal/platform/windowsinstallation"
 	"io/fs"
 	"log"
 	"runtime"
@@ -32,6 +33,10 @@ var trayTemplateIcon []byte
 
 // main runs the replaceable desktop client while harbord retains durable authority.
 func main() {
+	if err := windowsinstallation.CheckRuntimeRole("desktop"); err != nil {
+		log.Printf("Harbor desktop admission failed: %v", err)
+		return
+	}
 	client := NewApp()
 	native := application.New(newApplicationOptions(client, assets))
 	window := newDesktopWindow(native)

@@ -36,7 +36,7 @@ jobs:
           $env:GOMODCACHE = Join-Path $fixture "gomodcache"
           "GOCACHE=$env:GOCACHE" | Out-File $env:GITHUB_ENV -Append
           "GOMODCACHE=$env:GOMODCACHE" | Out-File $env:GITHUB_ENV -Append
-          go test -c -o "$fixture\admission.test.exe" ./internal/platform/windowsinstallation
+          go test -c -tags=release -o "$fixture\admission.test.exe" ./internal/platform/windowsinstallation
           if ($LASTEXITCODE -ne 0) { throw "native admission test build failed" }
           Copy-Item "$fixture\admission.test.exe" "$fixture\signed.exe"
           Copy-Item -LiteralPath packaging\windows\harbor-daemon-task.ps1 -Destination "$fixture\signed.ps1"

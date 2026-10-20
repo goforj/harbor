@@ -5,11 +5,16 @@ import (
 	"github.com/goforj/harbor/app/wire"
 	"github.com/goforj/harbor/internal/cmd"
 	"github.com/goforj/harbor/internal/console"
+	"github.com/goforj/harbor/internal/platform/windowsinstallation"
 
 	"os"
 )
 
+// main admits installed Windows runtime authority before loading application environment or wiring.
 func main() {
+	if err := windowsinstallation.CheckRuntimeRole("cli"); err != nil {
+		console.Fatalf("installed runtime admission: %v", err)
+	}
 	args := cmd.EffectiveLaunchArgs(os.Args[1:], false)
 	cmd.ApplyLaunchApp("app")
 
