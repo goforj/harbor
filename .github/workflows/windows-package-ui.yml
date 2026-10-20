@@ -50,7 +50,7 @@ jobs:
             if ($errors.Count -ne 0) { throw ($errors | Out-String) }
           }
           Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-      - name: Admit real desktop and medium-integrity shell
+      - name: Admit real desktop for restricted-token product launch
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -58,7 +58,7 @@ jobs:
           . .\desktop\packageui\windows\WorkerProfile.ps1
           $session = (Get-Process -Id $PID).SessionId
           $shells = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session })
-          @{ session_id=$session; user_interactive=[Environment]::UserInteractive; explorer=@($shells | ForEach-Object { @{ pid=$_.Id; integrity=[HarborUIProfile]::Integrity($_.Id) } }) } |
+          @{ session_id=$session; user_interactive=[Environment]::UserInteractive; uac=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA; explorer=@($shells | ForEach-Object { @{ pid=$_.Id; integrity=[HarborUIProfile]::Integrity($_.Id) } }) } |
             ConvertTo-Json -Depth 4 | Set-Content "$env:RUNNER_TEMP\harbor-installed-ui-evidence\worker-profile.json"
           Assert-InteractiveWorker
           if (Test-Path "$env:ProgramFiles\GoForj\Harbor") { throw 'Harbor is already installed' }
@@ -184,16 +184,6 @@ jobs:
             }
           }
 
-      - name: Preauthorize helper consent on disposable worker
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $policy = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
-          $original = Get-ItemProperty $policy
-          @{ ConsentPromptBehaviorAdmin=$original.ConsentPromptBehaviorAdmin; PromptOnSecureDesktop=$original.PromptOnSecureDesktop } |
-            ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\harbor-ui-consent-original.json"
-          Set-ItemProperty $policy ConsentPromptBehaviorAdmin 0
-          Set-ItemProperty $policy PromptOnSecureDesktop 0
       - name: Drive installed graphical project lifecycle
         shell: powershell
         run: |
@@ -232,17 +222,6 @@ jobs:
           if (Test-Path "$env:ProgramData\GoForj\Harbor") { throw 'Harbor machine state remains' }
           if (@(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -like 'GoForj Harbor Resolver *' -or $_.Comment -like 'goforj.harbor.resolver *' }).Count -ne 0) { throw 'Harbor resolver projection remains' }
           'retained_user_files=preserved' | Set-Content "$evidence\uninstall.txt"
-      - name: Restore disposable worker consent policy
-        if: always()
-        shell: pwsh
-        run: |
-          $original = "$env:RUNNER_TEMP\harbor-ui-consent-original.json"
-          if (Test-Path $original) {
-            $policy = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
-            $values = Get-Content $original -Raw | ConvertFrom-Json
-            Set-ItemProperty $policy ConsentPromptBehaviorAdmin $values.ConsentPromptBehaviorAdmin
-            Set-ItemProperty $policy PromptOnSecureDesktop $values.PromptOnSecureDesktop
-          }
       - uses: actions/upload-artifact@v7
         if: always()
         with:
