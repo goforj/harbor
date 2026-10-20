@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"github.com/goforj/harbor/internal/platform/daemonservice"
@@ -345,15 +346,11 @@ func launchMaintenanceCopy(ctx context.Context, path string) (result error) {
 	if err != nil {
 		return err
 	}
-	system, err := windows.GetWindowsDirectory()
+	entries, err := maintenanceEnvironment()
 	if err != nil {
 		return err
 	}
-	environment, err := windows.UTF16FromString("SystemRoot=" + system)
-	if err != nil {
-		return err
-	}
-	environment = append(environment, 0)
+	environment := utf16.Encode([]rune(strings.Join(entries, "\x00") + "\x00\x00"))
 	var process windows.ProcessInformation
 	if err := windows.CreateProcess(windows.StringToUTF16Ptr(path), &command[0], nil, nil, true, windows.CREATE_UNICODE_ENVIRONMENT|windows.EXTENDED_STARTUPINFO_PRESENT|windows.CREATE_NO_WINDOW, &environment[0], windows.StringToUTF16Ptr(filepath.Dir(path)), &startup.StartupInfo, &process); err != nil {
 		return fmt.Errorf("launch protected uninstall continuation: %w", err)
@@ -368,6 +365,19 @@ func launchMaintenanceCopy(ctx context.Context, path string) (result error) {
 		return errors.Join(err, retireMaintenanceCopy(process.Process))
 	}
 	return nil
+}
+
+// maintenanceEnvironment supplies only native machine roots needed by KnownFolder expansion, never caller executable or module discovery.
+func maintenanceEnvironment() ([]string, error) {
+	system, err := windows.GetWindowsDirectory()
+	if err != nil {
+		return nil, fmt.Errorf("resolve continuation Windows directory: %w", err)
+	}
+	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
+	if err != nil {
+		return nil, fmt.Errorf("resolve continuation ProgramData: %w", err)
+	}
+	return []string{"ALLUSERSPROFILE=" + programData, "ProgramData=" + programData, "SystemRoot=" + system}, nil
 }
 
 // retireMaintenanceCopy settles only the exact spawned continuation before a failed handoff lets the original process exit.

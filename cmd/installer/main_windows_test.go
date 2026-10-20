@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -484,5 +485,55 @@ func TestNativeMaintenanceParentChild(t *testing.T) {
 	defer windows.CloseHandle(ready)
 	if err := windowsinstallation.SignalUninstallParentReady(ready); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// maintenanceEnvironmentChild selects only the native environment regression subprocess.
+var maintenanceEnvironmentChild = flag.Bool("harbor-maintenance-environment-child", false, "verify fixed machine environment in an owned subprocess")
+
+// TestNativeMaintenanceEnvironment proves the real continuation environment supports required machine KnownFolders without inherited discovery overrides.
+func TestNativeMaintenanceEnvironment(t *testing.T) {
+	environment, err := maintenanceEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(environment) != 3 {
+		t.Fatalf("unexpected continuation environment: %q", environment)
+	}
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, path, "-test.run=^TestNativeMaintenanceEnvironmentChild$", "-test.v", "-harbor-maintenance-environment-child")
+	command.Env = environment
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("fixed continuation environment: %v: %s", err, output)
+	} else {
+		t.Logf("%s", output)
+	}
+}
+
+// TestNativeMaintenanceEnvironmentChild resolves actual Windows machine projections inside the minimal child environment.
+func TestNativeMaintenanceEnvironmentChild(t *testing.T) {
+	if !*maintenanceEnvironmentChild {
+		t.Skip("only the owned environment subprocess runs this assertion")
+	}
+	for _, entry := range os.Environ() {
+		name := strings.SplitN(entry, "=", 2)[0]
+		if !strings.EqualFold(name, "ALLUSERSPROFILE") && !strings.EqualFold(name, "ProgramData") && !strings.EqualFold(name, "SystemRoot") {
+			t.Fatalf("unexpected inherited environment: %s", name)
+		}
+	}
+	for _, folder := range []*windows.KNOWNFOLDERID{windows.FOLDERID_ProgramData, windows.FOLDERID_CommonPrograms, windows.FOLDERID_ProgramFilesX64} {
+		path, err := windows.KnownFolderPath(folder, windows.KF_FLAG_DEFAULT)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("machine KnownFolder %q: %v", path, err)
+		}
+		t.Logf("resolved machine KnownFolder %q", path)
 	}
 }
