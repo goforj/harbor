@@ -39,6 +39,14 @@ def main():
                     files.append(path)
             if project['state'] != 'stopped':
                 run('/usr/bin/harbor', 'stop', project['id'])
+                deadline = time.monotonic() + 120
+                while True:
+                    current = next(row for row in snapshot().get('projects', []) if row['id'] == project['id'])
+                    if current['state'] == 'stopped':
+                        break
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('fixture project did not stop before release: ' + project['id'])
+                    time.sleep(.25)
         run('/usr/bin/harbor', 'daemon', 'release')
         run('/usr/bin/harbor', 'daemon', 'stop')
         deadline = time.monotonic() + 30

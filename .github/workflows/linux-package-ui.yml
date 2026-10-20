@@ -122,7 +122,7 @@ jobs:
           uname -a >> harbor-package-ui-evidence/runtime-versions.txt
           printf 'ImageOS=%s\nImageVersion=%s\n' "$ImageOS" "$ImageVersion" >> harbor-package-ui-evidence/runtime-versions.txt
 
-      - name: Install verified retained DEB and admit packaged helper
+      - name: Install verified retained DEB
         id: install
         env:
           VERIFIED_DEB: ${{ steps.package.outputs.linux_package }}
@@ -132,6 +132,9 @@ jobs:
           sudo -n dpkg --install "package-assets/$VERIFIED_DEB"
           test -z "$(sudo -n dpkg --verify goforj-harbor)"
           sha256sum /usr/lib/goforj-harbor/harbor-desktop > "$RUNNER_TEMP/ui-installed.sha256"
+      - name: Admit packaged helper on disposable worker
+        run: |
+          set -euo pipefail
           sudo -n /usr/lib/goforj-harbor/harbor-installer --helper /usr/lib/goforj-harbor/harbor-helper --user-id "$(id -u)" --group-id "$(id -g)"
           rule=/etc/polkit-1/rules.d/49-goforj-harbor-package-ui-ci.rules
           test ! -e "$rule"
