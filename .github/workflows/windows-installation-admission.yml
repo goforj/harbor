@@ -69,6 +69,23 @@ jobs:
           $ErrorActionPreference = "Stop"
           & "$env:RUNNER_TEMP\harbor-installation-admission\admission.test.exe" '-test.v' '-test.timeout=5m' 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-installation-admission.log"
           if ($LASTEXITCODE -ne 0) { throw "native installation admission failed" }
+      - name: Retain bounded native loader failure diagnostics
+        if: ${{ failure() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $observations = @()
+          foreach ($log in @('Application','System')) {
+            try {
+              $events = @(Get-WinEvent -FilterHashtable @{ LogName=$log; StartTime=(Get-Date).AddMinutes(-10) } -MaxEvents 200 -ErrorAction Stop | Where-Object { $_.Message -match '(?i)(HarborUninstall|maintenance|admission\.test)\.exe' } | ForEach-Object {
+                [ordered]@{ log=$log; time=$_.TimeCreated.ToUniversalTime().ToString('o'); id=$_.Id; provider=$_.ProviderName; message=$_.Message }
+              })
+              $observations += [ordered]@{ log=$log; matching_events=$events }
+            } catch {
+              $observations += [ordered]@{ log=$log; observation_error=$_.Exception.Message }
+            }
+          }
+          ConvertTo-Json -InputObject $observations -Depth 6 | Set-Content "$env:RUNNER_TEMP\windows-installation-loader-events.json" -Encoding utf8NoBOM
       - name: Prove native migration singleton and unsafe runtime refusal
         if: ${{ !cancelled() }}
         shell: pwsh
@@ -120,5 +137,6 @@ jobs:
           path: |
             ${{ runner.temp }}/windows-installation-admission.log
             ${{ runner.temp }}/windows-migration-preparation.log
+            ${{ runner.temp }}/windows-installation-loader-events.json
           if-no-files-found: warn
           retention-days: 14
