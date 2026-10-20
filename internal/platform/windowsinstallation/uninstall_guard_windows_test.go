@@ -3,8 +3,10 @@
 package windowsinstallation
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"debug/pe"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -200,6 +202,105 @@ func TestUninstallGuardContext(t *testing.T) {
 	if err := guard.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestNativeUninstallGuardLoader isolates stage access and console startup policy using the independently checked signed native test image.
+func TestNativeUninstallGuardLoader(t *testing.T) {
+	root := os.Getenv("HARBOR_ADMISSION_FIXTURE_ROOT")
+	if root == "" {
+		t.Skip("signed native fixture was not configured")
+	}
+	publisher := os.Getenv("HARBOR_ADMISSION_PUBLISHER")
+	payloads := map[string][]byte{".txt": []byte(publisher)}
+	for extension, variable := range map[string]string{".exe": "HARBOR_ADMISSION_SIGNED_PE", ".ps1": "HARBOR_ADMISSION_SIGNED_SCRIPT", ".cer": "HARBOR_ADMISSION_CERTIFICATE"} {
+		data, err := os.ReadFile(os.Getenv(variable))
+		if err != nil {
+			t.Fatal(err)
+		}
+		payloads[extension] = data
+	}
+	logNativeGuardPE(t, "admission control", payloads[".exe"])
+	maintenance, err := os.ReadFile(os.Getenv("HARBOR_ADMISSION_MAINTENANCE_AGENT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logNativeGuardPE(t, "maintenance agent", maintenance)
+	machine := filepath.Join(root, "guard-loader-control")
+	_, selection := writeSignedFixture(t, machine, publisher, payloads)
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.UserSID = user.User.Sid.String()
+	writeFixtureJSON(t, filepath.Join(machine, "installation.json"), selection)
+	installation, err := admitAt(machine, publisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer installation.Close()
+	staged := writeNativeGuardStage(t, payloads[".exe"])
+	retained, err := installation.retainUninstallGuardStage(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for index := len(retained) - 1; index >= 0; index-- {
+			if err := retained[index].Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	var inherited []windows.Handle
+	for _, rights := range []uint32{windows.EVENT_MODIFY_STATE, windows.SYNCHRONIZE} {
+		event, err := windows.CreateEvent(nil, 1, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var capability windows.Handle
+		duplicateErr := windows.DuplicateHandle(windows.CurrentProcess(), event, windows.CurrentProcess(), &capability, rights, true, 0)
+		closeErr := windows.CloseHandle(event)
+		if err := errors.Join(duplicateErr, closeErr); err != nil {
+			t.Fatal(err)
+		}
+		inherited = append(inherited, capability)
+		defer windows.CloseHandle(capability)
+	}
+	for _, role := range []string{"cli", "uninstall-guard"} {
+		t.Run(role, func(t *testing.T) {
+			child, err := installation.startAdmitted(staged.Name(), role, []string{"-test.run=^TestNativeInstalledChild$", "-test.v", "-harbor-native-child"}, inherited)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer child.Close()
+			t.Logf("native loader control role=%s PID=%d facts=%+v", role, child.PID, child.Facts)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			code, err := child.Wait(ctx)
+			t.Logf("native loader control role=%s PID=%d exit=%#x wait=%v", role, child.PID, code, err)
+			if code != 0 || err != nil {
+				t.Fatalf("signed stage loader control failed: exit=%#x wait=%v", code, err)
+			}
+		})
+	}
+}
+
+// logNativeGuardPE records only executable startup metadata, never process environment or inherited capability values.
+func logNativeGuardPE(t *testing.T, label string, data []byte) {
+	t.Helper()
+	executable, err := pe.NewFile(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer executable.Close()
+	imports, err := executable.ImportedLibraries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, ok := executable.OptionalHeader.(*pe.OptionalHeader64)
+	if !ok {
+		t.Fatal("native guard PE is not amd64 PE32+")
+	}
+	t.Logf("native loader PE %s imports=%q subsystem=%d resourceRVA=%#x explicitAsInvoker=%t", label, imports, header.Subsystem, header.DataDirectory[pe.IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress, bytes.Contains(data, []byte("asInvoker")))
 }
 
 // TestNativeUninstallGuardWorker proves a real signed E0 worker holds the daemon lock, releases it, and reports exact owned-worker loss.
