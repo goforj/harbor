@@ -103,6 +103,9 @@ jobs:
           GOWORK=off GOBIN="$binary_directory" go install github.com/goforj/goforj/cmd/forj@v0.34.1
           GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
           test "$("$binary_directory/forj" --version)" = v0.34.1
+          go test ./scripts/packageui/fixtureapproval
+          go build -o "$binary_directory/harbor-fixture-approval" ./scripts/packageui/fixtureapproval
+          printf 'HARBOR_PACKAGE_UI_APPROVAL_TOOL=%s\n' "$binary_directory/harbor-fixture-approval" >> "$GITHUB_ENV"
           printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
 
       - name: Install virtual X11 desktop and native accessibility prerequisites
@@ -166,9 +169,10 @@ jobs:
           /usr/bin/python3 scripts/packageui/linux/acceptance.py
           sha256sum --check "$RUNNER_TEMP/ui-installed.sha256"
 
-      - name: Release owned networking and preserve user data
+      - name: Unregister fixture, release owned networking, and preserve user data
         run: |
           set -euo pipefail
+          python3 scripts/packageui/linux/remove_fixtures.py
           /usr/bin/harbor daemon release
           /usr/bin/harbor daemon stop
           for attempt in $(seq 1 100); do
@@ -207,7 +211,7 @@ jobs:
           hashes = json.loads(Path('harbor-package-ui-evidence/retained-files.json').read_text())
           for name, digest in hashes.items():
               assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest, name
-          Path('harbor-package-ui-evidence/uninstall-preservation.txt').write_text('Installed UI, helper, user service, and owned host projection absent. User database and project files preserved.\n')
+          Path('harbor-package-ui-evidence/uninstall-preservation.txt').write_text('Installed UI, helper, user service, and owned host projection absent. Post-unregister user database and project files preserved.\n')
           PY
 
       - name: Retain failed daemon and service diagnostics
