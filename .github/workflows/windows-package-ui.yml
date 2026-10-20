@@ -140,6 +140,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'released GoForj installation failed' }
           go install github.com/goforj/wire/cmd/wire@v1.2.0
           if ($LASTEXITCODE -ne 0) { throw 'Wire installation failed' }
+          go build -o "$env:GOBIN\harbor-fixture-approval.exe" ./scripts/packageui/fixtureapproval
+          if ($LASTEXITCODE -ne 0) { throw 'fixture cleanup approval client build failed' }
+          "HARBOR_PACKAGE_UI_APPROVAL_TOOL=$env:GOBIN\harbor-fixture-approval.exe" | Out-File $env:GITHUB_ENV -Append
           "GOCACHE=$env:GOCACHE" | Out-File $env:GITHUB_ENV -Append
           "GOMODCACHE=$env:GOMODCACHE" | Out-File $env:GITHUB_ENV -Append
           "HARBOR_UI_TOOLS=$env:GOBIN;$env:PATH" | Out-File $env:GITHUB_ENV -Append
@@ -217,7 +220,7 @@ jobs:
           $path = "$env:RUNNER_TEMP\harbor-installed-ui-evidence\cleanup.json"
           if (-not (Test-Path $path -PathType Leaf)) { throw 'installed UI cleanup receipt is missing' }
           $cleanup = Get-Content $path -Raw | ConvertFrom-Json
-          foreach ($fact in @('gui_quiescent','fixtures_stopped','network_released','daemon_absent')) {
+          foreach ($fact in @('gui_quiescent','fixtures_stopped','fixture_unregistered','network_released','daemon_absent')) {
             if ($cleanup.$fact -ne $true) { throw "partial installed cleanup: $fact was not verified" }
           }
           if ($cleanup.error) { throw "partial installed cleanup: $($cleanup.error)" }
