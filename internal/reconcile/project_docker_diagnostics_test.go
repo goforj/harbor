@@ -18,6 +18,116 @@ import (
 
 const generatedComposeDiagnosticBytes = 64 * 1024
 
+// generatedComposeDiagnosticSnapshot keeps only the latest bounded evidence for one disposable fixture.
+type generatedComposeDiagnosticSnapshot struct {
+	StateAndOutput  []byte
+	StateObservedAt time.Time
+	Trace           []byte
+	TraceObservedAt time.Time
+}
+
+// startGeneratedComposeDiagnosticSampler retains evidence before normal timeout cleanup retires sessions and traces.
+func startGeneratedComposeDiagnosticSampler(
+	ctx context.Context,
+	interval time.Duration,
+	capture func(context.Context) [3]generatedComposeDiagnosticSnapshot,
+) func() [3]generatedComposeDiagnosticSnapshot {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	var retained [3]generatedComposeDiagnosticSnapshot
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			observed := capture(ctx)
+			for index, snapshot := range observed {
+				if len(snapshot.StateAndOutput) > 0 {
+					retained[index].StateAndOutput = boundGeneratedComposeDiagnostic(snapshot.StateAndOutput)
+					retained[index].StateObservedAt = snapshot.StateObservedAt
+				}
+				if len(snapshot.Trace) > 0 {
+					retained[index].Trace = boundGeneratedComposeDiagnostic(snapshot.Trace)
+					retained[index].TraceObservedAt = snapshot.TraceObservedAt
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return func() [3]generatedComposeDiagnosticSnapshot {
+		cancel()
+		<-done
+		return retained
+	}
+}
+
+// captureGeneratedComposeDiagnostics observes only the exact three rendered fixtures without publishing or logging.
+func captureGeneratedComposeDiagnostics(
+	ctx context.Context,
+	fixtureRoot *os.Root,
+	store *state.Store,
+	journal *state.OperationJournal,
+	supervisor *projectprocess.Supervisor,
+	projects []projectIdentityAcceptanceProject,
+) [3]generatedComposeDiagnosticSnapshot {
+	var snapshots [3]generatedComposeDiagnosticSnapshot
+	for index, project := range projects {
+		if index >= len(snapshots) || ctx.Err() != nil {
+			break
+		}
+		name := fmt.Sprintf("project-%02d", index+1)
+		if filepath.Clean(project.project.Root) != filepath.Join(fixtureRoot.Name(), name) {
+			continue
+		}
+		observedAt := time.Now().UTC()
+		snapshot, active := generatedComposeStateAndOutput(ctx, store, journal, supervisor, project)
+		if active {
+			snapshots[index].StateAndOutput = snapshot
+			snapshots[index].StateObservedAt = observedAt
+		}
+		if trace, err := readGeneratedComposeLaunchTrace(fixtureRoot, name); err == nil {
+			snapshots[index].Trace = trace
+			snapshots[index].TraceObservedAt = observedAt
+		}
+	}
+	return snapshots
+}
+
+// generatedComposeStateAndOutput records lifecycle phase and exact session output without retaining credentials.
+func generatedComposeStateAndOutput(
+	ctx context.Context,
+	store *state.Store,
+	journal *state.OperationJournal,
+	supervisor *projectprocess.Supervisor,
+	project projectIdentityAcceptanceProject,
+) ([]byte, bool) {
+	var snapshot strings.Builder
+	fmt.Fprintf(&snapshot, "FAILURE DIAGNOSTICS ONLY, not product success evidence\ncaptured_at=%s\nproject=%s\n", time.Now().UTC().Format(time.RFC3339Nano), project.id)
+	record, projectErr := store.Project(ctx, project.id)
+	fmt.Fprintf(&snapshot, "project_state=%s revision=%d error=%v\n", record.Project.State, record.Revision, projectErr)
+	operation, operationErr := journal.OperationByIntent(ctx, project.intent)
+	fmt.Fprintf(&snapshot, "start_operation=%s state=%s phase=%s error=%v\n", operation.Operation.ID, operation.Operation.State, operation.Operation.Phase, operationErr)
+	if operation.Operation.Problem != nil {
+		fmt.Fprintf(&snapshot, "start_problem=%s: %s\n", operation.Operation.Problem.Code, operation.Operation.Problem.Message)
+	}
+	session, sessionErr := store.ActiveProjectSession(ctx, project.id)
+	fmt.Fprintf(&snapshot, "session=%s state=%s error=%v\n", session.ID, session.State, sessionErr)
+	outputAvailable := false
+	if sessionErr == nil {
+		output, outputErr := supervisor.ReadOutputHistory(project.id, session.ID, 0)
+		outputAvailable = outputErr == nil && (output.Available || output.Historical)
+		fmt.Fprintf(&snapshot, "supervisor_output available=%t historical=%t truncated=%t has_more=%t next_cursor=%d error=%v\n%s", output.Available, output.Historical, output.Truncated, output.HasMore, output.NextCursor, outputErr, output.Text)
+	}
+	return []byte(snapshot.String()), outputAvailable && ctx.Err() == nil
+}
+
 // retainGeneratedComposeFailureDiagnostics preserves only disposable fixture evidence before LIFO teardown.
 func retainGeneratedComposeFailureDiagnostics(
 	t *testing.T,
@@ -27,6 +137,7 @@ func retainGeneratedComposeFailureDiagnostics(
 	journal *state.OperationJournal,
 	supervisor *projectprocess.Supervisor,
 	projects []projectIdentityAcceptanceProject,
+	history [3]generatedComposeDiagnosticSnapshot,
 ) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -48,25 +159,25 @@ func retainGeneratedComposeFailureDiagnostics(
 			t.Logf("refuse Docker diagnostics for foreign fixture %q", project.id)
 			continue
 		}
-		var snapshot strings.Builder
-		fmt.Fprintf(&snapshot, "FAILURE DIAGNOSTICS ONLY, not product success evidence\nproject=%s\n", project.id)
-		record, projectErr := store.Project(ctx, project.id)
-		fmt.Fprintf(&snapshot, "project_state=%s revision=%d error=%v\n", record.Project.State, record.Revision, projectErr)
-		operation, operationErr := journal.OperationByIntent(ctx, project.intent)
-		fmt.Fprintf(&snapshot, "start_operation=%s state=%s phase=%s error=%v\n", operation.Operation.ID, operation.Operation.State, operation.Operation.Phase, operationErr)
-		if operation.Operation.Problem != nil {
-			fmt.Fprintf(&snapshot, "start_problem=%s: %s\n", operation.Operation.Problem.Code, operation.Operation.Problem.Message)
+		snapshot, _ := generatedComposeStateAndOutput(ctx, store, journal, supervisor, project)
+		retainGeneratedComposeDiagnostic(t, destination, name+"-state-and-output.txt", snapshot)
+		if index >= len(history) {
+			continue
 		}
-		session, sessionErr := store.ActiveProjectSession(ctx, project.id)
-		fmt.Fprintf(&snapshot, "session=%s state=%s error=%v\n", session.ID, session.State, sessionErr)
-		if sessionErr == nil {
-			output, outputErr := supervisor.ReadOutputHistory(project.id, session.ID, 0)
-			fmt.Fprintf(&snapshot, "supervisor_output available=%t historical=%t truncated=%t has_more=%t next_cursor=%d error=%v\n%s", output.Available, output.Historical, output.Truncated, output.HasMore, output.NextCursor, outputErr, output.Text)
+		previous := history[index]
+		if len(previous.StateAndOutput) > 0 {
+			retainGeneratedComposeDiagnostic(t, destination, name+"-before-retirement.txt", previous.StateAndOutput)
 		}
-		retainGeneratedComposeDiagnostic(t, destination, name+"-state-and-output.txt", []byte(snapshot.String()))
 		trace, err := readGeneratedComposeLaunchTrace(fixtureRoot, name)
+		traceObservedAt := time.Now().UTC()
 		if err != nil {
 			t.Logf("read Docker fixture %q forj-dev.log: %v", project.id, err)
+			trace = previous.Trace
+			traceObservedAt = previous.TraceObservedAt
+		}
+		metadata := fmt.Sprintf("active_state_captured_at=%s\ntrace_captured_at=%s\n", previous.StateObservedAt.Format(time.RFC3339Nano), traceObservedAt.Format(time.RFC3339Nano))
+		retainGeneratedComposeDiagnostic(t, destination, name+"-capture-times.txt", []byte(metadata))
+		if len(trace) == 0 {
 			continue
 		}
 		retainGeneratedComposeDiagnostic(t, destination, name+"-forj-dev.log", trace)
@@ -76,10 +187,7 @@ func retainGeneratedComposeFailureDiagnostics(
 // retainGeneratedComposeDiagnostic bounds both uploaded files and test output, without overwriting existing files.
 func retainGeneratedComposeDiagnostic(t *testing.T, destination *os.Root, name string, contents []byte) {
 	t.Helper()
-	if len(contents) > generatedComposeDiagnosticBytes {
-		marker := []byte("\n[additional failure diagnostics omitted]\n")
-		contents = append(contents[:generatedComposeDiagnosticBytes-len(marker):generatedComposeDiagnosticBytes-len(marker)], marker...)
-	}
+	contents = boundGeneratedComposeDiagnostic(contents)
 	t.Logf("Docker failure diagnostics %s:\n%s", name, contents)
 	if destination == nil {
 		return
@@ -93,6 +201,16 @@ func retainGeneratedComposeDiagnostic(t *testing.T, destination *os.Root, name s
 	if _, err := file.Write(contents); err != nil {
 		t.Logf("write Docker failure diagnostic %s: %v", name, err)
 	}
+}
+
+// boundGeneratedComposeDiagnostic owns one immutable bounded copy for memory, files, and test output.
+func boundGeneratedComposeDiagnostic(contents []byte) []byte {
+	if len(contents) > generatedComposeDiagnosticBytes {
+		marker := []byte("\n[additional failure diagnostics omitted]\n")
+		result := append([]byte(nil), contents[:generatedComposeDiagnosticBytes-len(marker)]...)
+		return append(result, marker...)
+	}
+	return append([]byte(nil), contents...)
 }
 
 // generatedComposeFailureDirectory keeps failure files apart from the unchanged success receipt schema.
@@ -324,5 +442,151 @@ func TestGeneratedComposeDiagnosticRetention(t *testing.T) {
 	entries, err := os.ReadDir(directory)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "failure-diagnostics" {
 		t.Fatalf("failure capture created success evidence: %v, %v", entries, err)
+	}
+}
+
+// TestGeneratedComposeDiagnosticSamplerBoundsReplacement proves missing later reads preserve the latest owned bounded copies.
+func TestGeneratedComposeDiagnosticSamplerBoundsReplacement(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	observed := make(chan int, 1)
+	var calls int
+	latest := []byte("latest-" + strings.Repeat("x", generatedComposeDiagnosticBytes))
+	at := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	stop := startGeneratedComposeDiagnosticSampler(ctx, time.Millisecond, func(ctx context.Context) [3]generatedComposeDiagnosticSnapshot {
+		calls++
+		var result [3]generatedComposeDiagnosticSnapshot
+		for index := range result {
+			switch calls {
+			case 1:
+				result[index] = generatedComposeDiagnosticSnapshot{StateAndOutput: []byte("old"), Trace: []byte("old"), StateObservedAt: at, TraceObservedAt: at}
+			case 2:
+				result[index] = generatedComposeDiagnosticSnapshot{StateAndOutput: latest, Trace: latest, StateObservedAt: at.Add(time.Second), TraceObservedAt: at.Add(time.Second)}
+			}
+		}
+		select {
+		case observed <- calls:
+		case <-ctx.Done():
+		}
+		return result
+	})
+	defer stop()
+	for {
+		select {
+		case call := <-observed:
+			if call < 3 {
+				continue
+			}
+		case <-ctx.Done():
+			t.Fatal("sampler did not reach a missing observation")
+		}
+		break
+	}
+	retained := stop()
+	latest[0] = 'z'
+	for index, snapshot := range retained {
+		for _, contents := range [][]byte{snapshot.StateAndOutput, snapshot.Trace} {
+			if len(contents) != generatedComposeDiagnosticBytes || !strings.HasPrefix(string(contents), "latest-") || !strings.HasSuffix(string(contents), "\n[additional failure diagnostics omitted]\n") {
+				t.Fatalf("fixture %d lost its latest bounded owned copy: %d bytes", index, len(contents))
+			}
+		}
+		if !snapshot.StateObservedAt.Equal(at.Add(time.Second)) || !snapshot.TraceObservedAt.Equal(at.Add(time.Second)) {
+			t.Fatalf("fixture %d lost observation times: %#v", index, snapshot)
+		}
+	}
+}
+
+// TestGeneratedComposeDiagnosticSamplerStopsBeforeCleanup proves cancellation joins capture before emission and fixture cleanup.
+func TestGeneratedComposeDiagnosticSamplerStopsBeforeCleanup(t *testing.T) {
+	var order []string
+	t.Run("cleanup", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		started := make(chan struct{})
+		finished := make(chan struct{})
+		stop := startGeneratedComposeDiagnosticSampler(ctx, time.Hour, func(ctx context.Context) [3]generatedComposeDiagnosticSnapshot {
+			close(started)
+			<-ctx.Done()
+			close(finished)
+			return [3]generatedComposeDiagnosticSnapshot{{StateAndOutput: []byte("last snapshot")}}
+		})
+		t.Cleanup(func() { order = append(order, "fixture cleanup") })
+		t.Cleanup(func() {
+			retained := stop()
+			select {
+			case <-finished:
+			default:
+				t.Fatal("sampler stop returned while capture was still running")
+			}
+			order = append(order, "sampler stopped")
+			if string(retained[0].StateAndOutput) != "last snapshot" {
+				t.Fatal("last capture was discarded during cancellation")
+			}
+			order = append(order, "failure emission")
+		})
+		select {
+		case <-started:
+		case <-ctx.Done():
+			t.Fatal("sampler did not start")
+		}
+	})
+	if strings.Join(order, ",") != "sampler stopped,failure emission,fixture cleanup" {
+		t.Fatalf("cleanup order = %v", order)
+	}
+}
+
+// TestGeneratedComposeDiagnosticSamplerRetainsRetiredTrace proves production-style trace removal cannot erase the last observation.
+func TestGeneratedComposeDiagnosticSamplerRetainsRetiredTrace(t *testing.T) {
+	directory := t.TempDir()
+	traceDirectory := filepath.Join(directory, "project-01", "_data", "harbor")
+	if err := os.MkdirAll(traceDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tracePath := filepath.Join(traceDirectory, "forj-dev.log")
+	if err := os.WriteFile(tracePath, []byte("fixture startup phase\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	observed := make(chan bool)
+	stop := startGeneratedComposeDiagnosticSampler(ctx, time.Millisecond, func(ctx context.Context) [3]generatedComposeDiagnosticSnapshot {
+		trace, err := readGeneratedComposeLaunchTrace(root, "project-01")
+		select {
+		case observed <- err == nil:
+		case <-ctx.Done():
+		}
+		return [3]generatedComposeDiagnosticSnapshot{{Trace: trace, TraceObservedAt: time.Now().UTC()}}
+	})
+	defer stop()
+	select {
+	case available := <-observed:
+		if !available {
+			t.Fatal("fixture trace was unavailable before retirement")
+		}
+	case <-ctx.Done():
+		t.Fatal("sampler did not read initial trace")
+	}
+	if err := os.RemoveAll(filepath.Join(directory, "project-01", "_data")); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case available := <-observed:
+			if available {
+				continue
+			}
+		case <-ctx.Done():
+			t.Fatal("sampler did not observe trace retirement")
+		}
+		break
+	}
+	retained := stop()
+	if string(retained[0].Trace) != "fixture startup phase\n" || retained[0].TraceObservedAt.IsZero() {
+		t.Fatalf("trace retirement discarded captured evidence: %#v", retained[0])
 	}
 }

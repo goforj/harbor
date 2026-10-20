@@ -134,10 +134,14 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		}
 	})
 
-	// Cleanup is LIFO, so failure evidence must precede coordinator and workspace teardown.
+	stopDiagnostics := startGeneratedComposeDiagnosticSampler(t.Context(), 250*time.Millisecond, func(captureContext context.Context) [3]generatedComposeDiagnosticSnapshot {
+		return captureGeneratedComposeDiagnostics(captureContext, fixtureRoot, store, journal, supervisor, projects)
+	})
+	// Cleanup is LIFO, so the sampler must stop before failure emission and fixture teardown.
 	t.Cleanup(func() {
+		history := stopDiagnostics()
 		if t.Failed() {
-			retainGeneratedComposeFailureDiagnostics(t, fixtureRoot, productEvidenceDirectory, store, journal, supervisor, projects)
+			retainGeneratedComposeFailureDiagnostics(t, fixtureRoot, productEvidenceDirectory, store, journal, supervisor, projects, history)
 		}
 	})
 
