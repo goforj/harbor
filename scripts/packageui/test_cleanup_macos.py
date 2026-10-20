@@ -115,6 +115,40 @@ class CleanupFixtureTests(unittest.TestCase):
             self.assertEqual(receipt["commands"][-1]["stderr"], "stop refused")
             self.assertEqual(database.read_bytes(), b"retained state")
 
+    def test_failed_start_unregisters_without_rejected_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            database = home / "Library/Application Support/GoForj/Harbor/harbor.db"
+            database.parent.mkdir(parents=True)
+            database.write_bytes(b"retained state")
+            root = home / "project"
+            root.mkdir()
+            for name in (".goforj.yml", "go.mod"):
+                (root / name).write_text("retained project")
+            project = {"path": str(root), "id": "fixture", "state": "failed"}
+            snapshots = [{"projects": [project]}, {"projects": [project]}, {"projects": []}]
+
+            def result(arguments, **kwargs):
+                output = json.dumps(snapshots.pop(0)) if arguments == [cleanup_macos.CLI, "daemon", "snapshot"] else ""
+                if arguments[:2] == [cleanup_macos.CLI, "remove"]:
+                    output = json.dumps({"operation": {"state": "succeeded"}})
+                return subprocess.CompletedProcess(arguments, 0, output, "")
+
+            original_exists = Path.exists
+            with patch.object(cleanup_macos.Path, "home", return_value=home), \
+                    patch.object(cleanup_macos.Path, "exists", lambda path: False if str(path) == "/Applications/Harbor.app" else original_exists(path)), \
+                    patch.object(cleanup_macos, "fixture_root", return_value=root), \
+                    patch.object(cleanup_macos.subprocess, "run", side_effect=result) as run, \
+                    patch.object(cleanup_macos, "verify_service_absence", return_value={"service_exit_code": 113}):
+                cleanup_macos.recover(home / "evidence")
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertNotIn([cleanup_macos.CLI, "stop", "fixture"], commands)
+            self.assertTrue(any(command[:3] == [cleanup_macos.CLI, "remove", "fixture"] for command in commands))
+            self.assertIn([cleanup_macos.CLI, "daemon", "release"], commands)
+            receipt = json.loads((home / "evidence/failure-cleanup.json").read_text())
+            self.assertTrue(receipt["completed"])
+            self.assertEqual(len(receipt["retained"]), 3)
+
     def test_unconfigured_empty_profile_has_no_network_release(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
