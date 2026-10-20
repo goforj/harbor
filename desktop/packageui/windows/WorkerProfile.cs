@@ -159,19 +159,17 @@ public static class HarborUIProfile {
         IntPtr ownToken=IntPtr.Zero, impersonation=IntPtr.Zero;
         string privateRoot=null;
         NamedPipeServerStream server=null;
+        IAsyncResult connection=null;
         try {
             if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 8, out ownToken)) throw new Win32Exception();
             if (TokenIntegrity(ownToken) <= 8192) throw new Exception("hosted fixture requires an independently high parent for direct authority probes");
             string sid=WindowsIdentity.GetCurrent().User.Value;
             privateRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "harbor-ui-token-"+Guid.NewGuid().ToString("N"));
             DirectorySecurity security=new DirectorySecurity();
-            security.SetSecurityDescriptorSddlForm("O:"+sid+"G:"+sid+"D:P(A;OICI;FA;;;"+sid+")S:(ML;OICI;NW;;;ME)");
-            Directory.CreateDirectory(privateRoot, security);
+            security.SetSecurityDescriptorSddlForm("O:"+sid+"D:P(A;OICI;FA;;;"+sid+")");
             PipeSecurity pipeSecurity=new PipeSecurity();
-            pipeSecurity.SetSecurityDescriptorSddlForm("O:"+sid+"G:"+sid+"D:P(A;;GA;;;"+sid+")S:(ML;;NW;;;ME)");
+            pipeSecurity.SetSecurityDescriptorSddlForm("O:"+sid+"D:P(A;;GA;;;"+sid+")");
             string pipeName="harbor-ui-token-"+Guid.NewGuid().ToString("N");
-            server=new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 4096, 4096, pipeSecurity);
-            IAsyncResult connection=server.BeginWaitForConnection(null, null);
             if (!DuplicateTokenEx(token, 0xC, IntPtr.Zero, 2, 2, out impersonation)) throw new Win32Exception();
             using (WindowsImpersonationContext context=WindowsIdentity.Impersonate(impersonation)) {
                 foreach (string path in ProtectedDirectories) foreach (uint right in new uint[] { 2, 4, 0x10000, 0x40000, 0x80000 }) RequireDeniedFile(path, right, true);
@@ -196,10 +194,14 @@ public static class HarborUIProfile {
                         AccessReceipts.Add("token:denied:"+right);
                     }
                 } finally { CloseHandle(highProcess); }
+                // Positive objects originate under the measured child token, without privileged SACL authoring.
+                Directory.CreateDirectory(privateRoot, security);
                 string privateFile=Path.Combine(privateRoot, "positive.txt");
                 File.WriteAllText(privateFile, "actual child token can write private user data");
                 if (File.ReadAllText(privateFile) != "actual child token can write private user data") throw new Exception("private data readback differs");
                 AccessReceipts.Add("private-user-file:read-write");
+                server=new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 4096, 4096, pipeSecurity);
+                connection=server.BeginWaitForConnection(null, null);
                 IntPtr client=CreateFile("\\\\.\\pipe\\"+pipeName, 0xC0000000, 0, IntPtr.Zero, 3, 0, IntPtr.Zero);
                 if (client == new IntPtr(-1)) throw new Win32Exception();
                 CloseHandle(client);
