@@ -383,7 +383,8 @@ func projectEnvironment(specification Spec) []byte {
 		specification.Port,
 	)
 	if specification.MySQL {
-		environment += "DB_DRIVER=mysql\nDB_HOST=mysql\nDB_PORT=3306\nDB_DATABASE=db\nDB_USERNAME=user\nDB_PASSWORD=password\nDB_ROOT_PASSWORD=root\n"
+		// Generated MySQL stays dormant until its Compose profile is explicitly selected.
+		environment += "COMPOSE_PROFILES=mysql\nDB_DRIVER=mysql\nDB_HOST=mysql\nDB_PORT=3306\nDB_DATABASE=db\nDB_USERNAME=user\nDB_PASSWORD=password\nDB_ROOT_PASSWORD=root\n"
 	}
 	return []byte(environment)
 }
