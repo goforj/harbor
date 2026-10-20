@@ -2,11 +2,24 @@
 
 ## Released GoForj baseline (2026-10-20)
 
-GoForj [PR #253](https://github.com/goforj/goforj/pull/253) is merged and published as [v0.35.1](https://github.com/goforj/goforj/releases/tag/v0.35.1), at commit `09b41ca77b523c0724545ecc20b18581d9cae06c`. Harbor's generated-project fixtures, hosted test workflows, and package GUI CLI installs now select that release. This replaces the acceptance-only candidate pin. The published CLI is installed locally with canonical module metadata and no local replacement. Harbor's Docker and native platform reruns are pending; the installed-package evidence below remains evidence for its original source and CLI selection.
+GoForj [PR #253](https://github.com/goforj/goforj/pull/253) is merged and published as [v0.35.1](https://github.com/goforj/goforj/releases/tag/v0.35.1), at commit `09b41ca77b523c0724545ecc20b18581d9cae06c`. Harbor's generated-project fixtures, hosted test workflows, and package GUI CLI installs now select that release. This replaces the acceptance-only candidate pin. The published CLI is installed locally with canonical module metadata and no local replacement. Fresh Harbor validation passed against this release: [all 15 CI jobs](https://github.com/goforj/harbor/actions/runs/39427059491), [three-project Docker lifecycle and cleanup](https://github.com/goforj/harbor/actions/runs/39423903409), and [generated-project platform smoke on Windows, macOS, and Linux](https://github.com/goforj/harbor/actions/runs/39423865346). Package source is `76662ca`; subsequent changes are limited to the Windows GUI harness and documentation.
+
+
+| Platform | Fresh package producer | Installed GUI lifecycle, cleanup, and uninstall |
+| --- | --- | --- |
+| macOS | [39424253927](https://github.com/goforj/harbor/actions/runs/39424253927), publication skipped | [39423865305](https://github.com/goforj/harbor/actions/runs/39423865305), attempt 2, artifact `12265538384` |
+| Ubuntu | [39424253927](https://github.com/goforj/harbor/actions/runs/39424253927), publication skipped | [39423865351](https://github.com/goforj/harbor/actions/runs/39423865351), attempt 2, artifact `12265139712` |
+| Windows | [39424257838](https://github.com/goforj/harbor/actions/runs/39424257838) | [39427473351](https://github.com/goforj/harbor/actions/runs/39427473351), artifact `12266847973` |
+
+The exact PKG SHA-256 is `902073ed7565e79539e1bb4ddd0fc6a9715f27658504676367f07ca4488a1ed9`; the DEB SHA-256 is `0525df8cfe47319d4028bd02de43f76cc6a243c2d29a81ab3b9a774fe4bf8f1a`. All three GUI runs preserve three nonempty user-file hashes after uninstall. Windows normal cleanup proves stopped registration, authoritative unregister, network release, and daemon exit before uninstall. The new Windows run uses harness `006915c`; CI uses `9ab1526`. Both admit the exact unchanged package product source through the existing verifier.
+
+Initial GUI attempts correctly rejected older installers after the CLI baseline update. Fresh packages resolved those source mismatches. A later Windows harness failure occurred after Start, HTTPS, native Quit, and reopen, while finding the created project before GUI Stop. The selector now explicitly indexes the native UI Automation collection and tolerates optional names while preserving ordinal matching and multiple-match rejection. The complete rerun passed. This was not GoForj database readiness: Go owns Docker execution, retries, and cancellation; the small SQL client scripts run inside Linux database containers rather than a Windows host shell. Native Windows/macOS Docker-provider acceptance remains distinct from the Linux Docker proof.
+
+The following installed-package entries retain their earlier source and CLI selection.
 
 ## Installed platform evidence (2026-10-20)
 
-Current product source is `a537b52`. Full CI passed all 15 jobs in [39409654639](https://github.com/goforj/harbor/actions/runs/39409654639). The exact-source Unix package producer [39410128497](https://github.com/goforj/harbor/actions/runs/39410128497) passed with publication skipped. Its PKG SHA-256 is `7c630ee73250873ca5e325c4d4cb6e1a36321aa764a2102c1f4444de64228bf6`; its DEB SHA-256 is `d6547610ec9479ab238316c120b724058f353de4ccc2480221c7d5afd81fb275`. All three exact-package GUI lifecycle and normal cleanup receipts are accepted at this product source.
+The earlier accepted product source is `a537b52`. Full CI passed all 15 jobs in [39409654639](https://github.com/goforj/harbor/actions/runs/39409654639). The exact-source Unix package producer [39410128497](https://github.com/goforj/harbor/actions/runs/39410128497) passed with publication skipped. Its PKG SHA-256 is `7c630ee73250873ca5e325c4d4cb6e1a36321aa764a2102c1f4444de64228bf6`; its DEB SHA-256 is `d6547610ec9479ab238316c120b724058f353de4ccc2480221c7d5afd81fb275`. All three exact-package GUI lifecycle and normal cleanup receipts are accepted at this product source.
 
 | Platform | Accepted package and GUI evidence | Boundary |
 | --- | --- | --- |
