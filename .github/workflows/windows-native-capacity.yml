@@ -36,10 +36,23 @@ jobs:
         run: |
           go test -tags=platformmutation ./internal/platform/loopback -run '^TestWindowsNativeCapacityReadback$' -count=10 -timeout=10m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-native-capacity.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain native socket state
+        if: always()
+        shell: pwsh
+        run: |
+          Get-NetTCPConnection -ErrorAction SilentlyContinue |
+            Where-Object { $_.LocalPort -eq 3306 -or $_.RemotePort -eq 3306 } |
+            Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, State, OwningProcess |
+            ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\windows-native-sockets.json"
+          netsh interface ipv4 show excludedportrange protocol=tcp |
+            Set-Content "$env:RUNNER_TEMP\windows-native-excluded-ports.txt"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: windows-native-capacity-readbacks
-          path: ${{ runner.temp }}/windows-native-capacity.log
+          path: |
+            ${{ runner.temp }}/windows-native-capacity.log
+            ${{ runner.temp }}/windows-native-sockets.json
+            ${{ runner.temp }}/windows-native-excluded-ports.txt
           if-no-files-found: error
           retention-days: 14
