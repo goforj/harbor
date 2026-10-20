@@ -370,7 +370,7 @@ func integrationACEs(descriptor *windows.SECURITY_DESCRIPTOR) (map[integrationAC
 		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
 			return nil, errors.New("machine projection has a non-allow grant")
 		}
-		grant := integrationACE{SID: (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String(), Mask: ace.Mask, Flags: ace.Header.AceFlags}
+		grant := integrationACE{SID: (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String(), Mask: uint32(ace.Mask), Flags: ace.Header.AceFlags}
 		if _, exists := result[grant]; exists {
 			return nil, errors.New("machine projection has duplicate grants")
 		}
