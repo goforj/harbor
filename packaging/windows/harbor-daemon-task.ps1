@@ -4,6 +4,11 @@ $PSModuleAutoLoadingPreference = 'None'
 $env:PSModulePath = ''
 Import-Module -Name ([IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'))
 
+# Get-OwnedTaskSDDL fixes the scheduler's mapped read/execute mask and protected canonical descriptor flags.
+function Get-OwnedTaskSDDL([string]$SID) {
+    return "O:BAG:BAD:PAI(A;;FA;;;BA)(A;;FA;;;SY)(A;;0x1200a9;;;$SID)"
+}
+
 # New-OwnedTaskDefinition fixes every authored property before full scheduler XML admission.
 function New-OwnedTaskDefinition($Service, [string]$Root, [string]$SID, [string]$Name, $Selection) {
     $definition = $Service.NewTask(0)
@@ -11,15 +16,17 @@ function New-OwnedTaskDefinition($Service, [string]$Root, [string]$SID, [string]
     $definition.RegistrationInfo.Description = "com.goforj.harbor installation $($selection.installation_id) user $sid"
     $definition.RegistrationInfo.Source = "com.goforj.harbor $($selection.bundle_digest)"
     $definition.RegistrationInfo.URI = "\$name"
+    $definition.RegistrationInfo.SecurityDescriptor = Get-OwnedTaskSDDL $SID
     $definition.Principal.Id = 'HarborUser'
     $definition.Principal.UserId = $sid
     $definition.Principal.LogonType = 3
     $definition.Principal.RunLevel = 0
     $trigger = $definition.Triggers.Create(9)
     $trigger.Id = 'HarborLogon'
-    $trigger.UserId = $sid
+    $trigger.UserId = ([Security.Principal.SecurityIdentifier]::new($SID)).Translate([Security.Principal.NTAccount]).Value
     $trigger.Enabled = $true
     $trigger.Delay = 'PT1S'
+    $definition.Actions.Context = 'HarborUser'
     $execution = $definition.Actions.Create(0)
     $execution.Id = 'HarborDaemon'
     $execution.Path = [IO.Path]::Combine($root, 'daemon-launcher.exe')
@@ -45,7 +52,7 @@ function New-OwnedTaskDefinition($Service, [string]$Root, [string]$SID, [string]
     $settings.IdleSettings.IdleDuration = 'PT10M'
     $settings.IdleSettings.WaitTimeout = 'PT1H'
     $settings.DisallowStartOnRemoteAppSession = $true
-    $settings.UseUnifiedSchedulingEngine = $false
+    $settings.UseUnifiedSchedulingEngine = $true
 
     return $definition
 }
@@ -138,7 +145,7 @@ if ($sid -cne $selection.user_sid -or $sid -eq 'S-1-5-18' -or $session -le 0) { 
 if (($Action -eq 'register' -or $Action -eq 'remove') -and -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'task mutation requires the elevated same-user installer' }
 if ($Action -eq 'register' -or $Action -eq 'remove') { Assert-InstallerParent $sid $session ([IO.Path]::Combine($root, 'releases', [string]$selection.release_sequence, 'harbor-installer.exe')) }
 $name = "GoForjHarborDaemon-$sid"
-$sddl = "O:BAG:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;$sid)"
+$sddl = Get-OwnedTaskSDDL $SID
 $service = [Activator]::CreateInstance([Type]::GetTypeFromProgID('Schedule.Service'))
 $service.Connect()
 $folder = $service.GetFolder('\')

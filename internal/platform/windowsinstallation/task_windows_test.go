@@ -74,11 +74,11 @@ $copy.XmlText = $definition.XmlText
 if ((Convert-TaskXML $copy.XmlText) -cne (Convert-TaskXML $definition.XmlText)) { throw 'COM XML roundtrip drift' }
 if ($definition.Principal.LogonType -ne 3 -or $definition.Principal.RunLevel -ne 0 -or $definition.Principal.UserId -cne $sid) { throw 'unsafe principal' }
 if ($definition.Actions.Count -ne 1 -or $definition.Actions.Item(1).Arguments -ne '' -or $definition.Actions.Item(1).Path -cne 'C:\HarborNativeFixture\daemon-launcher.exe') { throw 'unsafe action' }
-if ($definition.Triggers.Count -ne 1 -or $definition.Triggers.Item(1).UserId -cne $sid) { throw 'unsafe trigger' }
+if ($definition.Triggers.Count -ne 1 -or ([Security.Principal.NTAccount]::new($definition.Triggers.Item(1).UserId)).Translate([Security.Principal.SecurityIdentifier]).Value -cne $sid) { throw 'unsafe trigger' }
 $before = Convert-TaskXML $copy.XmlText
 $copy.Settings.DeleteExpiredTaskAfter = 'PT1H'
 if ((Convert-TaskXML $copy.XmlText) -ceq $before) { throw 'unlisted setting drift escaped XML admission' }
-$sddl = "O:BAG:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;$sid)"
+$sddl = Get-OwnedTaskSDDL $sid
 if ((Convert-TaskACL $sddl) -ceq (Convert-TaskACL ($sddl + '(A;;FA;;;BU)'))) { throw 'extra ACL grant admitted' }
 if ((Convert-TaskXML '<Task><Arguments> </Arguments></Task>') -ceq (Convert-TaskXML '<Task><Arguments></Arguments></Task>')) { throw 'significant argument whitespace was discarded' }
 if ((Convert-TaskXML ('<Task>' + [Environment]::NewLine + ' <Actions />' + [Environment]::NewLine + '</Task>')) -cne (Convert-TaskXML '<Task><Actions /></Task>')) { throw 'formatting whitespace was retained' }
@@ -99,7 +99,7 @@ $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $name = 'HarborNativeAdmission-' + [Guid]::NewGuid().ToString('N')
 $selection = @{ installation_id = ('a' * 32); bundle_digest = ('b' * 64) }
 $definition = New-OwnedTaskDefinition $service 'C:\HarborNativeFixture' $sid $name $selection
-$sddl = "O:BAG:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;$sid)"
+$sddl = Get-OwnedTaskSDDL $sid
 if ($null -ne (Get-OwnedTask $folder $name $definition $sddl)) { throw 'fresh fixture task exists' }
 $lock = Enter-OwnedTaskLock $sid
 $lock.ReleaseMutex()
