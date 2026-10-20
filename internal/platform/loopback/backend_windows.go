@@ -258,7 +258,17 @@ func (backend *platformBackend) reconcileCreatedAddress(ctx context.Context, ide
 			return err
 		}
 		observed, err := backend.ipHelper.address(identity)
-		if wantPresent && creation != nil && err == nil && observed.SkipAsSource == 0 {
+		if wantPresent && creation != nil && err == nil {
+			birth := observed.CreationTimeStamp
+			candidate := observed
+			candidate.SkipAsSource = 1
+			if birth == (windows.Filetime{}) || birth.Nanoseconds() < creation.before.Nanoseconds() || birth.Nanoseconds() > creation.after.Nanoseconds() || observed.SkipAsSource > 1 || !ownedWindowsAddressRow(candidate, identity) || candidate.Address != identity.Address || candidate.ScopeId != identity.ScopeId || (creation.birth != (windows.Filetime{}) && creation.birth != birth) {
+				return fmt.Errorf("created address birth or attributes cannot be proved")
+			}
+			creation.birth = birth
+			creation.observed = observed
+		}
+		if wantPresent && creation != nil && err == nil && observed.SkipAsSource == 0 && observed.DadState == windows.IpDadStatePreferred {
 			observed, err = backend.setCreatedSkipAsSource(observed, identity, creation)
 		}
 		if wantPresent {
@@ -266,6 +276,7 @@ func (backend *platformBackend) reconcileCreatedAddress(ctx context.Context, ide
 			case err == nil && exactWindowsAddressRow(observed, identity):
 				return nil
 			case err == nil && pendingWindowsAddressRow(observed, identity):
+			case err == nil && creation != nil && observed.SkipAsSource == 0 && observed.DadState == windows.IpDadStateTentative:
 			case errors.Is(err, windows.ERROR_NOT_FOUND):
 			case err != nil:
 				return fmt.Errorf("read created address: %w", err)
@@ -303,16 +314,18 @@ func (backend *platformBackend) rollbackCreatedAddress(row windows.MibUnicastIpA
 	if err != nil {
 		return fmt.Errorf("inspect created IP Helper unicast address for rollback: %w", err)
 	}
-	if creation.birth != (windows.Filetime{}) {
-		if !createdWindowsTransitionRow(observed, row, creation.birth) {
-			return fmt.Errorf("created IP Helper unicast birth or attributes changed before rollback")
-		}
-		if err := backend.requireAddressTableRow(observed); err != nil {
-			return fmt.Errorf("verify created-address rollback table: %w", err)
-		}
-	} else if !ownedWindowsAddressRow(observed, row) {
-		return fmt.Errorf("created IP Helper unicast address changed before rollback")
+	if creation.birth == (windows.Filetime{}) {
+		return fmt.Errorf("created IP Helper unicast birth was not proved before rollback")
 	}
+	candidate, captured := observed, creation.observed
+	candidate.SkipAsSource, captured.SkipAsSource = 1, 1
+	if observed.SkipAsSource > 1 || observed.CreationTimeStamp != creation.birth || candidate != captured {
+		return fmt.Errorf("created IP Helper unicast birth or attributes changed before rollback")
+	}
+	if err := backend.requireAddressTableRow(observed); err != nil {
+		return fmt.Errorf("verify created-address rollback table: %w", err)
+	}
+
 	if err := backend.ipHelper.deleteAddress(&row); err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
 		return fmt.Errorf("rollback created IP Helper unicast address: %w", err)
 	}
@@ -326,6 +339,7 @@ func (backend *platformBackend) rollbackCreatedAddress(row windows.MibUnicastIpA
 type windowsAddressCreation struct {
 	before, after windows.Filetime
 	birth         windows.Filetime
+	observed      windows.MibUnicastIpAddressRow
 }
 
 // requireAbsentAddress rejects preexisting or ambiguous native address rows before acquiring creation authority.
@@ -395,6 +409,7 @@ func (backend *platformBackend) setCreatedSkipAsSource(observed, identity window
 		return observed, fmt.Errorf("created address birth changed")
 	}
 	creation.birth = birth
+	creation.observed = observed
 	if err := backend.revalidateInterface(context.Background(), InterfaceFact{Kind: InterfaceKindWindowsSoftware, NativeLoopback: true, WindowsLUID: identity.InterfaceLuid, Index: int(identity.InterfaceIndex)}); err != nil {
 		return observed, err
 	}
