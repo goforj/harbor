@@ -377,7 +377,7 @@ func maintenanceEnvironment() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve continuation ProgramData: %w", err)
 	}
-	return []string{"ALLUSERSPROFILE=" + programData, "ProgramData=" + programData, "SystemRoot=" + system}, nil
+	return []string{"ALLUSERSPROFILE=" + programData, "ProgramData=" + programData, "SystemDrive=" + filepath.VolumeName(system), "SystemRoot=" + system}, nil
 }
 
 // retireMaintenanceCopy settles only the exact spawned continuation before a failed handoff lets the original process exit.

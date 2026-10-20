@@ -497,7 +497,7 @@ func TestNativeMaintenanceEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(environment) != 3 {
+	if len(environment) != 4 {
 		t.Fatalf("unexpected continuation environment: %q", environment)
 	}
 	path, err := os.Executable()
@@ -522,14 +522,15 @@ func TestNativeMaintenanceEnvironmentChild(t *testing.T) {
 	}
 	for _, entry := range os.Environ() {
 		name := strings.SplitN(entry, "=", 2)[0]
-		if !strings.EqualFold(name, "ALLUSERSPROFILE") && !strings.EqualFold(name, "ProgramData") && !strings.EqualFold(name, "SystemRoot") {
+		if !strings.EqualFold(name, "ALLUSERSPROFILE") && !strings.EqualFold(name, "ProgramData") && !strings.EqualFold(name, "SystemRoot") && !strings.EqualFold(name, "SystemDrive") {
 			t.Fatalf("unexpected inherited environment: %s", name)
 		}
 	}
 	for _, folder := range []*windows.KNOWNFOLDERID{windows.FOLDERID_ProgramData, windows.FOLDERID_CommonPrograms, windows.FOLDERID_ProgramFilesX64} {
+		t.Logf("resolving machine KnownFolder %v", *folder)
 		path, err := windows.KnownFolderPath(folder, windows.KF_FLAG_DEFAULT)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("KnownFolder %v: %v", *folder, err)
 		}
 		if info, err := os.Stat(path); err != nil || !info.IsDir() {
 			t.Fatalf("machine KnownFolder %q: %v", path, err)
