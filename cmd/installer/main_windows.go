@@ -21,6 +21,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/platform/daemonservice"
 	"github.com/goforj/harbor/internal/platform/windowsfile"
 	"github.com/goforj/harbor/internal/platform/windowsinstallation"
 	"golang.org/x/sys/windows"
@@ -40,6 +41,7 @@ type maintenanceOperations struct {
 	remove    func(context.Context) error
 	bootstrap func(context.Context) error
 	finish    func(context.Context, windows.Handle) error
+	guard     func(windows.Handle, windows.Handle) error
 }
 
 // main accepts only signed-agent lifecycle operations with no caller-selected target paths or accounts.
@@ -48,7 +50,9 @@ func main() {
 	defer cancel()
 	operations := maintenanceOperations{verify: verifyMaintenanceSession, register: registerMaintenanceTask, remove: removeMaintenanceTask, bootstrap: func(ctx context.Context) error {
 		return requestMaintenanceUninstall(ctx, len(os.Args) == 2 && os.Args[1] == "--silent")
-	}, finish: finishUninstall}
+	}, finish: finishUninstall, guard: func(ready, release windows.Handle) error {
+		return windowsinstallation.RunUninstallGuard(ready, release, daemonservice.PrepareDatabase)
+	}}
 	if err := runMaintenance(ctx, os.Args[1:], operations); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Harbor maintenance: %v\n", err)
 		if interactiveMaintenance(os.Args[1:]) {
@@ -64,6 +68,13 @@ func runMaintenance(ctx context.Context, arguments []string, operations maintena
 		arguments = []string{"--uninstall"}
 	}
 	action := arguments[0]
+	if action == "--hold-stopped" {
+		ready, release, err := parseUninstallGuardHandles(arguments)
+		if err != nil {
+			return err
+		}
+		return operations.guard(ready, release)
+	}
 	var parent windows.Handle
 	if action == "--finish-uninstall" {
 		if len(arguments) != 2 {
@@ -830,4 +841,28 @@ func requestMaintenanceUninstall(ctx context.Context, silent bool) (result error
 			return errors.New("elevated uninstall returned an unexpected wait state")
 		}
 	}
+}
+
+// parseUninstallGuardHandles admits only the two fixed, direction-specific capabilities for the restricted lease worker.
+func parseUninstallGuardHandles(arguments []string) (windows.Handle, windows.Handle, error) {
+	if len(arguments) != 3 || arguments[0] != "--hold-stopped" {
+		return 0, 0, errors.New("uninstall guard requires only its inherited ready and release events")
+	}
+	readyText, readyOK := strings.CutPrefix(arguments[1], "--ready-handle=")
+	releaseText, releaseOK := strings.CutPrefix(arguments[2], "--release-handle=")
+	if !readyOK || !releaseOK {
+		return 0, 0, errors.New("uninstall guard event argument order or type differs")
+	}
+	ready, err := parseMaintenanceParent("--parent-handle=" + readyText)
+	if err != nil {
+		return 0, 0, err
+	}
+	release, err := parseMaintenanceParent("--parent-handle=" + releaseText)
+	if err != nil {
+		return 0, 0, err
+	}
+	if ready == release {
+		return 0, 0, errors.New("uninstall guard requires distinct event handles")
+	}
+	return ready, release, nil
 }

@@ -280,3 +280,22 @@ func TestWindowsMaintenanceUserEntrypoints(t *testing.T) {
 		t.Fatalf("SHELLEXECUTEINFOW layout=%d", unsafe.Sizeof(maintenanceShellExecuteInfo{}))
 	}
 }
+
+// TestWindowsUninstallGuardDispatch grants only the fixed restricted-worker role and its distinct typed event capabilities.
+func TestWindowsUninstallGuardDispatch(t *testing.T) {
+	for _, arguments := range [][]string{{"--hold-stopped"}, {"--hold-stopped", "--ready-handle=4"}, {"--hold-stopped", "--release-handle=4", "--ready-handle=8"}, {"--hold-stopped", "--ready-handle=04", "--release-handle=8"}, {"--hold-stopped", "--ready-handle=4", "--release-handle=4"}, {"--hold-stopped", "--ready-handle=4", "--release-handle=8", "extra"}} {
+		if err := runMaintenance(context.Background(), arguments, maintenanceOperations{}); err == nil {
+			t.Fatalf("admitted guard arguments %q", arguments)
+		}
+	}
+	failure := errors.New("actual guard token was elevated")
+	operations := maintenanceOperations{verify: func(bool) error { t.Fatal("restricted worker reached elevated maintenance admission"); return nil }, guard: func(ready, release windows.Handle) error {
+		if ready != 4 || release != 8 {
+			t.Fatalf("ready=%d,release=%d", ready, release)
+		}
+		return failure
+	}}
+	if err := runMaintenance(context.Background(), []string{"--hold-stopped", "--ready-handle=4", "--release-handle=8"}, operations); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+}
