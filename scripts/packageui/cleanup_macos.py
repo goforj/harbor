@@ -92,12 +92,14 @@ def recover(directory):
             projects = snapshot.get("projects", [])
             roots = [fixture_root(project) for project in projects]
             for project in projects:
-                if project.get("state") != "stopped":
+                # Failed startup has already retired its session, so Stop rejects it.
+                # Unregister retains the ordinary runtime and network admission checks.
+                if project.get("state") not in ("stopped", "failed"):
                     run([CLI, "stop", project["id"]])
             deadline = time.monotonic() + 120
             while True:
                 snapshot = json.loads(run([CLI, "daemon", "snapshot"]).stdout)
-                if all(project["state"] == "stopped" for project in snapshot.get("projects", [])):
+                if all(project["state"] in ("stopped", "failed") for project in snapshot.get("projects", [])):
                     break
                 if time.monotonic() >= deadline:
                     raise RuntimeError("fixture projects did not stop during failure recovery")
