@@ -261,7 +261,15 @@ func admitIntegrationReplay(name string, content []byte) error {
 
 // retire removes only already admitted exact file handles after all histories have passed validation.
 func (state *integrationState) retire() error {
+	return state.retireChecked(func() error { return nil })
+}
+
+// retireChecked refuses each next helper artifact as soon as its required runtime lease is lost.
+func (state *integrationState) retireChecked(check func() error) error {
 	for _, file := range state.Files {
+		if err := check(); err != nil {
+			return err
+		}
 		if err := retireIntegrationFile(file); err != nil {
 			return err
 		}

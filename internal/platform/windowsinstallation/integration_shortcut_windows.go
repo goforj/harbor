@@ -299,8 +299,16 @@ func integrationOpenShortcutAnchors(programs string) (_ *integrationShortcut, re
 
 // retire removes exact created projections, preserving neighboring files and preexisting directories.
 func (shortcut *integrationShortcut) retire() error {
+	return shortcut.retireChecked(func() error { return nil })
+}
+
+// retireChecked revalidates the required runtime lease separately for link and shared-directory retirement.
+func (shortcut *integrationShortcut) retireChecked(check func() error) error {
 	var result error
 	if shortcut.File != nil && shortcut.Receipt.File.Created {
+		if err := check(); err != nil {
+			return err
+		}
 		if err := retireIntegrationFile(shortcut.File); err != nil {
 			return err
 		}
@@ -308,6 +316,9 @@ func (shortcut *integrationShortcut) retire() error {
 		shortcut.File = nil
 	}
 	if shortcut.Directory != nil && shortcut.Receipt.Directory.Created {
+		if err := check(); err != nil {
+			return err
+		}
 		err := retireIntegrationFile(shortcut.Directory)
 		if !errors.Is(err, windows.ERROR_DIR_NOT_EMPTY) {
 			result = errors.Join(result, err)

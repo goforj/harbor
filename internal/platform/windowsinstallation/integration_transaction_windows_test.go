@@ -5,6 +5,7 @@ package windowsinstallation
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -55,6 +56,13 @@ func TestNativeMachineIntegrationTransaction(t *testing.T) {
 	if err := installation.ValidateMachineIntegration(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	lost := errors.New("runtime guard exited")
+	if err := installation.RemoveMachineIntegration(context.Background(), func() error { return lost }); !errors.Is(err, lost) {
+		t.Fatalf("guard loss = %v", err)
+	}
+	if err := installation.ValidateMachineIntegration(context.Background()); err != nil {
+		t.Fatalf("guard rejection changed machine projections: %v", err)
+	}
 	programs, err := windows.KnownFolderPath(windows.FOLDERID_CommonPrograms, windows.KF_FLAG_DEFAULT)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +72,7 @@ func TestNativeMachineIntegrationTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Remove(sentinel); os.Remove(filepath.Dir(sentinel)) })
-	if err := installation.RemoveMachineIntegration(context.Background()); err != nil {
+	if err := installation.RemoveMachineIntegration(context.Background(), context.Background().Err); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "preserve" {
