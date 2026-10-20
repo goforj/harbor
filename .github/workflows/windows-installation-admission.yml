@@ -39,7 +39,7 @@ jobs:
           go test -c -o "$fixture\admission.test.exe" ./internal/platform/windowsinstallation
           if ($LASTEXITCODE -ne 0) { throw "native admission test build failed" }
           Copy-Item "$fixture\admission.test.exe" "$fixture\signed.exe"
-          'Write-Output "admission fixture only"' | Set-Content "$fixture\signed.ps1"
+          Copy-Item -LiteralPath packaging\windows\harbor-daemon-task.ps1 -Destination "$fixture\signed.ps1"
           $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Harbor Disposable Native Admission" -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddHours(2)
           Export-Certificate -Cert $certificate -FilePath "$fixture\signer.cer" | Out-Null
           Import-Certificate -FilePath "$fixture\signer.cer" -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
