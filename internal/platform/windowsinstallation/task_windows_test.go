@@ -60,7 +60,7 @@ $sddl = "O:BAG:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;$sid)"
 if ((Convert-TaskACL $sddl) -ceq (Convert-TaskACL ($sddl + '(A;;FA;;;BU)'))) { throw 'extra ACL grant admitted' }
 if ((Convert-TaskXML '<Task><Arguments> </Arguments></Task>') -ceq (Convert-TaskXML '<Task><Arguments></Arguments></Task>')) { throw 'significant argument whitespace was discarded' }
 if ((Convert-TaskXML ('<Task>' + [Environment]::NewLine + ' <Actions />' + [Environment]::NewLine + '</Task>')) -cne (Convert-TaskXML '<Task><Actions /></Task>')) { throw 'formatting whitespace was retained' }
-Write-Output 'native task definition passed' 
+Write-Output 'native task definition passed'
 `)
 }
 
@@ -84,9 +84,17 @@ $lock.ReleaseMutex()
 $lock.Dispose()
 $created = $false
 try {
-    $null = $folder.RegisterTaskDefinition($name, $definition, 18, $sid, $null, 3, $sddl)
+    $registered = $folder.RegisterTaskDefinition($name, $definition, 18, $sid, $null, 3, $sddl)
+    $createdXML = Convert-TaskXML $registered.Definition.XmlText
+    $createdACL = Convert-TaskACL $registered.GetSecurityDescriptor(7)
     $created = $true
-    $task = Get-OwnedTask $folder $name $definition $sddl
+    try { $task = Get-OwnedTask $folder $name $definition $sddl } catch {
+        [Console]::Error.WriteLine('expected fixture XML: ' + (Convert-TaskXML $definition.XmlText))
+        [Console]::Error.WriteLine('registered fixture XML: ' + $createdXML)
+        [Console]::Error.WriteLine('expected fixture ACL: ' + $sddl)
+        [Console]::Error.WriteLine('registered fixture ACL: ' + $registered.GetSecurityDescriptor(7))
+        throw
+    }
     if ($null -eq $task) { throw 'exact registered task absent' }
     $originalXML = Convert-TaskXML $task.Definition.XmlText
     $originalACL = Convert-TaskACL $task.GetSecurityDescriptor(7)
@@ -135,7 +143,9 @@ try {
     if (-not $errorPreserved) { throw 'COM observation error reported as absence' }
 } finally {
     if ($created) {
-        # This exact random name was created by this fixture and is never run.
+        # Retain the original registration receipt even if expected COM normalization fails admission.
+        $remaining = $folder.GetTask($name)
+        if ((Convert-TaskXML $remaining.Definition.XmlText) -cne $createdXML -or (Convert-TaskACL $remaining.GetSecurityDescriptor(7)) -cne $createdACL -or $remaining.GetInstances(0).Count -ne 0) { throw 'preserve changed native task fixture' }
         $folder.DeleteTask($name, 0)
     }
 }

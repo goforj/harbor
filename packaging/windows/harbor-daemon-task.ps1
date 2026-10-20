@@ -46,7 +46,7 @@ function New-OwnedTaskDefinition($Service, [string]$Root, [string]$SID, [string]
     $settings.IdleSettings.WaitTimeout = 'PT1H'
     $settings.DisallowStartOnRemoteAppSession = $true
     $settings.UseUnifiedSchedulingEngine = $false
-    
+
     return $definition
 }
 
