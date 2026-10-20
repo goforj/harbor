@@ -243,8 +243,9 @@ func bootstrapUninstall(ctx context.Context) (result error) {
 	if err := launchMaintenanceCopy(ctx, path); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(os.Stdout, "Harbor uninstall continues; protected maintenance audit cache is retained at: %s\n", path)
-	return err
+	// A GUI uninstall has no standard output handle; reporting cannot reverse the acknowledged handoff.
+	_, _ = fmt.Fprintf(os.Stdout, "Harbor uninstall continues; protected maintenance audit cache is retained at: %s\n", path)
+	return nil
 }
 
 // createMaintenanceStage creates only one random protected vendor audit-cache child and its exact admitted agent copy.
