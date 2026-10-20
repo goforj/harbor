@@ -28,12 +28,23 @@ func TestApplicationOptionsPinNativeLifecycle(t *testing.T) {
 	if options.Mac.ApplicationShouldTerminateAfterLastWindowClosed || !options.Windows.DisableQuitOnLastWindowClosed || !options.Linux.DisableQuitOnLastWindowClosed {
 		t.Fatal("closing a window may terminate the desktop")
 	}
-	window := newWindowOptions()
+	window := newWindowOptions(runtime.GOOS)
 	if window.Name != desktopWindowName || window.Title != "GoForj Harbor" || window.Width != 1280 || window.Height != 820 || window.MinWidth != 420 || window.MinHeight != 520 || window.Hidden {
 		t.Fatalf("unexpected window geometry: %+v", window)
 	}
 	if window.Linux.WebviewGpuPolicy != application.WebviewGpuPolicyNever {
 		t.Fatal("Linux rendering policy changed")
+	}
+}
+
+// TestWindowApplicationMenuPinsWindowsAccelerators keeps the native Quit shortcut attached without changing Unix presentation.
+func TestWindowApplicationMenuPinsWindowsAccelerators(t *testing.T) {
+	for _, platform := range []string{"windows", "darwin", "linux"} {
+		t.Run(platform, func(t *testing.T) {
+			if got := newWindowOptions(platform).UseApplicationMenu; got != (platform == "windows") {
+				t.Fatalf("application menu attached on %s: %t", platform, got)
+			}
+		})
 	}
 }
 

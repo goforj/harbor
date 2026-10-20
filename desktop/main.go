@@ -51,7 +51,7 @@ func main() {
 
 // newDesktopWindow keeps close-to-hide identical in production and native smoke verification.
 func newDesktopWindow(native *application.App) *application.WebviewWindow {
-	window := native.Window.NewWithOptions(newWindowOptions())
+	window := native.Window.NewWithOptions(newWindowOptions(runtime.GOOS))
 	window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		window.Hide()
 		event.Cancel()
@@ -89,11 +89,12 @@ func nativeApplicationIcon(platform string) []byte {
 	return applicationIcon
 }
 
-// newWindowOptions preserves the existing desktop geometry and rendering policy.
-func newWindowOptions() application.WebviewWindowOptions {
+// newWindowOptions attaches Windows menu accelerators while preserving other native presentation policies.
+func newWindowOptions(platform string) application.WebviewWindowOptions {
 	return application.WebviewWindowOptions{
 		Name: desktopWindowName, Title: "GoForj Harbor",
-		Width: 1280, Height: 820, MinWidth: 420, MinHeight: 520,
+		UseApplicationMenu: platform == "windows",
+		Width:              1280, Height: 820, MinWidth: 420, MinHeight: 520,
 		BackgroundColour: application.RGBA{Red: 13, Green: 13, Blue: 13, Alpha: 255},
 		Linux:            application.LinuxWindow{WebviewGpuPolicy: application.WebviewGpuPolicyNever},
 	}
