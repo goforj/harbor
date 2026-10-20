@@ -66,7 +66,8 @@ def test_only_path(name):
                         ".github/workflows/windows-package-ui.yml",
                         ".github/workflows/windows-native-capacity.yml",
                         ".github/workflows/windows-installation-admission.yml",
-                        "internal/platform/loopback/backend_windows_diagnostic_integration_test.go"))
+                        "internal/platform/loopback/backend_windows_diagnostic_integration_test.go",
+                        "internal/platformproof/project_identity_test.go"))
 
 
 def verify_product(expected, current):

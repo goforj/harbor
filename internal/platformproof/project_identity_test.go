@@ -245,6 +245,7 @@ func TestReceivePayloadRequiresOneResponseAndServerEOF(t *testing.T) {
 			defer listener.Close()
 			ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 			defer cancel()
+			release := make(chan struct{})
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -255,15 +256,17 @@ func TestReceivePayloadRequiresOneResponseAndServerEOF(t *testing.T) {
 				defer connection.Close()
 				_, _ = io.WriteString(connection, test.response)
 				if test.holdOpen {
-					<-ctx.Done()
+					<-release
 				}
 			}()
 			_, err = receivePayload(ctx, netip.MustParseAddr("127.0.0.1"), uint16(listener.Addr().(*net.TCPAddr).Port))
+			close(release)
+			cancel()
+			_ = listener.Close()
+			<-done
 			if (err != nil) != test.wantErr {
 				t.Fatalf("receivePayload err=%v wantError=%v", err, test.wantErr)
 			}
-			cancel()
-			<-done
 		})
 	}
 }
