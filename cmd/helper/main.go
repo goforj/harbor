@@ -114,7 +114,9 @@ func main() {
 		os.Exit(platformInvocationFailureExitCode(err))
 	}
 	runErr := runWithPlatformParentLiveness(func(ctx context.Context) error {
-		return run(ctx, invocation.reader, invocation.writer, helper.SystemClock{}, productionDependencies())
+		return withPlatformMachineTransaction(ctx, func() error {
+			return run(ctx, invocation.reader, invocation.writer, helper.SystemClock{}, productionDependencies())
+		})
 	})
 	if parentLivenessFailed(runErr) {
 		os.Exit(1)

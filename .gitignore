@@ -13,3 +13,9 @@ storage/
 
 # Python release tooling
 __pycache__/
+
+# Sealed Windows setup inputs and native build resources
+/cmd/windowssetup/payload/*
+!/cmd/windowssetup/payload/README.txt
+/cmd/windowssetup/*.syso
+/cmd/installer/harbor_windows_*.syso

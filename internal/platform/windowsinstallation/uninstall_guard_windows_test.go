@@ -1,0 +1,351 @@
+//go:build windows
+
+package windowsinstallation
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+// TestUninstallGuardAdmission refuses missing images and cancelled acquisition before native staging or user state access.
+func TestUninstallGuardAdmission(t *testing.T) {
+	installation := &Installation{}
+	if _, err := installation.HoldUninstallGuard(context.Background(), nil); err == nil {
+		t.Fatal("missing staged image admitted")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := installation.HoldUninstallGuard(ctx, os.Stdin); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	for _, path := range []string{`C:\Users\runner\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, `C:\Windows\Temp\foreign\HarborUninstall.exe`, `C:\Windows\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\foreign.exe`, `C:\Windows\Temp\HarborUninstall-` + strings.Repeat("A", 32) + `\HarborUninstall.exe`, `C:\Windows\Temp\..\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`} {
+		if err := admitUninstallGuardStagePath(path, `C:\Windows`); err == nil {
+			t.Fatalf("admitted guard stage %q", path)
+		}
+	}
+	if err := admitUninstallGuardStagePath(`C:\Windows\Temp\HarborUninstall-`+strings.Repeat("a", 32)+`\HarborUninstall.exe`, `C:\Windows`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestUninstallGuardStageDescriptor refuses foreign grants, owners, or weakened mandatory labels without changing native state.
+func TestUninstallGuardStageDescriptor(t *testing.T) {
+	exact, err := windows.SecurityDescriptorFromString(uninstallGuardStageSDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admitUninstallGuardStageDescriptor(exact); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{
+		strings.Replace(uninstallGuardStageSDDL, "O:BA", "O:SY", 1),
+		strings.Replace(uninstallGuardStageSDDL, "D:P", "D:", 1),
+		strings.Replace(uninstallGuardStageSDDL, "S:P", "(A;;FA;;;BU)S:P", 1),
+		strings.Replace(uninstallGuardStageSDDL, "(A;OICI;FA;;;SY)", "", 1),
+		strings.Replace(uninstallGuardStageSDDL, "(A;OICI;FA;;;SY)", "(A;OICI;FA;;;BA)", 1),
+		strings.Replace(uninstallGuardStageSDDL, "(A;OICI;FA;;;SY)", "(A;;FA;;;SY)", 1),
+		strings.Replace(uninstallGuardStageSDDL, "(A;OICI;FA;;;SY)", "(A;OICI;FR;;;SY)", 1),
+		strings.Split(uninstallGuardStageSDDL, "S:P")[0],
+		strings.Replace(uninstallGuardStageSDDL, ";;;HI)", ";;;ME)", 1),
+		strings.Replace(uninstallGuardStageSDDL, ";NW;", ";NR;", 1),
+		strings.Replace(uninstallGuardStageSDDL, "(ML;OICI;", "(ML;;", 1),
+	} {
+		descriptor, err := windows.SecurityDescriptorFromString(text)
+		if err != nil {
+			t.Fatalf("descriptor fixture %q: %v", text, err)
+		}
+		if err := admitUninstallGuardStageDescriptor(descriptor); err == nil {
+			t.Fatalf("admitted guard descriptor %q", text)
+		}
+	}
+}
+
+// TestNativeUninstallGuardEventAdmission proves native object typing and exact inherited capability directions.
+func TestNativeUninstallGuardEventAdmission(t *testing.T) {
+	event, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(event)
+	for _, rights := range []uint32{windows.EVENT_MODIFY_STATE, windows.SYNCHRONIZE} {
+		var inherited windows.Handle
+		if err := windows.DuplicateHandle(windows.CurrentProcess(), event, windows.CurrentProcess(), &inherited, rights, true, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := admitUninstallGuardEvent(inherited, rights); err != nil {
+			windows.CloseHandle(inherited)
+			t.Fatal(err)
+		}
+		if err := admitUninstallGuardEvent(inherited, rights|windows.READ_CONTROL); err == nil {
+			t.Fatal("event with a different grant was admitted")
+		}
+		if err := windows.SetHandleInformation(inherited, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := admitUninstallGuardEvent(inherited, rights); err == nil {
+			t.Fatal("noninherited event was admitted")
+		}
+		windows.CloseHandle(inherited)
+	}
+	var process windows.Handle
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), windows.CurrentProcess(), windows.CurrentProcess(), &process, windows.SYNCHRONIZE, true, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(process)
+	if err := admitUninstallGuardEvent(process, windows.SYNCHRONIZE); err == nil {
+		t.Fatal("process handle was admitted as release event")
+	}
+	if err := admitUninstallGuardEvent(0, windows.SYNCHRONIZE); err == nil {
+		t.Fatal("absent event admitted")
+	}
+}
+
+// TestNativeUninstallGuardHandshake verifies that readiness occurs inside the held callback and only the release capability ends it.
+func TestNativeUninstallGuardHandshake(t *testing.T) {
+	ready, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(ready)
+	release, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(release)
+	defer windows.SetEvent(release)
+	var lease sync.Mutex
+	finished := make(chan error, 1)
+	go func() {
+		finished <- holdUninstallGuardEvents(ready, release, func(callback func() error) error { lease.Lock(); defer lease.Unlock(); return callback() })
+	}()
+	if state, err := windows.WaitForSingleObject(ready, 5000); err != nil || state != windows.WAIT_OBJECT_0 {
+		t.Fatalf("readiness=%d,error=%v", state, err)
+	}
+	if lease.TryLock() {
+		lease.Unlock()
+		t.Fatal("readiness was published outside the held lease")
+	}
+	select {
+	case err := <-finished:
+		t.Fatalf("lease ended without release: %v", err)
+	default:
+	}
+	if err := windows.SetEvent(release); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("release did not settle the lease")
+	}
+	if !lease.TryLock() {
+		t.Fatal("callback lease remained held after release")
+	}
+	lease.Unlock()
+	denied := errors.New("active daemon")
+	if err := holdUninstallGuardEvents(ready, release, func(func() error) error { return denied }); !errors.Is(err, denied) {
+		t.Fatal(err)
+	}
+}
+
+// TestUninstallGuardContext rejects cancellation and released guards without accessing a stale native process handle.
+func TestUninstallGuardContext(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	guard := &UninstallGuard{context: ctx, cancel: cancel}
+	cause := errors.New("caller stopped cleanup")
+	cancel(cause)
+	if guard.Context() != ctx || !errors.Is(guard.Check(), cause) {
+		t.Fatal("guard cancellation cause was lost")
+	}
+	guard.closed = true
+	if err := guard.Check(); err == nil {
+		t.Fatal("released guard admitted more cleanup")
+	}
+	if err := guard.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestNativeUninstallGuardWorker proves a real signed E0 worker holds the daemon lock, releases it, and reports exact owned-worker loss.
+func TestNativeUninstallGuardWorker(t *testing.T) {
+	root, agent := os.Getenv("HARBOR_ADMISSION_FIXTURE_ROOT"), os.Getenv("HARBOR_ADMISSION_MAINTENANCE_AGENT")
+	if root == "" || agent == "" {
+		t.Skip("signed native maintenance agent fixture was not configured")
+	}
+	publisher := os.Getenv("HARBOR_ADMISSION_PUBLISHER")
+	payloads := map[string][]byte{".txt": []byte(publisher)}
+	for extension, path := range map[string]string{".exe": agent, ".ps1": os.Getenv("HARBOR_ADMISSION_SIGNED_SCRIPT"), ".cer": os.Getenv("HARBOR_ADMISSION_CERTIFICATE")} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payloads[extension] = data
+	}
+	machine := filepath.Join(root, "guard-machine")
+	_, selection := writeSignedFixture(t, machine, publisher, payloads)
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.UserSID = user.User.Sid.String()
+	writeFixtureJSON(t, filepath.Join(machine, "installation.json"), selection)
+	installation, err := admitAt(machine, publisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer installation.Close()
+	staged := writeNativeGuardStage(t, payloads[".exe"])
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	guard, err := installation.HoldUninstallGuard(ctx, staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guard.Close()
+	t.Logf("actual guard PID %d and effective facts %+v", guard.child.PID, guard.child.Facts)
+	if err := guard.Check(); err != nil {
+		t.Fatal(err)
+	}
+	if second, err := installation.HoldUninstallGuard(ctx, staged); err == nil {
+		second.Close()
+		t.Fatal("second worker acquired the same daemon lock")
+	}
+	if err := guard.Close(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := installation.HoldUninstallGuard(ctx, staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	if err := next.child.abort(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-next.Context().Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("owned worker loss did not cancel cleanup")
+	}
+	if err := next.Check(); err == nil {
+		t.Fatal("lost worker admitted another cleanup effect")
+	}
+	if err := next.Close(); err == nil {
+		t.Fatal("unexpected owned worker termination was reported successful")
+	}
+	spontaneous, err := installation.HoldUninstallGuard(ctx, staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spontaneous.Close()
+	if err := windows.SetEvent(spontaneous.release); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-spontaneous.Context().Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("unexpected zero-exit guard did not cancel cleanup")
+	}
+	if err := spontaneous.Close(); err == nil {
+		t.Fatal("unexpected zero-exit guard was reported successful")
+	}
+	final, err := installation.HoldUninstallGuard(ctx, staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := final.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeNativeGuardStage creates only a unique protected Windows Temp fixture and preserves any unknown contents during cleanup.
+func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
+	t.Helper()
+	system, err := windows.GetWindowsDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(system, "Temp", "HarborUninstall-"+hex.EncodeToString(nonce[:]))
+	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(uninstallGuardStageSDDL, "S:")[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	attributes := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
+	if err := windows.CreateDirectory(windows.StringToUTF16Ptr(root), attributes); err != nil {
+		t.Fatal(err)
+	}
+	labelNativeGuardStage(t, root, true)
+	t.Cleanup(func() {
+		if err := os.Remove(root); err != nil {
+			t.Error(err)
+		}
+	})
+	path := filepath.Join(root, "HarborUninstall.exe")
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_WRITE, 0, attributes, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(handle), path)
+	_, writeErr := file.Write(payload)
+	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
+		t.Fatal(err)
+	}
+	labelNativeGuardStage(t, path, false)
+	t.Cleanup(func() {
+		if err := os.Remove(path); err != nil {
+			t.Error(err)
+		}
+	})
+	retained, err := openUninstallGuardObject(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := retained.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return retained
+}
+
+// labelNativeGuardStage exercises the production label-only policy without requiring the audit SACL privilege in the elevated fixture process.
+func labelNativeGuardStage(t *testing.T, path string, directory bool) {
+	t.Helper()
+	flags := uint32(windows.FILE_FLAG_OPEN_REPARSE_POINT)
+	if directory {
+		flags |= windows.FILE_FLAG_BACKUP_SEMANTICS
+	}
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.WRITE_OWNER, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(handle)
+	descriptor, err := windows.SecurityDescriptorFromString(uninstallGuardStageSDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	label, _, err := descriptor.SACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.LABEL_SECURITY_INFORMATION, nil, nil, nil, label); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -146,6 +146,27 @@ public static class HarborUIProfile {
             AssertChildToken(token, pid);
         } finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
     }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder path, ref uint size);
+    public static void RetainProductProcess(int pid, string expectedImage) {
+        IntPtr process = OpenProcess(0x101001, false, pid);
+        if (process == IntPtr.Zero) throw new Win32Exception();
+        IntPtr token = IntPtr.Zero;
+        bool retained = false;
+        try {
+            StringBuilder image = new StringBuilder(32768);
+            uint size = (uint)image.Capacity;
+            if (!QueryFullProcessImageName(process, 0, image, ref size)) throw new Win32Exception();
+            if (!String.Equals(image.ToString(), expectedImage, StringComparison.OrdinalIgnoreCase)) throw new Exception("actual product process image differs from the selected installation");
+            if (WaitForSingleObject(process, 0) != 258) throw new Exception("selected product process is no longer running");
+            if (!OpenProcessToken(process, 11, out token)) throw new Win32Exception();
+            AssertChildToken(token, pid);
+            launches.Add(process);
+            retained = true;
+        } finally {
+            if (token != IntPtr.Zero) CloseHandle(token);
+            if (!retained) CloseHandle(process);
+        }
+    }
     static void AssertChildToken(IntPtr token, int pid) {
         LastLaunchFacts = "profile=hosted-preauthorized-restricted-functional;"+DescribeToken(token, pid);
         AssertEffectiveToken(token);

@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       package_run_id:
-        description: Successful Windows packaged-product gate run whose exact tested NSIS installer will be installed
+        description: Successful Windows packaged-product gate run whose exact tested sealed native installer will be installed
         required: false
         type: string
       profile_only:
@@ -143,55 +143,45 @@ jobs:
           "GOCACHE=$env:GOCACHE" | Out-File $env:GITHUB_ENV -Append
           "GOMODCACHE=$env:GOMODCACHE" | Out-File $env:GITHUB_ENV -Append
           "HARBOR_UI_TOOLS=$env:GOBIN;$env:PATH" | Out-File $env:GITHUB_ENV -Append
-      - name: Install admitted NSIS package
+      - name: Register disposable user toolchain environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+          $values = @{ Path=$env:HARBOR_UI_TOOLS; GOCACHE=$env:GOCACHE; GOMODCACHE=$env:GOMODCACHE }
+          $receipt = @()
+          foreach ($name in $values.Keys) {
+            $exists = $name -in $key.GetValueNames()
+            $receipt += @{ name=$name; existed=$exists; kind=$(if ($exists) { $key.GetValueKind($name).ToString() } else { 'String' }); original=$key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); fixture=$values[$name] }
+          }
+          $receipt | ConvertTo-Json -Depth 4 | Set-Content "$env:RUNNER_TEMP\harbor-ui-user-environment.json" -Encoding utf8NoBOM
+          foreach ($name in $values.Keys) { $key.SetValue($name, $values[$name], [Microsoft.Win32.RegistryValueKind]::String) }
+          $key.Dispose()
+      - name: Preauthorize the admitted development package signer and install
         env:
           PACKAGE_NAME: ${{ steps.package.outputs.package }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $package = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'package-assets') $env:PACKAGE_NAME
-          $process = Start-Process -FilePath $package -ArgumentList '/S' -Wait -PassThru
+          $signature = Get-AuthenticodeSignature -LiteralPath $package
+          if ($null -eq $signature.SignerCertificate) { throw 'sealed development setup has no signer certificate' }
+          $thumbprint = $signature.SignerCertificate.Thumbprint
+          if ($thumbprint -cnotmatch '^[A-F0-9]{40}$') { throw 'invalid development signer identity' }
+          foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher')) {
+            if (Test-Path (Join-Path $store $thumbprint)) { throw 'development signer was already trusted before preauthorization' }
+          }
+          $thumbprint | Set-Content "$env:RUNNER_TEMP\harbor-ui-publisher.txt" -NoNewline
+          $certificatePath = "$env:RUNNER_TEMP\harbor-ui-publisher.cer"
+          Export-Certificate -Cert $signature.SignerCertificate -FilePath $certificatePath | Out-Null
+          foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher')) { Import-Certificate -FilePath $certificatePath -CertStoreLocation $store | Out-Null }
+          if ((Get-AuthenticodeSignature -LiteralPath $package).Status -ne 'Valid') { throw 'admitted development setup signature is not trusted after explicit CI authorization' }
+          $process = Start-Process -FilePath $package -ArgumentList '--silent' -Wait -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\harbor-installed-ui-evidence\setup-stdout.txt" -RedirectStandardError "$env:RUNNER_TEMP\harbor-installed-ui-evidence\setup-stderr.txt"
           if ($process.ExitCode -ne 0) { throw "installer exit $($process.ExitCode)" }
           $installRoot = Join-Path $env:ProgramFiles 'GoForj\Harbor'
-          $signature = Get-AuthenticodeSignature (Join-Path $installRoot 'harbor-helper.exe')
-          if ($signature.Status -ne 'Valid') { throw 'disposable packaged helper signer is not trusted' }
+          $selection = Get-Content "$installRoot\installation.json" -Raw | ConvertFrom-Json
+          if ($selection.signer_thumbprint -cne $thumbprint) { throw 'installed selected publisher differs from admitted package signer' }
           "HARBOR_INSTALL_ROOT=$installRoot" | Out-File $env:GITHUB_ENV -Append
-      - name: Activate packaged Harbor prerequisites
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-          $privilegedRoot = Join-Path $programData "GoForj\Harbor\Privileged"
-          $tickets = Join-Path $privilegedRoot "tickets"
-          $pending = Join-Path $tickets "pending"
-          $claims = Join-Path $tickets "claims"
-          $state = Join-Path $privilegedRoot "state"
-          $replay = Join-Path $state "replay"
-          $userSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-          New-Item -ItemType Directory -Path $pending, $claims, $replay -Force | Out-Null
-
-          function Set-DirectorySDDL([string]$Path, [string]$SDDL) {
-            $security = [Security.AccessControl.DirectorySecurity]::new()
-            $security.SetSecurityDescriptorSddlForm($SDDL)
-            Set-Acl -LiteralPath $Path -AclObject $security
-          }
-          function Set-FileSDDL([string]$Path, [string]$SDDL) {
-            $security = [Security.AccessControl.FileSecurity]::new()
-            $security.SetSecurityDescriptorSddlForm($SDDL)
-            Set-Acl -LiteralPath $Path -AclObject $security
-          }
-
-          $gatewaySDDL = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a0;;;$userSID)"
-          $machineSDDL = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
-          $pendingSDDL = "O:${userSID}D:P(A;OICI;FA;;;$userSID)(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
-          Set-DirectorySDDL $privilegedRoot $gatewaySDDL
-          Set-DirectorySDDL $tickets $gatewaySDDL
-          Set-DirectorySDDL $pending $pendingSDDL
-          Set-DirectorySDDL $claims $machineSDDL
-          Set-DirectorySDDL $state $machineSDDL
-          Set-DirectorySDDL $replay $machineSDDL
-          Set-FileSDDL (Join-Path $env:HARBOR_INSTALL_ROOT "harbor-helper.exe") "O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;BU)"
-
       - name: Release hosted runner canonical ingress sockets
         shell: pwsh
         run: |
@@ -231,6 +221,7 @@ jobs:
             if ($cleanup.$fact -ne $true) { throw "partial installed cleanup: $fact was not verified" }
           }
           if ($cleanup.error) { throw "partial installed cleanup: $($cleanup.error)" }
+          if ((Test-Path "$env:RUNNER_TEMP\harbor-installed-ui-evidence\installed-ui.json") -and (@($cleanup.retained_files.PSObject.Properties).Count -ne 3 -or $cleanup.missing_files.Count -ne 0)) { throw 'successful UI lifecycle lacks all three retained user files' }
           'ready=true' | Out-File $env:GITHUB_OUTPUT -Append
       - name: Uninstall exact admitted package
         if: always() && steps.cleanup.outputs.ready == 'true'
@@ -241,10 +232,26 @@ jobs:
           [IO.File]::WriteAllText($sentinel, "foreign package state $env:GITHUB_RUN_ID")
           $sentinelHash = (Get-FileHash $sentinel -Algorithm SHA256).Hash
           $signerThumbprint = [IO.File]::ReadAllText((Join-Path $env:HARBOR_INSTALL_ROOT 'harbor-helper-signing-thumbprint.txt')).Trim()
-          $uninstaller = Join-Path $env:RUNNER_TEMP 'harbor-ui-uninstall.exe'
-          Copy-Item "$env:HARBOR_INSTALL_ROOT\Uninstall.exe" $uninstaller
-          $process = Start-Process $uninstaller -ArgumentList "/S _?=$env:HARBOR_INSTALL_ROOT" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "uninstall exit $($process.ExitCode)" }
+          $selection = Get-Content "$env:HARBOR_INSTALL_ROOT\installation.json" -Raw | ConvertFrom-Json
+          $baseline = @(Get-ChildItem "$env:WINDIR\Temp" -Directory -Filter 'HarborUninstall-*' | ForEach-Object FullName)
+          $process = Start-Process "$env:HARBOR_INSTALL_ROOT\Uninstall.exe" -ArgumentList '--silent' -Wait -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\harbor-installed-ui-evidence\uninstall-bootstrap-stdout.txt" -RedirectStandardError "$env:RUNNER_TEMP\harbor-installed-ui-evidence\uninstall-bootstrap-stderr.txt"
+          if ($process.ExitCode -ne 0) { throw "uninstall bootstrap exit $($process.ExitCode)" }
+          $deadline = (Get-Date).AddMinutes(3)
+          $receipt = $null
+          do {
+            $stages = @(Get-ChildItem "$env:WINDIR\Temp" -Directory -Filter 'HarborUninstall-*' | Where-Object FullName -notin $baseline)
+            if ($stages.Count -gt 1) { throw 'unexpected uninstall continuation stages' }
+            if ($stages.Count -eq 1) {
+              $resultPath = Join-Path $stages[0].FullName 'result.json'
+              if (Test-Path $resultPath) {
+                try { $receipt = Get-Content $resultPath -Raw | ConvertFrom-Json } catch { }
+                if ($receipt.schema_version -eq 1 -and $receipt.status -in @('complete','failed')) { break }
+              }
+            }
+            Start-Sleep -Milliseconds 200
+          } while ((Get-Date) -lt $deadline)
+          if (-not $receipt -or $receipt.status -cne 'complete' -or $receipt.installation_id -cne $selection.installation_id -or $receipt.bundle_digest -cne $selection.bundle_digest) { throw "uninstall continuation did not complete: $($receipt.error)" }
+          Copy-Item $resultPath "$env:RUNNER_TEMP\harbor-installed-ui-evidence\uninstall-result.json"
           $evidence = "$env:RUNNER_TEMP\harbor-installed-ui-evidence"
           $retained = (Get-Content "$evidence\cleanup.json" -Raw | ConvertFrom-Json -AsHashtable).retained_files
           foreach ($path in $retained.Keys) {
@@ -253,16 +260,51 @@ jobs:
           if (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor') { throw 'package receipt remains' }
           if (Test-Path "$env:ProgramData\GoForj\Harbor") { throw 'Harbor machine state remains' }
           if (@(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -like 'GoForj Harbor Resolver *' -or $_.Comment -like 'goforj.harbor.resolver *' }).Count -ne 0) { throw 'Harbor resolver projection remains' }
-          foreach ($name in @('harbor-desktop.exe','harbor.exe','harbord.exe','outputbroker.exe','harbor-helper.exe','harbor-helper-signing.cer','harbor-helper-signing-thumbprint.txt','harbor-uninstall.ps1','Uninstall.exe')) {
-            if (Test-Path (Join-Path $env:HARBOR_INSTALL_ROOT $name)) { throw "installed component remains: $name" }
-          }
+          if (@(Get-ChildItem -LiteralPath $env:HARBOR_INSTALL_ROOT -Force).Count -ne 1) { throw 'owned installed files remain' }
+          if (Get-ScheduledTask -TaskName "GoForjHarborDaemon-$($selection.user_sid)" -ErrorAction SilentlyContinue) { throw 'owned daemon task remains' }
           foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher')) {
-            if (Test-Path (Join-Path $store $signerThumbprint)) { throw 'disposable package signer remains trusted' }
+            if (-not (Test-Path (Join-Path $store $signerThumbprint))) { throw 'product removal changed explicitly preauthorized signer trust' }
           }
           if ((Get-FileHash $sentinel -Algorithm SHA256).Hash -cne $sentinelHash) { throw 'foreign package sentinel changed' }
           @('observed_retained_user_files=preserved','foreign_package_sentinel=preserved','package_receipt=absent','installed_components=absent','harbor_machine_state=absent') | Set-Content "$evidence\uninstall.txt"
           Remove-Item $sentinel
           Remove-Item $env:HARBOR_INSTALL_ROOT
+      - name: Restore only disposable fixture authorization and user environment
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failures = @()
+          try {
+            $publisherPath = "$env:RUNNER_TEMP\harbor-ui-publisher.txt"
+            if (Test-Path $publisherPath) {
+              $thumbprint = (Get-Content $publisherPath -Raw).Trim()
+              if ($thumbprint -cnotmatch '^[A-F0-9]{40}$') { throw 'invalid disposable publisher receipt' }
+              foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher')) {
+                try {
+                  $path = Join-Path $store $thumbprint
+                  if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
+                } catch { $failures += "disposable signer cleanup: $_" }
+              }
+            }
+          } catch { $failures += "disposable signer receipt: $_" }
+          try {
+            $receiptPath = "$env:RUNNER_TEMP\harbor-ui-user-environment.json"
+            if (Test-Path $receiptPath) {
+              $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+              try {
+                foreach ($entry in (Get-Content $receiptPath -Raw | ConvertFrom-Json)) {
+                  try {
+                    if ($entry.name -notin @('Path','GOCACHE','GOMODCACHE')) { throw 'unrecognized user environment receipt entry' }
+                    $current = $key.GetValue($entry.name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                    if ($current -cne $entry.fixture) { throw "preserve changed user environment entry: $($entry.name)" }
+                    if ($entry.existed) { $key.SetValue($entry.name, $entry.original, [Microsoft.Win32.RegistryValueKind]([Enum]::Parse([Microsoft.Win32.RegistryValueKind], $entry.kind))) } else { $key.DeleteValue($entry.name, $false) }
+                  } catch { $failures += "user environment restoration: $_" }
+                }
+              } finally { $key.Dispose() }
+            }
+          } catch { $failures += "user environment receipt: $_" }
+          if ($failures.Count -ne 0) { throw ($failures -join "`n") }
       - uses: actions/upload-artifact@v7
         if: always()
         with:

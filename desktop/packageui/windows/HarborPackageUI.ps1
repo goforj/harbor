@@ -5,7 +5,44 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
-$desktopPath = Join-Path $InstallRoot 'harbor-desktop.exe'
+$fixedRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) 'GoForj\Harbor'
+if (-not [string]::Equals([IO.Path]::GetFullPath($InstallRoot), $fixedRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'GUI test requires the fixed admitted installation' }
+$selection = Get-Content -LiteralPath (Join-Path $InstallRoot 'installation.json') -Raw | ConvertFrom-Json
+$userSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+if ($selection.schema_version -ne 1 -or $selection.product_id -cne 'com.goforj.harbor' -or
+    $selection.user_sid -cne $userSID -or $selection.installation_id -cnotmatch '^[a-f0-9]{32}$' -or
+    $selection.release_sequence -le 0 -or $selection.signer_thumbprint -cnotmatch '^[A-F0-9]{40}$' -or
+    $selection.bundle_digest -cnotmatch '^[a-f0-9]{64}$') { throw 'installed selection identity is incomplete or foreign' }
+$releaseRelative = 'releases/' + [string]$selection.release_sequence + '/'
+$manifest = Get-Content -LiteralPath (Join-Path $InstallRoot ($releaseRelative + 'release-manifest.json')) -Raw | ConvertFrom-Json
+if ($manifest.schema_version -ne 1 -or $manifest.product_id -cne $selection.product_id -or
+    $manifest.release_sequence -ne $selection.release_sequence -or $manifest.bundle_digest -cne $selection.bundle_digest -or
+    $manifest.signer_thumbprint -cne $selection.signer_thumbprint) { throw 'installed manifest differs from committed selection' }
+$rolePaths = @{
+    'desktop-launcher'='desktop-launcher.exe'; 'daemon-launcher'='daemon-launcher.exe'; 'cli-launcher'='harbor.exe'
+    'desktop'=($releaseRelative + 'harbor-desktop.exe'); 'daemon'=($releaseRelative + 'harbord.exe'); 'cli'=($releaseRelative + 'harbor.exe')
+    'output-broker'=($releaseRelative + 'outputbroker.exe'); 'helper'='harbor-helper.exe'; 'installer'=($releaseRelative + 'harbor-installer.exe')
+    'uninstaller'='Uninstall.exe'; 'task-policy'='harbor-daemon-task.ps1'; 'uninstall-policy'='harbor-uninstall.ps1'
+    'signer-certificate'='harbor-helper-signing.cer'; 'signer-thumbprint'='harbor-helper-signing-thumbprint.txt'
+}
+if (@($manifest.components).Count -ne $rolePaths.Count) { throw 'installed manifest has a different component set' }
+$seenRoles = @{}
+foreach ($component in $manifest.components) {
+    if (-not $rolePaths.ContainsKey($component.role) -or $seenRoles.ContainsKey($component.role) -or
+        $component.path -cne $rolePaths[$component.role]) { throw 'installed component differs from its fixed role' }
+    $seenRoles[$component.role] = $true
+    $path = Join-Path $InstallRoot $component.path
+    $item = Get-Item -LiteralPath $path -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -ne $component.size -or
+        (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $component.sha256) { throw 'installed component identity differs from manifest' }
+    if ($item.Extension -in @('.exe', '.ps1')) {
+        $signature = Get-AuthenticodeSignature -LiteralPath $path
+        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -cne $selection.signer_thumbprint) { throw 'installed component publisher differs from package' }
+    }
+}
+$launcherPath = Join-Path $InstallRoot 'desktop-launcher.exe'
+$desktopPath = Join-Path $InstallRoot $rolePaths['desktop']
+$daemonPath = Join-Path $InstallRoot $rolePaths['daemon']
 $cliPath = Join-Path $InstallRoot 'harbor.exe'
 $projectRoot = Join-Path $env:TEMP ('harbor-installed-ui-' + [Guid]::NewGuid().ToString('N'))
 $projectDirectory = Join-Path $projectRoot 'project'
@@ -60,15 +97,11 @@ function Set-Selection([string]$Name, [string]$Value) {
     [System.Windows.Forms.SendKeys]::SendWait($Value + '{ENTER}')
 }
 function Open-Harbor {
-    $priorPath = $env:PATH
-    try {
-        $env:PATH = "$ToolsPath;$env:PATH"
-        $launched = [HarborUIProfile]::Launch($desktopPath, $InstallRoot)
-    } finally { $env:PATH = $priorPath }
+    $launched = [HarborUIProfile]::Launch($launcherPath, $InstallRoot)
     Wait-Until 'one installed desktop process' { @(Get-Process -Name harbor-desktop -ErrorAction SilentlyContinue).Count -eq 1 } 60
     $process = Get-Process -Name harbor-desktop
     if ($process.Path -cne $desktopPath) { throw 'desktop process is outside admitted installation' }
-    [HarborUIProfile]::AssertProductProcess($process.Id)
+    [HarborUIProfile]::RetainProductProcess($process.Id, $desktopPath)
     Wait-Until 'visible installed window' {
         $process.Refresh()
         if ($process.MainWindowHandle -eq [IntPtr]::Zero) { return $false }
@@ -114,6 +147,11 @@ function Save-Observation([string]$Name) {
 }
 
 . (Join-Path $PSScriptRoot 'WorkerProfile.ps1')
+[HarborUIProfile]::ProtectedDirectories = [string[]]@($InstallRoot, (Join-Path $InstallRoot $releaseRelative),
+    (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) 'GoForj\Harbor\Privileged'))
+[HarborUIProfile]::ProtectedFiles = [string[]]@($launcherPath, $desktopPath, $daemonPath, $cliPath,
+    (Join-Path $InstallRoot 'harbor-helper.exe'))
+[HarborUIProfile]::ProtectedRegistryKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor'
 Assert-InteractiveWorker
 try {
     $originalProcess = Open-Harbor
@@ -121,7 +159,7 @@ try {
     $daemonProcess = Get-Process -Name harbord
     $null = $daemonProcess.Handle
     [HarborUIProfile]::AssertProductProcess($daemonProcess.Id)
-    if ($daemonProcess.Path -cne (Join-Path $InstallRoot 'harbord.exe')) { throw 'daemon process is outside admitted installation' }
+    if ($daemonProcess.Path -cne $daemonPath) { throw 'daemon process is outside admitted installation' }
     Save-Observation 'installed-first-launch'
     Wait-Until 'setup action or configured networking' {
         $null -ne (Find-Control 'Set up secure networking' ([System.Windows.Automation.ControlType]::Button)) -or (Get-Snapshot).network_setup.configured -eq $true
@@ -162,8 +200,16 @@ try {
     Save-Observation 'reopened-running-project'
     if ($null -eq (Find-Control 'Stop project' ([System.Windows.Automation.ControlType]::Button))) {
         Invoke-Button 'Projects'
-        $projectLink = Await-Control 'Harbor Installed Windows UI' ([System.Windows.Automation.ControlType]::Hyperlink)
-        $projectLink.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        $projectLink = $null
+        Wait-Until 'retained project link' {
+            $links = $script:window.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Hyperlink))
+            $matches = @($links | Where-Object { $_.Current.Name.StartsWith('Harbor Installed Windows UI', [StringComparison]::Ordinal) })
+            if ($matches.Count -gt 1) { throw 'multiple project links match the exact created project' }
+            if ($matches.Count -eq 1) { $script:projectLink = $matches[0]; return $true }
+            return $false
+        }
+        $script:projectLink.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     }
     Invoke-Button 'Stop project'
     Await-ProjectState 'stopped'
@@ -171,7 +217,7 @@ try {
     [System.Windows.Forms.SendKeys]::SendWait('^q')
     Wait-Until 'final desktop quit' { $null -eq (Get-Process -Id $reopenedProcess -ErrorAction SilentlyContinue) }
     [ordered]@{
-        application=$desktopPath; project_directory=$projectDirectory; project_id=(Get-Project).id
+        application=$desktopPath; launcher=$launcherPath; daemon=$daemonPath; bundle_digest=$selection.bundle_digest; project_directory=$projectDirectory; project_id=(Get-Project).id
         creation='production graphical wizard through native UIAutomation'; start='ready and system-trusted HTTPS 200'
         window_close='project remains ready'; second_launch='original process restored'
         ui_quit='daemon and project remain ready'; ui_reopen='registration retained and HTTPS 200'; final_project_state='stopped'

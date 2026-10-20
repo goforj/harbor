@@ -1,0 +1,942 @@
+//go:build windows
+
+// Package main provides Harbor's fixed-path Windows maintenance agent.
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+	"unsafe"
+
+	"github.com/goforj/harbor/internal/platform/daemonservice"
+	"github.com/goforj/harbor/internal/platform/windowsfile"
+	"github.com/goforj/harbor/internal/platform/windowsinstallation"
+	"golang.org/x/sys/windows"
+)
+
+const (
+	maintenanceParentRights = windows.SYNCHRONIZE | windows.PROCESS_QUERY_LIMITED_INFORMATION
+	maintenanceStageSDDL    = "O:BAG:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)S:P(ML;OICI;NW;;;HI)"
+)
+
+var maintenanceStageName = regexp.MustCompile(`^HarborUninstall-[a-f0-9]{32}$`)
+
+// maintenanceOperations separates allowlisted orchestration from native process and filesystem authority.
+type maintenanceOperations struct {
+	verify    func(bool) error
+	register  func(context.Context) error
+	complete  func(context.Context) error
+	remove    func(context.Context) error
+	bootstrap func(context.Context) error
+	finish    func(context.Context, windows.Handle) error
+	guard     func(windows.Handle, windows.Handle) error
+}
+
+// main accepts only signed-agent lifecycle operations with no caller-selected target paths or accounts.
+func main() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	operations := maintenanceOperations{verify: verifyMaintenanceSession, register: registerMaintenanceTask, complete: completeMaintenanceInstall, remove: removeMaintenanceTask, bootstrap: func(ctx context.Context) error {
+		return requestMaintenanceUninstall(ctx, len(os.Args) == 2 && os.Args[1] == "--silent")
+	}, finish: finishUninstall, guard: func(ready, release windows.Handle) error {
+		return windowsinstallation.RunUninstallGuard(ready, release, daemonservice.PrepareDatabase)
+	}}
+	if err := runMaintenance(ctx, os.Args[1:], operations); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Harbor maintenance: %v\n", err)
+		if interactiveMaintenance(os.Args[1:]) {
+			showMaintenanceError(err)
+		}
+		os.Exit(1)
+	}
+}
+
+// runMaintenance validates internal handle syntax before granting any native maintenance operation.
+func runMaintenance(ctx context.Context, arguments []string, operations maintenanceOperations) error {
+	if len(arguments) == 0 || (len(arguments) == 1 && arguments[0] == "--silent") {
+		arguments = []string{"--uninstall"}
+	}
+	action := arguments[0]
+	if action == "--hold-stopped" {
+		ready, release, err := parseUninstallGuardHandles(arguments)
+		if err != nil {
+			return err
+		}
+		return operations.guard(ready, release)
+	}
+	var parent windows.Handle
+	if action == "--finish-uninstall" {
+		if len(arguments) != 2 {
+			return errors.New("finish-uninstall requires its inherited parent receipt")
+		}
+		var err error
+		parent, err = parseMaintenanceParent(arguments[1])
+		if err != nil {
+			return err
+		}
+	} else if len(arguments) != 1 || (action != "--register-task" && action != "--complete-install" && action != "--remove-task" && action != "--uninstall") {
+		return errors.New("Windows maintenance operation or arguments are not admitted")
+	}
+	if err := operations.verify(action == "--uninstall"); err != nil {
+		return fmt.Errorf("admit maintenance session: %w", err)
+	}
+	switch action {
+	case "--register-task":
+		return operations.register(ctx)
+	case "--complete-install":
+		return operations.complete(ctx)
+	case "--remove-task":
+		return operations.remove(ctx)
+	case "--uninstall":
+		return operations.bootstrap(ctx)
+	case "--finish-uninstall":
+		return operations.finish(ctx, parent)
+	}
+	return errors.New("Windows maintenance operation is not admitted")
+}
+
+// parseMaintenanceParent accepts one canonical native handle value only for the internal finishing role.
+func parseMaintenanceParent(argument string) (windows.Handle, error) {
+	text, ok := strings.CutPrefix(argument, "--parent-handle=")
+	if !ok {
+		return 0, errors.New("missing inherited uninstall parent handle")
+	}
+	value, err := strconv.ParseUint(text, 10, strconv.IntSize)
+	if err != nil || value == 0 || value == uint64(^uintptr(0)) || strconv.FormatUint(value, 10) != text {
+		return 0, errors.New("invalid inherited uninstall parent handle")
+	}
+	return windows.Handle(value), nil
+}
+
+// verifyMaintenanceSession refuses over-the-shoulder elevation and unprivileged machine mutation before admission.
+func verifyMaintenanceSession(allowElevation bool) error {
+	if !allowElevation && !windows.GetCurrentProcessToken().IsElevated() {
+		return errors.New("Windows maintenance requires elevated same-user approval")
+	}
+	return windowsinstallation.VerifyInteractiveSession()
+}
+
+// admitMaintenance binds the retained machine installation to the actual current account before child launch.
+func admitMaintenance() (*windowsinstallation.Installation, error) {
+	installation, err := windowsinstallation.Admit()
+	if err != nil {
+		return nil, err
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err == nil && user.User.Sid.String() != installation.Selection().UserSID {
+		err = errors.New("maintenance user differs from the selected installation")
+	}
+	if err != nil {
+		return nil, errors.Join(err, installation.Close())
+	}
+	return installation, nil
+}
+
+// registerMaintenanceTask serializes the compatibility task operation with machine installation and removal.
+func registerMaintenanceTask(ctx context.Context) error {
+	return windowsinstallation.WithMachineTransaction(ctx, func() error { return registerMaintenanceTaskLocked(ctx) })
+}
+
+// registerMaintenanceTaskLocked delegates only the fixed signed policy's create-only task operation under its machine lease.
+func registerMaintenanceTaskLocked(ctx context.Context) (result error) {
+	installation, err := admitMaintenance()
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, installation.Close()) }()
+	return installation.Task(ctx, "register")
+}
+
+// removeMaintenanceTask serializes stopped-state verification and task removal against machine installation.
+func removeMaintenanceTask(ctx context.Context) error {
+	return windowsinstallation.WithMachineTransaction(ctx, func() error { return removeMaintenanceTaskLocked(ctx) })
+}
+
+// removeMaintenanceTaskLocked verifies stopped user authority through a restricted worker before removing an exact owned task.
+func removeMaintenanceTaskLocked(ctx context.Context) (result error) {
+	installation, err := admitMaintenance()
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, installation.Close()) }()
+	child, err := installation.Start("daemon-launcher", []string{"--verify-stopped"})
+	if err != nil {
+		return fmt.Errorf("start stopped-daemon verification: %w", err)
+	}
+	verification, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	code, waitErr := child.Wait(verification)
+	if err := errors.Join(waitErr, child.Close()); err != nil {
+		return fmt.Errorf("settle stopped-daemon verification: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("installed daemon is active or unverifiable (exit %d)", code)
+	}
+	return installation.Task(ctx, "remove")
+}
+
+// bootstrapUninstall launches an immutable protected copy and leaves original image unloading to ordinary process exit.
+func bootstrapUninstall(ctx context.Context) (result error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	installation, err := admitMaintenance()
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, installation.Close()) }()
+	original, err := installation.Path("uninstaller")
+	if err != nil {
+		return err
+	}
+	current, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(current, original) {
+		return errors.New("uninstall bootstrap must execute the admitted fixed Uninstall.exe")
+	}
+	source, err := openMaintenanceObject(original, false)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, source.Close()) }()
+	if err := installation.VerifyUninstallerCopy(source); err != nil {
+		return err
+	}
+	if err := admitMaintenanceImage(source); err != nil {
+		return err
+	}
+	stage, err := createMaintenanceStage(installation, source)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, closeMaintenanceFiles(stage)) }()
+	path := stage[len(stage)-1].Name()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := launchMaintenanceCopy(path); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(os.Stdout, "Harbor uninstall continues in protected staging: %s\n", path)
+	return err
+}
+
+// createMaintenanceStage creates only one random protected Windows Temp child and its exact admitted agent copy.
+func createMaintenanceStage(installation *windowsinstallation.Installation, source *os.File) (files []*os.File, result error) {
+	defer func() {
+		if result != nil {
+			result = errors.Join(result, closeMaintenanceFiles(files))
+			files = nil
+		}
+	}()
+	system, err := windows.GetWindowsDirectory()
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range []string{system, filepath.Join(system, "Temp")} {
+		file, err := openMaintenanceObject(path, true)
+		if err != nil {
+			return files, err
+		}
+		files = append(files, file)
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return files, err
+	}
+	root := filepath.Join(system, "Temp", "HarborUninstall-"+hex.EncodeToString(random[:]))
+	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(maintenanceStageSDDL, "S:")[0])
+	if err != nil {
+		return files, err
+	}
+	attributes := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
+	if err := windows.CreateDirectory(windows.StringToUTF16Ptr(root), attributes); err != nil {
+		return files, err
+	}
+	directory, err := labelMaintenanceDirectory(root)
+	if err != nil {
+		return files, err
+	}
+	files = append(files, directory)
+	if err := admitMaintenanceStage(directory); err != nil {
+		return files, err
+	}
+	path := filepath.Join(root, "HarborUninstall.exe")
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL|windows.WRITE_OWNER, 0, attributes, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	runtime.KeepAlive(descriptor)
+	if err != nil {
+		return files, err
+	}
+	destination := os.NewFile(uintptr(handle), path)
+	if err := labelMaintenanceObject(handle); err != nil {
+		return files, errors.Join(err, destination.Close())
+	}
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return files, errors.Join(err, destination.Close())
+	}
+	_, copyErr := io.Copy(destination, source)
+	if err := errors.Join(copyErr, destination.Sync(), destination.Close()); err != nil {
+		return files, err
+	}
+	retained, err := openMaintenanceObject(path, false)
+	if err != nil {
+		return files, err
+	}
+	files = append(files, retained)
+	if err := admitMaintenanceStage(retained); err != nil {
+		return files, err
+	}
+	if err := installation.VerifyUninstallerCopy(retained); err != nil {
+		return files, err
+	}
+	return files, nil
+}
+
+// launchMaintenanceCopy inherits only a restricted original-process receipt and never selects a shell or mutable executable.
+func launchMaintenanceCopy(path string) (result error) {
+	var parent windows.Handle
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), windows.CurrentProcess(), windows.CurrentProcess(), &parent, maintenanceParentRights, true, 0); err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, windows.CloseHandle(parent)) }()
+	attributes, err := windows.NewProcThreadAttributeList(1)
+	if err != nil {
+		return err
+	}
+	defer attributes.Delete()
+	if err := attributes.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&parent), unsafe.Sizeof(parent)); err != nil {
+		return err
+	}
+	startup := windows.StartupInfoEx{StartupInfo: windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{}))}, ProcThreadAttributeList: attributes.List()}
+	argument := "--parent-handle=" + strconv.FormatUint(uint64(parent), 10)
+	command, err := windows.UTF16FromString(windows.ComposeCommandLine([]string{path, "--finish-uninstall", argument}))
+	if err != nil {
+		return err
+	}
+	system, err := windows.GetWindowsDirectory()
+	if err != nil {
+		return err
+	}
+	environment, err := windows.UTF16FromString("SystemRoot=" + system)
+	if err != nil {
+		return err
+	}
+	environment = append(environment, 0)
+	var process windows.ProcessInformation
+	if err := windows.CreateProcess(windows.StringToUTF16Ptr(path), &command[0], nil, nil, true, windows.CREATE_UNICODE_ENVIRONMENT|windows.EXTENDED_STARTUPINFO_PRESENT|windows.CREATE_NO_WINDOW, &environment[0], windows.StringToUTF16Ptr(filepath.Dir(path)), &startup.StartupInfo, &process); err != nil {
+		return fmt.Errorf("launch protected uninstall continuation: %w", err)
+	}
+	runtime.KeepAlive(command)
+	runtime.KeepAlive(environment)
+	return errors.Join(windows.CloseHandle(process.Thread), windows.CloseHandle(process.Process))
+}
+
+// finishUninstall authenticates both its protected copied image and the original inherited process before fixed product removal.
+func finishUninstall(ctx context.Context, parent windows.Handle) (result error) {
+	defer func() { result = errors.Join(result, windows.CloseHandle(parent)) }()
+	installation, err := admitMaintenance()
+	if err != nil {
+		return err
+	}
+	files, err := retainMaintenanceStage(installation)
+	if err != nil {
+		return errors.Join(err, installation.Close())
+	}
+	defer func() { result = errors.Join(result, closeMaintenanceFiles(files)) }()
+	selection := installation.Selection()
+	var originalIdentity, continuationIdentity *maintenanceProcessIdentity
+	defer func() {
+		result = errors.Join(result, recordMaintenanceResult(filepath.Dir(files[len(files)-1].Name()), selection, originalIdentity, continuationIdentity, result))
+	}()
+	continuationIdentity, err = inspectMaintenanceProcess(windows.CurrentProcess())
+	if err != nil {
+		return errors.Join(err, installation.Close())
+	}
+	original, err := installation.Path("uninstaller")
+	if err == nil {
+		err = admitMaintenanceParent(parent, original, installation.Selection().UserSID)
+	}
+	if err == nil {
+		originalIdentity, err = inspectMaintenanceProcess(parent)
+	}
+	if err == nil {
+		err = waitMaintenanceParent(ctx, parent)
+	}
+	if err = errors.Join(err, installation.Close()); err != nil {
+		return err
+	}
+	return windowsinstallation.Uninstall(ctx)
+}
+
+// retainMaintenanceStage admits only this exact fixed copy name beneath a canonical protected Windows Temp staging directory.
+func retainMaintenanceStage(installation *windowsinstallation.Installation) (files []*os.File, result error) {
+	defer func() {
+		if result != nil {
+			result = errors.Join(result, closeMaintenanceFiles(files))
+			files = nil
+		}
+	}()
+	current, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	system, err := windows.GetWindowsDirectory()
+	if err != nil {
+		return nil, err
+	}
+	if err := admitMaintenanceStagePath(current, system); err != nil {
+		return nil, err
+	}
+	for _, path := range []string{system, filepath.Join(system, "Temp"), filepath.Dir(current), current} {
+		directory := path != current
+		file, err := openMaintenanceObject(path, directory)
+		if err != nil {
+			return files, err
+		}
+		files = append(files, file)
+		if path == current || path == filepath.Dir(current) {
+			if err := admitMaintenanceStage(file); err != nil {
+				return files, err
+			}
+		}
+	}
+	if err := installation.VerifyUninstallerCopy(files[len(files)-1]); err != nil {
+		return files, err
+	}
+	if err := admitMaintenanceImage(files[len(files)-1]); err != nil {
+		return files, err
+	}
+	return files, nil
+}
+
+// admitMaintenanceStagePath rejects caller Temp overrides, traversal, alternate file names, and copied agents outside protected staging.
+func admitMaintenanceStagePath(current, system string) error {
+	if !filepath.IsAbs(current) || filepath.Clean(current) != current || !strings.EqualFold(filepath.Base(current), "HarborUninstall.exe") || !maintenanceStageName.MatchString(filepath.Base(filepath.Dir(current))) || !strings.EqualFold(filepath.Dir(filepath.Dir(current)), filepath.Join(system, "Temp")) {
+		return errors.New("uninstall continuation is outside canonical protected Windows staging")
+	}
+	return nil
+}
+
+// openMaintenanceObject retains an exact non-reparse native object with write and delete sharing denied.
+func openMaintenanceObject(path string, directory bool) (*os.File, error) {
+	return openMaintenanceObjectAccess(path, directory, 0)
+}
+
+// openMaintenanceObjectAccess preserves exact object admission while granting label initialization only to its creating installer.
+func openMaintenanceObjectAccess(path string, directory bool, extra uint32) (*os.File, error) {
+	access := uint32(windows.GENERIC_READ | windows.READ_CONTROL)
+	flags := uint32(windows.FILE_FLAG_OPEN_REPARSE_POINT)
+	if directory {
+		access = windows.READ_CONTROL | windows.FILE_READ_ATTRIBUTES
+		flags |= windows.FILE_FLAG_BACKUP_SEMANTICS
+	}
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), access|extra, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), path)
+	var information windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &information); err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	final, err := windowsfile.FinalPath(handle)
+	if err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	if !strings.EqualFold(final, `\\?\`+path) || information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || (information.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0) != directory || (!directory && information.NumberOfLinks != 1) {
+		return nil, errors.Join(errors.New("uninstall staging object has a canonical path, type, link or reparse conflict"), file.Close())
+	}
+	return file, nil
+}
+
+// labelMaintenanceDirectory pins the new machine-only directory before applying the mandatory label independently of audit SACL privileges.
+func labelMaintenanceDirectory(path string) (*os.File, error) {
+	file, err := openMaintenanceObjectAccess(path, true, windows.WRITE_OWNER)
+	if err != nil {
+		return nil, err
+	}
+	if err := labelMaintenanceObject(windows.Handle(file.Fd())); err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	return file, nil
+}
+
+// labelMaintenanceObject sets only the mandatory label, which requires WRITE_OWNER rather than the unrelated audit SACL privilege.
+func labelMaintenanceObject(handle windows.Handle) error {
+	descriptor, err := windows.SecurityDescriptorFromString(maintenanceStageSDDL)
+	if err != nil {
+		return err
+	}
+	label, _, err := descriptor.SACL()
+	if err != nil {
+		return err
+	}
+	err = windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.LABEL_SECURITY_INFORMATION, nil, nil, nil, label)
+	runtime.KeepAlive(descriptor)
+	return err
+}
+
+// admitMaintenanceStage refuses ordinary-user mutation or a missing high-integrity write barrier on a staged object.
+func admitMaintenanceStage(file *os.File) error {
+	descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.LABEL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	return admitMaintenanceDescriptor(descriptor)
+}
+
+// admitMaintenanceDescriptor accepts only the explicit protected machine ACL and high mandatory label used for this staging protocol.
+func admitMaintenanceDescriptor(descriptor *windows.SECURITY_DESCRIPTOR) error {
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		return err
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		return err
+	}
+	if owner == nil || owner.String() != "S-1-5-32-544" || control&windows.SE_DACL_PROTECTED == 0 {
+		return errors.New("uninstall staging owner or ACL protection differs")
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	if dacl == nil || dacl.AceCount != 2 {
+		return errors.New("uninstall staging ACL has unexpected grants")
+	}
+	seen := map[string]bool{}
+	for index := uint32(0); index < 2; index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, index, &ace); err != nil {
+			return err
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || ace.Mask != 0x1f01ff || (sid != "S-1-5-32-544" && sid != "S-1-5-18") || seen[sid] {
+			return errors.New("uninstall staging ACL differs from the protected machine policy")
+		}
+		seen[sid] = true
+	}
+	sacl, _, err := descriptor.SACL()
+	if err != nil {
+		return err
+	}
+	if sacl == nil || sacl.AceCount != 1 {
+		return errors.New("uninstall staging has no exact high mandatory label")
+	}
+	var label *windows.ACCESS_ALLOWED_ACE
+	if err := windows.GetAce(sacl, 0, &label); err != nil {
+		return err
+	}
+	if label.Header.AceType != 0x11 || label.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || label.Mask != 1 || (*windows.SID)(unsafe.Pointer(&label.SidStart)).String() != "S-1-16-12288" {
+		return errors.New("uninstall staging high mandatory label differs")
+	}
+	return nil
+}
+
+// closeMaintenanceFiles releases exact retained objects in reverse order without deleting ambiguous staging remnants.
+func closeMaintenanceFiles(files []*os.File) (result error) {
+	for index := len(files) - 1; index >= 0; index-- {
+		result = errors.Join(result, files[index].Close())
+	}
+	return result
+}
+
+// admitMaintenanceParent requires the inherited restricted process receipt to name this child's actual original uninstaller parent.
+func admitMaintenanceParent(parent windows.Handle, original, userSID string) error {
+	var flags uint32
+	ok, _, err := windows.NewLazySystemDLL("kernel32.dll").NewProc("GetHandleInformation").Call(uintptr(parent), uintptr(unsafe.Pointer(&flags)))
+	if ok == 0 {
+		return err
+	}
+	if flags&windows.HANDLE_FLAG_INHERIT == 0 {
+		return errors.New("uninstall parent receipt was not inherited")
+	}
+	var object [128]byte
+	var length uint32
+	status, _, _ := windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryObject").Call(uintptr(parent), 0, uintptr(unsafe.Pointer(&object[0])), uintptr(len(object)), uintptr(unsafe.Pointer(&length)))
+	if status != 0 || length < 8 || binary.LittleEndian.Uint32(object[4:8]) != maintenanceParentRights {
+		return errors.New("uninstall parent receipt has unexpected native access rights")
+	}
+	var basic [6]uintptr
+	status, _, _ = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryInformationProcess").Call(uintptr(windows.CurrentProcess()), 0, uintptr(unsafe.Pointer(&basic[0])), unsafe.Sizeof(basic), uintptr(unsafe.Pointer(&length)))
+	if status != 0 {
+		return errors.New("cannot inspect uninstall continuation parent identity")
+	}
+	pid, err := windows.GetProcessId(parent)
+	if err != nil {
+		return err
+	}
+	if uintptr(pid) != basic[5] {
+		return errors.New("inherited uninstall receipt does not identify the actual parent")
+	}
+	image := make([]uint16, 32768)
+	size := uint32(len(image))
+	if err := windows.QueryFullProcessImageName(parent, 0, &image[0], &size); err != nil {
+		return err
+	}
+	if !strings.EqualFold(windows.UTF16ToString(image[:size]), original) {
+		return errors.New("uninstall parent is not the fixed admitted Uninstall.exe")
+	}
+	var token windows.Token
+	if err := windows.OpenProcessToken(parent, windows.TOKEN_QUERY, &token); err != nil {
+		return err
+	}
+	parentUser, userErr := token.GetTokenUser()
+	var parentSession, currentSession uint32
+	sessionErr := maintenanceTokenSession(token, &parentSession)
+	closeErr := token.Close()
+	if err := errors.Join(userErr, sessionErr, closeErr, maintenanceTokenSession(windows.GetCurrentProcessToken(), &currentSession)); err != nil {
+		return err
+	}
+	if parentUser.User.Sid.String() != userSID || parentSession == 0 || parentSession != currentSession {
+		return errors.New("uninstall parent user or interactive session differs")
+	}
+	var parentBirth, currentBirth, exit, kernel, used windows.Filetime
+	if err := windows.GetProcessTimes(parent, &parentBirth, &exit, &kernel, &used); err != nil {
+		return err
+	}
+	if err := windows.GetProcessTimes(windows.CurrentProcess(), &currentBirth, &exit, &kernel, &used); err != nil {
+		return err
+	}
+	if parentBirth.Nanoseconds() >= currentBirth.Nanoseconds() {
+		return errors.New("uninstall parent receipt has no earlier native birth")
+	}
+	return windows.SetHandleInformation(parent, windows.HANDLE_FLAG_INHERIT, 0)
+}
+
+// maintenanceTokenSession obtains a checked native scalar without inheriting caller-supplied session identifiers.
+func maintenanceTokenSession(token windows.Token, session *uint32) error {
+	var length uint32
+	if err := windows.GetTokenInformation(token, windows.TokenSessionId, (*byte)(unsafe.Pointer(session)), 4, &length); err != nil {
+		return err
+	}
+	if length != 4 {
+		return errors.New("uninstall token session has an unexpected native size")
+	}
+	return nil
+}
+
+// waitMaintenanceParent waits only the retained original process and never signals a PID or arbitrary process.
+func waitMaintenanceParent(ctx context.Context, parent windows.Handle) error {
+	deadline, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	for {
+		if err := deadline.Err(); err != nil {
+			return fmt.Errorf("wait for original uninstall image to unload: %w", err)
+		}
+		state, err := windows.WaitForSingleObject(parent, 50)
+		if err != nil {
+			return err
+		}
+		if state == windows.WAIT_OBJECT_0 {
+			return nil
+		}
+		if state != uint32(windows.WAIT_TIMEOUT) {
+			return errors.New("uninstall parent returned an unexpected native wait state")
+		}
+	}
+}
+
+// admitMaintenanceImage compares the native mapped image object with the retained signed file instead of trusting executable path text.
+func admitMaintenanceImage(expected *os.File) (result error) {
+	var module windows.Handle
+	if err := windows.GetModuleHandleEx(windows.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, nil, &module); err != nil {
+		return err
+	}
+	name := make([]uint16, 32768)
+	length, _, err := windows.NewLazySystemDLL("kernel32.dll").NewProc("K32GetMappedFileNameW").Call(uintptr(windows.CurrentProcess()), uintptr(module), uintptr(unsafe.Pointer(&name[0])), uintptr(len(name)))
+	if length == 0 {
+		return fmt.Errorf("observe native maintenance image mapping: %w", err)
+	}
+	if length >= uintptr(len(name)) {
+		return errors.New("native maintenance image path exceeds bounds")
+	}
+	mapped := windows.UTF16ToString(name[:length])
+	if !strings.HasPrefix(mapped, `\Device\`) {
+		return errors.New("native maintenance image is outside a fixed Windows device")
+	}
+	path := `\\?\GLOBALROOT` + mapped
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_READ, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, windows.CloseHandle(handle)) }()
+	same, err := windowsfile.SameObject(handle, windows.Handle(expected.Fd()))
+	if err != nil {
+		return err
+	}
+	if !same {
+		return errors.New("native executing maintenance image differs from the retained admitted file")
+	}
+	return nil
+}
+
+// maintenanceResult retains the outcome only in the protected disposable staging directory, never in Harbor user state.
+type maintenanceResult struct {
+	SchemaVersion  int                         `json:"schema_version"`
+	ProductID      string                      `json:"product_id"`
+	InstallationID string                      `json:"installation_id"`
+	BundleDigest   string                      `json:"bundle_digest"`
+	Status         string                      `json:"status"`
+	OriginalParent *maintenanceProcessIdentity `json:"original_parent,omitempty"`
+	Continuation   *maintenanceProcessIdentity `json:"continuation,omitempty"`
+	Error          string                      `json:"error,omitempty"`
+}
+
+// recordMaintenanceResult creates an immutable one-shot outcome so detached continuation failure remains observable.
+func recordMaintenanceResult(root string, selection windowsinstallation.Selection, original, continuation *maintenanceProcessIdentity, failure error) (result error) {
+	receipt := maintenanceReceipt(selection, original, continuation, failure)
+	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(maintenanceStageSDDL, "S:")[0])
+	if err != nil {
+		return err
+	}
+	attributes := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
+	path := filepath.Join(root, "result.json")
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_WRITE|windows.WRITE_OWNER, windows.FILE_SHARE_READ, attributes, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	runtime.KeepAlive(descriptor)
+	if err != nil {
+		return fmt.Errorf("create protected uninstall result: %w", err)
+	}
+	file := os.NewFile(uintptr(handle), path)
+	defer func() { result = errors.Join(result, file.Close()) }()
+	if err := labelMaintenanceObject(handle); err != nil {
+		return err
+	}
+	if err := json.NewEncoder(file).Encode(receipt); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+// maintenanceProcessIdentity is observational evidence only and never authorizes later process signaling.
+type maintenanceProcessIdentity struct {
+	PID         uint32 `json:"pid"`
+	NativeBirth string `json:"native_birth"`
+	UserSID     string `json:"user_sid"`
+	Session     uint32 `json:"session"`
+}
+
+// inspectMaintenanceProcess records native identity through an already retained process handle.
+func inspectMaintenanceProcess(process windows.Handle) (_ *maintenanceProcessIdentity, result error) {
+	pid, err := windows.GetProcessId(process)
+	if err != nil {
+		return nil, err
+	}
+	var birth, exit, kernel, used windows.Filetime
+	if err := windows.GetProcessTimes(process, &birth, &exit, &kernel, &used); err != nil {
+		return nil, err
+	}
+	var token windows.Token
+	if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); err != nil {
+		return nil, err
+	}
+	defer func() { result = errors.Join(result, token.Close()) }()
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
+	var session uint32
+	if err := maintenanceTokenSession(token, &session); err != nil {
+		return nil, err
+	}
+	ticks := uint64(birth.HighDateTime)<<32 | uint64(birth.LowDateTime)
+	return &maintenanceProcessIdentity{PID: pid, NativeBirth: strconv.FormatUint(ticks, 10), UserSID: user.User.Sid.String(), Session: session}, nil
+}
+
+// maintenanceReceipt reports completion only after the fixed uninstall core and all earlier admission steps succeeded.
+func maintenanceReceipt(selection windowsinstallation.Selection, original, continuation *maintenanceProcessIdentity, failure error) maintenanceResult {
+	receipt := maintenanceResult{SchemaVersion: 1, ProductID: windowsinstallation.ProductID, InstallationID: selection.InstallationID, BundleDigest: selection.BundleDigest, Status: "complete", OriginalParent: original, Continuation: continuation}
+	if failure != nil {
+		receipt.Status = "failed"
+		receipt.Error = failure.Error()
+		if len(receipt.Error) > 4096 {
+			receipt.Error = receipt.Error[:4096]
+		}
+	}
+	return receipt
+}
+
+// interactiveMaintenance limits modal error reporting to explicit user uninstall entrypoints.
+func interactiveMaintenance(arguments []string) bool {
+	return len(arguments) == 0 || (len(arguments) == 1 && arguments[0] == "--uninstall")
+}
+
+// showMaintenanceError makes interactive bootstrap failures visible for the windowless maintenance executable.
+func showMaintenanceError(err error) {
+	text, conversion := windows.UTF16PtrFromString("Harbor could not uninstall.\n\n" + err.Error())
+	if conversion != nil {
+		text = windows.StringToUTF16Ptr("Harbor could not uninstall because installation admission failed.")
+	}
+	title := windows.StringToUTF16Ptr("Harbor")
+	_, _, _ = windows.NewLazySystemDLL("user32.dll").NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), 0x10)
+}
+
+// maintenanceShellExecuteInfo matches SHELLEXECUTEINFOW for one fixed, user-approved elevation request.
+type maintenanceShellExecuteInfo struct {
+	Size       uint32
+	Mask       uint32
+	Window     windows.Handle
+	Verb       *uint16
+	File       *uint16
+	Parameters *uint16
+	Directory  *uint16
+	Show       int32
+	Instance   windows.Handle
+	IDList     uintptr
+	Class      *uint16
+	ClassKey   windows.Handle
+	HotKey     uint32
+	Icon       windows.Handle
+	Process    windows.Handle
+}
+
+// requestMaintenanceUninstall requests explicit elevation only for the exact admitted installed uninstaller.
+func requestMaintenanceUninstall(ctx context.Context, silent bool) (result error) {
+	if windows.GetCurrentProcessToken().IsElevated() {
+		return bootstrapUninstall(ctx)
+	}
+	installation, err := admitMaintenance()
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, installation.Close()) }()
+	path, err := installation.Path("uninstaller")
+	if err != nil {
+		return err
+	}
+	current, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(current, path) {
+		return errors.New("uninstall elevation requires the fixed admitted Uninstall.exe")
+	}
+	source, err := openMaintenanceObject(path, false)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, source.Close()) }()
+	if err := installation.VerifyUninstallerCopy(source); err != nil {
+		return err
+	}
+	if err := admitMaintenanceImage(source); err != nil {
+		return err
+	}
+	operation := "--uninstall"
+	if silent {
+		operation = "--silent"
+	}
+	info := maintenanceShellExecuteInfo{Size: uint32(unsafe.Sizeof(maintenanceShellExecuteInfo{})), Mask: 0x40 | 0x100 | 0x400, Verb: windows.StringToUTF16Ptr("runas"), File: windows.StringToUTF16Ptr(path), Parameters: windows.StringToUTF16Ptr(operation), Directory: windows.StringToUTF16Ptr(filepath.Dir(path)), Show: 1}
+	ok, _, callErr := windows.NewLazySystemDLL("shell32.dll").NewProc("ShellExecuteExW").Call(uintptr(unsafe.Pointer(&info)))
+	runtime.KeepAlive(info)
+	if ok == 0 {
+		return fmt.Errorf("request same-user uninstall elevation: %w", callErr)
+	}
+	if info.Process == 0 {
+		return errors.New("uninstall elevation returned no retained process receipt")
+	}
+	defer func() { result = errors.Join(result, windows.CloseHandle(info.Process)) }()
+	image := make([]uint16, 32768)
+	size := uint32(len(image))
+	if err := windows.QueryFullProcessImageName(info.Process, 0, &image[0], &size); err != nil {
+		return err
+	}
+	if !strings.EqualFold(windows.UTF16ToString(image[:size]), path) {
+		return errors.New("uninstall elevation selected a different executable")
+	}
+	facts, err := inspectMaintenanceProcess(info.Process)
+	if err != nil {
+		return err
+	}
+	var session uint32
+	if err := maintenanceTokenSession(windows.GetCurrentProcessToken(), &session); err != nil {
+		return err
+	}
+	if facts.UserSID != installation.Selection().UserSID || facts.Session != session {
+		return errors.New("uninstall elevation selected a different user or session")
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		state, err := windows.WaitForSingleObject(info.Process, 50)
+		if err != nil {
+			return err
+		}
+		if state == windows.WAIT_OBJECT_0 {
+			var code uint32
+			if err := windows.GetExitCodeProcess(info.Process, &code); err != nil {
+				return err
+			}
+			if code != 0 {
+				return fmt.Errorf("elevated uninstall bootstrap exited with code %d", code)
+			}
+			return nil
+		}
+		if state != uint32(windows.WAIT_TIMEOUT) {
+			return errors.New("elevated uninstall returned an unexpected wait state")
+		}
+	}
+}
+
+// parseUninstallGuardHandles admits only the two fixed, direction-specific capabilities for the restricted lease worker.
+func parseUninstallGuardHandles(arguments []string) (windows.Handle, windows.Handle, error) {
+	if len(arguments) != 3 || arguments[0] != "--hold-stopped" {
+		return 0, 0, errors.New("uninstall guard requires only its inherited ready and release events")
+	}
+	readyText, readyOK := strings.CutPrefix(arguments[1], "--ready-handle=")
+	releaseText, releaseOK := strings.CutPrefix(arguments[2], "--release-handle=")
+	if !readyOK || !releaseOK {
+		return 0, 0, errors.New("uninstall guard event argument order or type differs")
+	}
+	ready, err := parseMaintenanceParent("--parent-handle=" + readyText)
+	if err != nil {
+		return 0, 0, err
+	}
+	release, err := parseMaintenanceParent("--parent-handle=" + releaseText)
+	if err != nil {
+		return 0, 0, err
+	}
+	if ready == release {
+		return 0, 0, errors.New("uninstall guard requires distinct event handles")
+	}
+	return ready, release, nil
+}
+
+// completeMaintenanceInstall commits machine integration and task registration while one machine lease excludes removal and helper writers.
+func completeMaintenanceInstall(ctx context.Context) error {
+	return windowsinstallation.WithMachineTransaction(ctx, func() (result error) {
+		installation, err := admitMaintenance()
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, installation.Close()) }()
+		return completeMaintenanceSteps(func() error { return installation.InstallMachineIntegration(ctx) }, func() error { return installation.Task(ctx, "register") })
+	})
+}
+
+// completeMaintenanceSteps refuses task creation until the exact machine integration has been committed or revalidated.
+func completeMaintenanceSteps(integrate, register func() error) error {
+	if err := integrate(); err != nil {
+		return fmt.Errorf("complete Windows machine integration: %w", err)
+	}
+	if err := register(); err != nil {
+		return fmt.Errorf("register installed daemon task: %w", err)
+	}
+	return nil
+}

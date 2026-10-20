@@ -5,13 +5,18 @@ import (
 	"github.com/goforj/harbor/app/harbord/wire"
 	"github.com/goforj/harbor/internal/cmd"
 	"github.com/goforj/harbor/internal/console"
+	"github.com/goforj/harbor/internal/platform/windowsinstallation"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
 
 	"os"
 )
 
+// main admits installed Windows daemon authority before opening user state or capturing project environment.
 func main() {
+	if err := windowsinstallation.CheckRuntimeRole("daemon"); err != nil {
+		console.Fatalf("installed runtime admission: %v", err)
+	}
 	developmentEnvironment := projectprocess.CaptureEnvironment()
 	args := cmd.EffectiveLaunchArgs(os.Args[1:], false)
 	cmd.ApplyLaunchApp("harbord")

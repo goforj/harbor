@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !windows
 
 // Package main reports that Harbor's native installer is unavailable on this platform.
 package main
