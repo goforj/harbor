@@ -83,8 +83,10 @@ def click(label, roles=None):
 
 
 def focus(node):
+    activate()
     if not node.queryComponent().grabFocus():
         raise RuntimeError('could not focus ' + node.name)
+    wait('focused ' + node.name, lambda: node.getState().contains(pyatspi.STATE_FOCUSED))
 
 
 def fill(label, value):
@@ -185,8 +187,11 @@ def window(visible):
 
 
 def activate():
+    # The visible WebKit client can precede XFCE's window-manager registration.
+    wait('window manager', lambda: 'window id #' in command('xprop', '-root', '_NET_SUPPORTING_WM_CHECK'))
     identifier = wait('visible window', lambda: window(True))
     command('xdotool', 'windowactivate', '--sync', identifier.splitlines()[0])
+    wait('active installed window', lambda: command('xdotool', 'getactivewindow') == identifier.splitlines()[0])
 
 
 def quit_ui():
