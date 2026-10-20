@@ -120,3 +120,39 @@ func TestPrivilegedSpoolRejectsInvalidReceipt(t *testing.T) {
 		t.Fatal("accepted incomplete receipt")
 	}
 }
+
+// TestIntegrationSecurityRejectsDrift distinguishes descriptor bookkeeping from authority changes.
+func TestIntegrationSecurityRejectsDrift(t *testing.T) {
+	base := "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
+	want, err := windows.SecurityDescriptorFromString(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, sddl string
+		ok         bool
+	}{
+		{"exact", base, true},
+		{"reordered", "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", true},
+		{"auto inherited bookkeeping", "O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)", true},
+		{"unprotected", "O:BAD:(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)", false},
+		{"owner", "O:SYD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)", false},
+		{"missing", "O:BAD:P(A;OICI;FA;;;BA)", false},
+		{"extra", "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FR;;;BU)", false},
+		{"duplicate", "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FA;;;SY)", false},
+		{"mask", "O:BAD:P(A;OICI;FR;;;BA)(A;OICI;FA;;;SY)", false},
+		{"flags", "O:BAD:P(A;OI;FA;;;BA)(A;OICI;FA;;;SY)", false},
+		{"deny", "O:BAD:P(D;OICI;FA;;;BA)(A;OICI;FA;;;SY)", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := windows.SecurityDescriptorFromString(c.sddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := compareIntegrationSecurity(got, want); (err == nil) != c.ok {
+				t.Fatalf("comparison = %v, want accepted %v", err, c.ok)
+			}
+		})
+	}
+}

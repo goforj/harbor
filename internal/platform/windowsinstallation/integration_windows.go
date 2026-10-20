@@ -217,8 +217,8 @@ func inspectIntegrationObject(file *os.File, object integrationObject) (integrat
 	if err != nil {
 		return object, err
 	}
-	if descriptor.String() != expected.String() {
-		return object, fmt.Errorf("Windows machine directory owner or ACL differs from its exact plan: %s", object.Path)
+	if err := compareIntegrationSecurity(descriptor, expected); err != nil {
+		return object, fmt.Errorf("Windows machine directory owner or ACL differs from its exact plan %s: %w", object.Path, err)
 	}
 	var identity integrationFileID
 	if err := windows.GetFileInformationByHandleEx(handle, windows.FileIdInfo, (*byte)(unsafe.Pointer(&identity)), uint32(unsafe.Sizeof(identity))); err != nil {
@@ -304,4 +304,77 @@ func (spool *privilegedSpool) Close() error {
 		}
 	}
 	return errors.Join(result, spool.Anchor.Close())
+}
+
+// integrationACE keeps only native access semantics, independent of descriptor string serialization.
+type integrationACE struct {
+	SID   string
+	Mask  uint32
+	Flags uint8
+}
+
+// compareIntegrationSecurity tolerates descriptor bookkeeping but requires exact owner and protected explicit grants.
+func compareIntegrationSecurity(actual, expected *windows.SECURITY_DESCRIPTOR) error {
+	actualOwner, _, err := actual.Owner()
+	if err != nil {
+		return err
+	}
+	expectedOwner, _, err := expected.Owner()
+	if err != nil {
+		return err
+	}
+	if actualOwner == nil || expectedOwner == nil || actualOwner.String() != expectedOwner.String() {
+		return errors.New("foreign machine projection owner")
+	}
+	control, _, err := actual.Control()
+	if err != nil {
+		return err
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return errors.New("machine projection DACL is not protected")
+	}
+	want, err := integrationACEs(expected)
+	if err != nil {
+		return err
+	}
+	got, err := integrationACEs(actual)
+	if err != nil {
+		return err
+	}
+	if len(got) != len(want) {
+		return errors.New("machine projection has additional or missing grants")
+	}
+	for grant := range want {
+		if _, ok := got[grant]; !ok {
+			return errors.New("machine projection grant differs")
+		}
+	}
+	return nil
+}
+
+// integrationACEs rejects non-allow entries and duplicates before exact grant comparison.
+func integrationACEs(descriptor *windows.SECURITY_DESCRIPTOR) (map[integrationACE]struct{}, error) {
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return nil, err
+	}
+	if dacl == nil {
+		return nil, errors.New("machine projection has a null DACL")
+	}
+	result := make(map[integrationACE]struct{}, dacl.AceCount)
+	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, index, &ace); err != nil {
+			return nil, err
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			return nil, errors.New("machine projection has a non-allow grant")
+		}
+		grant := integrationACE{SID: (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String(), Mask: ace.Mask, Flags: ace.Header.AceFlags}
+		if _, exists := result[grant]; exists {
+			return nil, errors.New("machine projection has duplicate grants")
+		}
+		result[grant] = struct{}{}
+	}
+	return result, nil
 }
