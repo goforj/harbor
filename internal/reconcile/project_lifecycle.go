@@ -750,6 +750,10 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 		probeCtx, cancel := context.WithTimeout(coordinator.ctx, defaultReadinessHTTPTimeout)
 		readinessState, err := plan.Readiness.Probe(probeCtx)
 		cancel()
+		// A probe can time out during startup; the lifecycle timer owns the total readiness budget.
+		if errors.Is(err, context.DeadlineExceeded) && coordinator.ctx.Err() == nil {
+			readinessState, err = projectruntime.ReadinessPending, nil
+		}
 		if err != nil {
 			coordinator.stopAndFailAttached(mutation, session, handle, "project.readiness.invalid", err)
 			return

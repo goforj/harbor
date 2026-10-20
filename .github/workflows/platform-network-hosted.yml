@@ -121,7 +121,7 @@ jobs:
         run: |
           binary="${RUNNER_TEMP}/harbor-loopback-adapter-test"
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            "${binary}.exe" -test.run '^TestPlatformLoopbackCapacityLifecycle$' -test.timeout=10m -test.v
+            "${binary}.exe" -test.run '^TestPlatformLoopbackCapacityLifecycle$' -test.count=10 -test.timeout=10m -test.v
           else
             sudo env \
               HARBOR_CAPACITY_PROOF_POOL="${HARBOR_CAPACITY_PROOF_POOL}" \

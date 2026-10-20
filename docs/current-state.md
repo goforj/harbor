@@ -1,10 +1,18 @@
 # Current Implementation State
 
+## Readiness probe deadlines (2026-10-19)
+
+The real installed GUI gate created and registered its minimal Vue/API project, then exposed a startup failure in [run 39360249869](https://github.com/goforj/harbor/actions/runs/39360249869). Its retained daemon snapshot identifies `project.readiness.invalid` with `context deadline exceeded`. Harbor treated one bounded HTTP attempt expiring as invalid readiness while the total startup budget still remained.
+
+The lifecycle coordinator now retries individual deadline errors while its own context remains active. The existing total startup deadline, process-exit handling, malformed-response failures, and daemon shutdown still apply. A focused regression reproduces the old failure and passes after the change, including recovery to Ready, exhaustion of the overall budget, and rejection of an invalid response. Native acceptance requires rebuilding the package; the earlier PKG cannot prove this new product code.
+
+An existing Windows capacity gate intermittently rejects one native assignment with `attribute-conflict`, including [run 39360245273](https://github.com/goforj/harbor/actions/runs/39360245273). Its fixture now retains the wrapped native cause and structured assignment facts, and the Windows job repeats the bounded capacity/cleanup cycle ten times. The cause is still under investigation; previous successful capacity runs do not close this intermittent failure.
+
 ## Unattended installed UI automation (2026-10-19)
 
 Harbor PR #12 is merged as `74adee22d2be81ee3699fa245b7269f4d6c49733` after 41 successful checks. Its final package rehearsal, [39354344032](https://github.com/goforj/harbor/actions/runs/39354344032), passed both native package jobs with released GoForj v0.34.1, installed daemon reopen/restart, trusted HTTPS, user-file preservation, and retained uninstall receipts. Assembly passed and publication was skipped.
 
-An additional GitHub-hosted macOS workflow now admits the exact tested PKG and matching product source before driving the real installed window with XCTest. The harness covers graphical creation, Start, trusted HTTPS, hide/reopen, UI-only quit/relaunch, Stop, and post-uninstall retained file hashes. Local package verification, verifier unit tests, workflow syntax, and native test compilation pass. Hosted UI execution remains pending. See [the runbook and explicit coverage limits](./releases.md#unattended-installed-macos-ui-checks).
+An additional GitHub-hosted macOS workflow now admits the exact tested PKG and matching product source before driving the real installed window with XCTest. The harness targets graphical creation, Start, trusted HTTPS, hide/reopen, UI-only quit/relaunch, Stop, and post-uninstall retained file hashes. Local package verification, verifier unit tests, workflow syntax, and native test compilation pass. Hosted setup and creation passed; the startup failure above currently blocks the complete lifecycle. The workflow retains failed snapshots and launch traces when available. See [the runbook and explicit coverage limits](./releases.md#unattended-installed-macos-ui-checks).
 
 ## GoForj CLI maintenance (2026-10-19)
 

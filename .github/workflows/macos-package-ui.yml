@@ -58,6 +58,7 @@ jobs:
             PACKAGE_RUN_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].id // empty')"
           fi
           [[ "$PACKAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          printf 'Selected package rehearsal: %s\n' "$PACKAGE_RUN_ID"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID" > package-run.json
           gh run download "$PACKAGE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name Harbor-prerelease-publication --dir package-assets

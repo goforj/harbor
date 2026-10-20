@@ -44,7 +44,8 @@ func TestPlatformLoopbackCapacityLifecycle(t *testing.T) {
 	for _, address := range first {
 		change, err := adapter.EnsureIfObserved(t.Context(), address, initial[address])
 		if err != nil {
-			t.Fatal(err)
+			observation, encodeErr := json.Marshal(change.After)
+			t.Fatalf("partial assignment %s: %v; cause=%v; observation=%s; encode=%v", address, err, errors.Unwrap(err), observation, encodeErr)
 		}
 		if !change.Changed || change.Indeterminate || change.After.State != loopback.StateExact {
 			t.Fatal("partial assignment was not verified")
@@ -63,7 +64,8 @@ func TestPlatformLoopbackCapacityLifecycle(t *testing.T) {
 		}
 		change, err := adapter.EnsureIfObserved(t.Context(), address, expected)
 		if err != nil {
-			t.Fatalf("resume assignment %s: %v", address, err)
+			observation, encodeErr := json.Marshal(change.After)
+			t.Fatalf("resume assignment %s: %v; cause=%v; observation=%s; encode=%v", address, err, errors.Unwrap(err), observation, encodeErr)
 		}
 		if change.Indeterminate || change.After.State != loopback.StateExact {
 			t.Fatal("resumed assignment was not verified")
