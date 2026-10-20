@@ -182,7 +182,7 @@ try {
     try { [HarborUIProfile]::QuiesceLaunchedUIs() } catch { Write-Warning "failed to quiesce exact launched UI handles: $_" }
     throw $originalFailure
 } finally {
-    $cleanup = [ordered]@{ gui_quiescent=$false; fixtures_stopped=$false; network_released=$false; daemon_absent=$false; retained_files=@{} }
+    $cleanup = [ordered]@{ launched_token_facts=[HarborUIProfile]::LastLaunchFacts; gui_quiescent=$false; fixtures_stopped=$false; network_released=$false; daemon_absent=$false; retained_files=@{}; missing_files=@() }
     try {
         [HarborUIProfile]::QuiesceLaunchedUIs()
         $cleanup.gui_quiescent = $true
@@ -190,7 +190,7 @@ try {
         if ($remaining.Count -ne 0) { throw 'an unrecorded desktop process prevents host cleanup' }
         $registered = Get-Project
         if ($null -ne $registered -and $registered.state -cne 'stopped') {
-            & $cliPath project stop $registered.id
+            & $cliPath stop $registered.id
             if ($LASTEXITCODE -ne 0) { throw 'fixture stop was not admitted' }
             Wait-Until 'stopped cleanup fixture' { (Get-Project).state -ceq 'stopped' } 120
         }
@@ -207,7 +207,12 @@ try {
         $cleanup.daemon_absent = $true
         $paths = @((Join-Path $env:LOCALAPPDATA 'GoForj\Harbor\harbor.db'), (Join-Path $projectDirectory '.goforj.yml'), (Join-Path $projectDirectory 'go.mod'))
         foreach ($path in $paths) {
-            if (Test-Path -LiteralPath $path -PathType Leaf) { $cleanup.retained_files[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+                $cleanup.retained_files[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            } else {
+                $cleanup.missing_files += $path
+                if (Test-Path (Join-Path $EvidenceDirectory 'installed-ui.json')) { throw "successful GUI lifecycle lost required retained file $path" }
+            }
         }
     } catch { $cleanup.error = $_.ToString(); Write-Warning "partial installed cleanup: $_" }
     $cleanup | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $EvidenceDirectory 'cleanup.json') -Encoding utf8
