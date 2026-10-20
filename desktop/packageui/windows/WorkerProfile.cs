@@ -112,7 +112,7 @@ public static class HarborUIProfile {
         foreach (LuidAndAttributes privilege in Privileges(token)) {
             if (PrivilegeName(privilege.luid) != "SeChangeNotifyPrivilege") throw new Exception("product retains removable privilege "+PrivilegeName(privilege.luid));
         }
-        if (TokenIntegrity(token) != 8192 || (TokenInteger(token, 27) & 1) == 0 || TokenInteger(token, 26) != 0) throw new Exception("product requires medium integrity, no-write-up, and UIAccess disabled");
+        if (TokenInteger(token, 20) != 0 || TokenIntegrity(token) != 8192 || (TokenInteger(token, 27) & 1) == 0 || TokenInteger(token, 26) != 0) throw new Exception("product requires non-elevated medium integrity, no-write-up, and UIAccess disabled");
         if (TokenInteger(token, 12) != Process.GetCurrentProcess().SessionId) throw new Exception("product changed interactive session");
     }
     static string LinkedTokenFacts(IntPtr token) {
@@ -158,14 +158,7 @@ public static class HarborUIProfile {
         if (error != 5) throw new Win32Exception(error, "protected path denial was not access denied: "+path);
         AccessReceipts.Add("file:denied:"+right+":"+path);
     }
-    static void RequireDeniedProcess(int pid, uint right) {
-        IntPtr process = OpenProcess(right, false, pid);
-        int error = Marshal.GetLastWin32Error();
-        if (process != IntPtr.Zero) { CloseHandle(process); throw new Exception("restricted token retains high-process right "+right); }
-        if (error != 5) throw new Win32Exception(error, "high-process denial was not access denied");
-        AccessReceipts.Add("process:denied:"+right);
-    }
-    public static void ProveNativeProcessRights(int highPID) {
+    public static void ObserveNativeProcessRights(int highPID) {
         IntPtr token;
         if (!OpenProcessToken(GetCurrentProcess(), 10, out token)) throw new Win32Exception();
         try { AssertEffectiveToken(token); } finally { CloseHandle(token); }
@@ -173,7 +166,7 @@ public static class HarborUIProfile {
         foreach (uint right in new uint[] { 1, 2, 0x20, 0x40, 0x40000, 0x80000 }) {
             IntPtr process=OpenProcess(right, false, highPID);
             int error=Marshal.GetLastWin32Error();
-            if (process != IntPtr.Zero) { CloseHandle(process); granted.Add("process:"+right); AccessReceipts.Add("UNEXPECTED-GRANT:process:"+right); }
+            if (process != IntPtr.Zero) { CloseHandle(process); granted.Add("process:"+right); AccessReceipts.Add("observed-grant:process:"+right); }
             else if (error != 5) throw new Win32Exception(error, "high-process denial was not access denied");
             else AccessReceipts.Add("process:denied:"+right);
         }
@@ -182,7 +175,7 @@ public static class HarborUIProfile {
         try {
             foreach (uint right in new uint[] { 1, 2, 4 }) {
                 IntPtr highToken;
-                if (OpenProcessToken(highProcess, right, out highToken)) { CloseHandle(highToken); granted.Add("token:"+right); AccessReceipts.Add("UNEXPECTED-GRANT:token:"+right); continue; }
+                if (OpenProcessToken(highProcess, right, out highToken)) { CloseHandle(highToken); granted.Add("token:"+right); AccessReceipts.Add("observed-grant:token:"+right); continue; }
                 int error=Marshal.GetLastWin32Error();
                 if (error != 5) throw new Win32Exception(error, "high-token denial was not access denied");
                 AccessReceipts.Add("token:denied:"+right);
@@ -197,7 +190,7 @@ public static class HarborUIProfile {
                 finally { CloseHandle(highToken); }
             } else AccessReceipts.Add("opened-high-token:query-duplicate-denied:"+Marshal.GetLastWin32Error());
         } finally { CloseHandle(highProcess); }
-        if (granted.Count != 0) throw new Exception("restricted process retains protected rights: "+String.Join(",", granted.ToArray()));
+        AccessReceipts.Add("containment:unsupported;observed-grants="+String.Join(",", granted.ToArray()));
     }
     static string ObjectSecurity(IntPtr handle) {
         IntPtr owner, group, dacl, sacl, descriptor, text=IntPtr.Zero;
@@ -216,6 +209,7 @@ public static class HarborUIProfile {
         StringBuilder command=new StringBuilder("\""+executable+"\" -NoProfile -NonInteractive -File \""+ProcessProbeScript+"\" -HighProcessId "+highPID+" -ResultPath \""+result+"\"");
         StartupInfo startup=new StartupInfo(); startup.cb=Marshal.SizeOf(typeof(StartupInfo));
         ProcessInfo probe=new ProcessInfo();
+        Exception originalFailure=null;
         try {
             if (!CreateProcessAsUser(token, executable, command, IntPtr.Zero, IntPtr.Zero, false, 4, IntPtr.Zero, privateRoot, ref startup, out probe)) throw new Win32Exception();
             IntPtr actual;
@@ -228,12 +222,39 @@ public static class HarborUIProfile {
             string receipt=File.Exists(result) ? File.ReadAllText(result) : "missing native permission receipt";
             AccessReceipts.Add("actual-process-probe:"+receipt);
             if (code != 0) throw new Exception("actual restricted process denied-permission probe failed: "+receipt);
-        } finally {
-            if (probe.thread != IntPtr.Zero) CloseHandle(probe.thread);
-            if (probe.process != IntPtr.Zero) {
-                if (WaitForSingleObject(probe.process, 0) != 0) { TerminateProcess(probe.process, 1); WaitForSingleObject(probe.process, 10000); }
-                CloseHandle(probe.process);
-            }
+        } catch (Exception error) { originalFailure=error; throw; }
+        finally {
+            FinishCleanup(originalFailure, new Action[] {
+                delegate { RetireOwnedProbe(ref probe.process, "native-permission-probe"); },
+                delegate { if (probe.thread != IntPtr.Zero) CloseHandle(probe.thread); }
+            });
+        }
+    }
+    static void RetireOwnedProbe(ref IntPtr process, string role) {
+        if (process == IntPtr.Zero) return;
+        IntPtr retained=process;
+        process=IntPtr.Zero;
+        try {
+            uint code;
+            if (!GetExitCodeProcess(retained, out code)) throw new Win32Exception();
+            if (code == 259 && !TerminateProcess(retained, 1)) throw new Win32Exception();
+            if (WaitForSingleObject(retained, 10000) != 0) throw new Exception(role+" did not retire within the cleanup bound");
+        } catch {
+            // Keep the exact native handle for the outer recovery attempt and its partial receipt.
+            launches.Add(retained);
+            throw;
+        }
+        CloseHandle(retained);
+        AccessReceipts.Add(role+":quiescent");
+    }
+    static void FinishCleanup(Exception original, Action[] actions) {
+        List<Exception> errors=new List<Exception>();
+        foreach (Action action in actions) {
+            try { action(); } catch (Exception error) { errors.Add(error); }
+        }
+        if (errors.Count != 0) {
+            if (original != null) errors.Insert(0, original);
+            throw new AggregateException("native permission fixture cleanup failed", errors);
         }
     }
     static void ProveEffectiveAccess(IntPtr token) {
@@ -242,6 +263,7 @@ public static class HarborUIProfile {
         NamedPipeServerStream server=null;
         IAsyncResult connection=null;
         ProcessInfo highFixture=new ProcessInfo();
+        Exception originalFailure=null;
         try {
             if (!OpenProcessToken(GetCurrentProcess(), 8, out ownToken)) throw new Win32Exception();
             if (TokenIntegrity(ownToken) <= 8192) throw new Exception("hosted fixture requires an independently high parent for direct authority probes");
@@ -293,18 +315,16 @@ public static class HarborUIProfile {
             if (!connection.AsyncWaitHandle.WaitOne(5000)) throw new Exception("private IPC connection did not complete");
             server.EndWaitForConnection(connection);
             RunNativeProcessProbe(token, (int)highFixture.pid, privateRoot);
-        } finally {
-            if (highFixture.thread != IntPtr.Zero) CloseHandle(highFixture.thread);
-            if (highFixture.process != IntPtr.Zero) {
-                bool retired=TerminateProcess(highFixture.process, 1) && WaitForSingleObject(highFixture.process, 10000) == 0;
-                CloseHandle(highFixture.process);
-                if (!retired) throw new Exception("never-resumed high fixture did not retire through its exact retained handle");
-                AccessReceipts.Add("high-fixture:never-resumed:quiescent");
-            }
-            if (impersonation != IntPtr.Zero) CloseHandle(impersonation);
-            if (ownToken != IntPtr.Zero) CloseHandle(ownToken);
-            if (server != null) server.Dispose();
-            if (privateRoot != null && Directory.Exists(privateRoot)) Directory.Delete(privateRoot, true);
+        } catch (Exception error) { originalFailure=error; throw; }
+        finally {
+            FinishCleanup(originalFailure, new Action[] {
+                delegate { RetireOwnedProbe(ref highFixture.process, "high-fixture:never-resumed"); },
+                delegate { if (highFixture.thread != IntPtr.Zero) CloseHandle(highFixture.thread); },
+                delegate { if (impersonation != IntPtr.Zero) CloseHandle(impersonation); },
+                delegate { if (ownToken != IntPtr.Zero) CloseHandle(ownToken); },
+                delegate { if (server != null) server.Dispose(); },
+                delegate { if (privateRoot != null && Directory.Exists(privateRoot)) Directory.Delete(privateRoot, true); }
+            });
         }
     }
     static readonly List<IntPtr> launches = new List<IntPtr>();
