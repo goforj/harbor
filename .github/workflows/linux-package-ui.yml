@@ -4,7 +4,9 @@ on:
   pull_request:
     paths:
       - .github/workflows/linux-package-ui.yml
-      - scripts/packageui/**
+      - scripts/packageui/linux/**
+      - scripts/packageui/verify.py
+      - scripts/packageui/test_verify.py
   workflow_dispatch:
     inputs:
       package_run_id:

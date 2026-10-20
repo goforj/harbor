@@ -4,8 +4,8 @@ on:
   pull_request:
     paths:
       - .github/workflows/macos-package-ui.yml
-      - desktop/packageui/**
-      - scripts/packageui/**
+      - desktop/packageui/macos/**
+      - scripts/packageui/*.py
   workflow_dispatch:
     inputs:
       package_run_id:
@@ -79,6 +79,10 @@ jobs:
         with:
           go-version: '1.26'
           cache: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
 
       - name: Install released project creation prerequisites
         run: |

@@ -6,6 +6,8 @@ on:
       - .github/workflows/windows-package-ui.yml
       - desktop/packageui/windows/**
       - scripts/packageui/windows/**
+      - scripts/packageui/verify.py
+      - scripts/packageui/test_verify.py
   workflow_dispatch:
     inputs:
       package_run_id:
