@@ -15,6 +15,7 @@ EVIDENCE = Path('harbor-package-ui-evidence')
 EVIDENCE.mkdir(exist_ok=True)
 LOG = (EVIDENCE / 'desktop.log').open('w')
 process = None
+children = []
 
 
 def command(*arguments):
@@ -133,6 +134,7 @@ def capture(name):
 def launch():
     global process
     process = subprocess.Popen([APP], stdout=LOG, stderr=subprocess.STDOUT)
+    children.append(process)
     wait('installed UI accessibility', application, 60)
     assert Path('/proc/' + str(process.pid) + '/exe').resolve() == Path(APP)
     assert Path('/proc/' + str(process.pid)).owner() == command('id', '-un')
@@ -192,6 +194,7 @@ try:
     assert process.poll() is None
     state('ready')
     second = subprocess.Popen([APP], stdout=LOG, stderr=subprocess.STDOUT)
+    children.append(second)
     second.wait(timeout=30)
     assert second.returncode == 0
     wait('original window reopened', lambda: window(True))
@@ -234,23 +237,30 @@ except BaseException:
         pass
     raise
 finally:
-    # The fixture must retire its direct, unreaped child before stopping the daemon,
-    # because a live desktop reconnect can reactivate the installed user service.
-    if process is not None and process.poll() is None:
-        result = {'pid': process.pid, 'method': 'native Ctrl+Q'}
+    # Retire every direct, unreaped UI child before stopping the daemon: even a
+    # failed single-instance launch can leave a reconnecting desktop client.
+    retired = []
+    for child in children:
+        if child.poll() is not None:
+            continue
+        result = {'pid': child.pid, 'method': 'native Ctrl+Q'}
         try:
+            if child is not process:
+                raise RuntimeError('single-instance child did not finish handoff')
             activate()
             key('ctrl+q')
-            process.wait(timeout=15)
+            child.wait(timeout=15)
         except (subprocess.SubprocessError, RuntimeError):
-            # Popen retains this exact direct child until wait reaps it. A failed
-            # native quit stays a failed GUI check even when recovery retires it.
+            # Popen retains this exact direct child until wait reaps it. Failed
+            # native quit remains a failed GUI check when recovery retires it.
             result['method'] = 'fixture direct-child termination after failed native quit'
-            process.terminate()
+            child.terminate()
             try:
-                process.wait(timeout=15)
+                child.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=15)
-        result['returncode'] = process.returncode
-        (EVIDENCE / 'failure-ui-retirement.json').write_text(json.dumps(result, indent=2) + '\n')
+                child.kill()
+                child.wait(timeout=15)
+        result['returncode'] = child.returncode
+        retired.append(result)
+    if retired:
+        (EVIDENCE / 'failure-ui-retirement.json').write_text(json.dumps(retired, indent=2) + '\n')
