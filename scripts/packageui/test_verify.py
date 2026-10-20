@@ -28,7 +28,20 @@ class PackageVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run, names = self.fixture(root)
-            self.assertEqual(verify.verify_assets(root, run), ("a" * 40, names[0]))
+            self.assertEqual(verify.verify_assets(root, run), ("a" * 40, *names))
+
+    def test_outputs_only_admitted_platform_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run, names = self.fixture(root)
+            output = root / "outputs"
+            with patch.object(verify.sys, "argv", ["verify.py", "assets"]), \
+                    patch.object(verify, "verify_assets", return_value=("a" * 40, *names)), \
+                    patch.object(verify.Path, "read_text", return_value=json.dumps(run)), \
+                    patch.dict(verify.os.environ, {"GITHUB_OUTPUT": str(output)}):
+                verify.main()
+            self.assertEqual(output.read_text(),
+                             f"source_commit={'a' * 40}\npackage={names[0]}\nlinux_package={names[1]}\n")
 
     def test_rejects_untrusted_or_incomplete_runs(self):
         for key, value in (("repository", {"full_name": "other/repo"}), ("path", "other.yml"),
@@ -77,6 +90,7 @@ class PackageVerificationTests(unittest.TestCase):
     def test_requires_matching_product_while_allowing_test_harness_changes(self):
         expected = {"desktop/main.go": ("file", "same"), "docs/current-state.md": "old"}
         verify.verify_product(expected, dict(expected, **{"docs/current-state.md": "new", "desktop/packageui/test.swift": "new"}))
+        verify.verify_product(expected, dict(expected, **{".github/workflows/linux-package-ui.yml": "new"}))
         for current in ({}, {"desktop/main.go": ("file", "changed")},
                         dict(expected, **{"cmd/harbord/main.go": "new"}),
                         dict(expected, **{".github/workflows/macos-development-package.yml": "changed"})):

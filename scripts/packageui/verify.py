@@ -31,7 +31,8 @@ def verify_assets(directory, run):
     version = prepare.validate_version(provenance["version"])
     base, channel = version.split("-", 1)
     package = f"GoForj-Harbor-macos-arm64-{version}.pkg"
-    names = [package, f"goforj-harbor_{base}~{channel}-1_amd64.deb"]
+    linux_package = f"goforj-harbor_{base}~{channel}-1_amd64.deb"
+    names = [package, linux_package]
     if set(provenance.get("packages", {})) != set(names):
         raise ValueError("unexpected package publication set")
     sums = ""
@@ -48,13 +49,14 @@ def verify_assets(directory, run):
         sums += expected
     if (directory / "SHA256SUMS").read_text() != sums:
         raise ValueError("publication checksum manifest differs from package provenance")
-    return revision, package
+    return revision, package, linux_package
 
 
 def test_only_path(name):
     """test_only_path excludes only the verification harness and documentation from product-source matching."""
     return (name.startswith(("desktop/packageui/", "scripts/packageui/", "docs/"))
-            or name in ("README.md", ".github/workflows/macos-package-ui.yml"))
+            or name in ("README.md", ".github/workflows/macos-package-ui.yml",
+                        ".github/workflows/linux-package-ui.yml"))
 
 
 def verify_product(expected, current):
@@ -84,9 +86,9 @@ def product_tree(revision):
 def main():
     """main emits only verified workflow outputs and never installs an unverified package."""
     if sys.argv[1:] == ["assets"]:
-        revision, package = verify_assets(Path("package-assets"), json.loads(Path("package-run.json").read_text()))
+        revision, package, linux_package = verify_assets(Path("package-assets"), json.loads(Path("package-run.json").read_text()))
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-            output.write(f"source_commit={revision}\npackage={package}\n")
+            output.write(f"source_commit={revision}\npackage={package}\nlinux_package={linux_package}\n")
     elif len(sys.argv) == 3 and sys.argv[1] == "source" and re.fullmatch(r"[a-f0-9]{40}", sys.argv[2]):
         subprocess.run(["git", "diff", "--exit-code", "HEAD", "--"], check=True)
         verify_product(product_tree(sys.argv[2]), product_tree("HEAD"))
