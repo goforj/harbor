@@ -219,7 +219,7 @@ public static class HarborUIProfile {
     }
     public static void ActivateRetainedProductWindow(int pid, IntPtr window) {
         if (IsRetainedProductWindowForeground(pid, window)) return;
-        if (!SetForegroundWindow(window) || !IsRetainedProductWindowForeground(pid, window)) throw new Exception("Windows did not foreground the exact admitted product window");
+        SetForegroundWindow(window);
     }
     public static bool IsRetainedProductWindowVisible(int pid, IntPtr window) {
         bool live=false;

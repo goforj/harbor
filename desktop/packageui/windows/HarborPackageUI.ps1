@@ -127,6 +127,7 @@ function Invoke-PreauthorizedNetworking([string]$Action) {
 }
 function Invoke-NativeUIQuit([int]$ProductProcessID) {
     [HarborUIProfile]::ActivateRetainedProductWindow($ProductProcessID, $script:windowHandle)
+    Wait-Until 'exact foreground installed window' { [HarborUIProfile]::IsRetainedProductWindowForeground($ProductProcessID, $script:windowHandle) } 10
     $quitFocus = Find-Control 'Projects' ([System.Windows.Automation.ControlType]::Button)
     if ($null -eq $quitFocus -or -not $quitFocus.Current.IsKeyboardFocusable) { throw 'installed UI has no keyboard-focusable Projects control for the native Quit shortcut' }
     $quitFocus.SetFocus()
