@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -150,19 +151,8 @@ func integrationCreateShortcut(spec integrationShortcutSpec) (_ *integrationShor
 		}
 	}()
 	directory := integrationObject{Path: filepath.Join(spec.Programs, "GoForj"), SDDL: integrationShortcutDirectorySDDL}
-	descriptor, err := windows.SecurityDescriptorFromString(directory.SDDL)
-	if err != nil {
-		return nil, err
-	}
-	attributes := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
-	pointer, _ := windows.UTF16PtrFromString(directory.Path)
-	err = windows.CreateDirectory(pointer, &attributes)
-	directory.Created = err == nil
-	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-		return nil, err
-	}
+	shortcut.Directory, directory.Created, err = integrationOpenShortcutDirectory(shortcut.Anchors[len(shortcut.Anchors)-1], directory)
 	shortcut.Receipt.Directory = directory
-	shortcut.Directory, err = openIntegrationDirectory(directory.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -171,12 +161,12 @@ func integrationCreateShortcut(spec integrationShortcutSpec) (_ *integrationShor
 		return nil, err
 	}
 	fileObject := integrationObject{Path: filepath.Join(directory.Path, "Harbor.lnk"), SDDL: integrationShortcutFileSDDL, Created: true}
-	descriptor, err = windows.SecurityDescriptorFromString(fileObject.SDDL)
+	descriptor, err := windows.SecurityDescriptorFromString(fileObject.SDDL)
 	if err != nil {
 		return nil, err
 	}
-	attributes.SecurityDescriptor = descriptor
-	pointer, _ = windows.UTF16PtrFromString(fileObject.Path)
+	attributes := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
+	pointer, _ := windows.UTF16PtrFromString(fileObject.Path)
 	handle, err := windows.CreateFile(pointer, windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL|windows.DELETE, windows.FILE_SHARE_READ, &attributes, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, err
@@ -196,6 +186,39 @@ func integrationCreateShortcut(spec integrationShortcutSpec) (_ *integrationShor
 	digest := sha256.Sum256(data)
 	shortcut.Receipt.SHA256 = hex.EncodeToString(digest[:])
 	return shortcut, nil
+}
+
+// integrationOpenShortcutDirectory retains the created directory atomically inside the pinned shell namespace.
+func integrationOpenShortcutDirectory(parent *os.File, object integrationObject) (*os.File, bool, error) {
+	descriptor, err := windows.SecurityDescriptorFromString(object.SDDL)
+	if err != nil {
+		return nil, false, err
+	}
+	name, err := windows.NewNTUnicodeString("GoForj")
+	if err != nil {
+		return nil, false, err
+	}
+	attributes := windows.OBJECT_ATTRIBUTES{
+		Length: uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})), RootDirectory: windows.Handle(parent.Fd()),
+		ObjectName: name, Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
+		SecurityDescriptor: descriptor,
+	}
+	var handle windows.Handle
+	var status windows.IO_STATUS_BLOCK
+	access := uint32(windows.DELETE | windows.FILE_GENERIC_READ | windows.READ_CONTROL | windows.SYNCHRONIZE)
+	options := uint32(windows.FILE_DIRECTORY_FILE | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT)
+	err = windows.NtCreateFile(&handle, access, &attributes, &status, nil, windows.FILE_ATTRIBUTE_DIRECTORY,
+		windows.FILE_SHARE_READ, windows.FILE_CREATE, options, 0, 0)
+	created := err == nil
+	if errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
+		attributes.SecurityDescriptor = nil
+		err = windows.NtCreateFile(&handle, access, &attributes, &status, nil, windows.FILE_ATTRIBUTE_DIRECTORY,
+			windows.FILE_SHARE_READ, windows.FILE_OPEN, options, 0, 0)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("retain Start Menu directory at creation: %w", err)
+	}
+	return os.NewFile(uintptr(handle), object.Path), created, nil
 }
 
 // integrationAdmitShortcut binds a receipt to the compiled fields before granting deletion authority.
@@ -290,11 +313,58 @@ func integrationOpenShortcutAnchors(programs string) (_ *integrationShortcut, re
 			return nil, err
 		}
 		shortcut.Anchors = append(shortcut.Anchors, file)
-		if err := admitProgramDataAnchor(windows.Handle(file.Fd())); err != nil {
+		if strings.EqualFold(current, programs) {
+			descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				return nil, err
+			}
+			if err := integrationAdmitShortcutNamespace(descriptor); err != nil {
+				return nil, fmt.Errorf("admit common Start Menu namespace %s: %w", current, err)
+			}
+		} else if err := admitProgramDataAnchor(windows.Handle(file.Fd())); err != nil {
 			return nil, err
 		}
 	}
 	return shortcut, nil
+}
+
+// integrationAdmitShortcutNamespace permits shell deletion rights while retained handles pin exact owned children.
+func integrationAdmitShortcutNamespace(descriptor *windows.SECURITY_DESCRIPTOR) error {
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		return err
+	}
+	trustedInstaller := "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+	if owner == nil || (owner.String() != administratorsSID && owner.String() != systemSID && owner.String() != trustedInstaller) {
+		return errors.New("common Start Menu namespace has foreign ownership")
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	if dacl == nil {
+		return errors.New("common Start Menu namespace has a null DACL")
+	}
+	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, index, &ace); err != nil {
+			return err
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			return errors.New("common Start Menu namespace has an unsupported ACL entry")
+		}
+		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
+			continue
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
+		if sid == administratorsSID || sid == systemSID || sid == trustedInstaller {
+			continue
+		}
+		if ace.Mask&(windows.GENERIC_ALL|windows.GENERIC_WRITE|windows.WRITE_DAC|windows.WRITE_OWNER|windows.FILE_WRITE_DATA|windows.FILE_APPEND_DATA|windows.FILE_WRITE_EA|windows.FILE_WRITE_ATTRIBUTES) != 0 {
+			return fmt.Errorf("common Start Menu namespace permits foreign metadata or contents mutation: SID=%s mask=%#x", sid, ace.Mask)
+		}
+	}
+	return nil
 }
 
 // retire removes exact created projections, preserving neighboring files and preexisting directories.
