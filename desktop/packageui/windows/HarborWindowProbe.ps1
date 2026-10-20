@@ -138,7 +138,9 @@ try {
     if ([HarborUIProfile]::HasRetainedProductExited($originalProcess)) { throw 'native close exited the original desktop process' }
     if ((Open-Harbor) -ne $originalProcess -or $script:windowHandle -ne $originalWindowHandle) { throw 'reopen did not restore the original native window and process' }
     Assert-UntouchedSnapshot 'reopened'
-    Wait-Until 'native Harbor application menu' { $null -ne (Find-Control 'Harbor' ([System.Windows.Automation.ControlType]::MenuItem)) } 15
+    $nativeMenu = [HarborUIProfile]::RetainedProductMenu($originalProcess, $script:windowHandle)
+    $nativeMenu | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'native-menu.json') -Encoding UTF8
+    if ('Harbor' -cnotin $nativeMenu -or @($nativeMenu | Where-Object { ($_ -split "`t")[0] -ceq 'Harbor/Quit Harbor UI' }).Count -ne 1) { throw 'native Harbor menu lacks the exact Quit action' }
     [HarborUIProfile]::ActivateRetainedProductWindow($originalProcess, $script:windowHandle)
     Wait-Until 'exact foreground installed window' { [HarborUIProfile]::IsRetainedProductWindowForeground($originalProcess, $script:windowHandle) } 10
     Wait-Until 'focusable Projects target' {

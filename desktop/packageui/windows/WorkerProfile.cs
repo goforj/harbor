@@ -17,6 +17,10 @@ public static class HarborUIProfile {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern IntPtr GetMenu(IntPtr window);
+    [DllImport("user32.dll")] static extern IntPtr GetSubMenu(IntPtr menu, int position);
+    [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr menu);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetMenuString(IntPtr menu, uint item, StringBuilder text, int maximum, uint flags);
     [DllImport("user32.dll", SetLastError=true)] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr data, int length, out int needed);
@@ -212,6 +216,30 @@ public static class HarborUIProfile {
         }
         if (!found) throw new Exception("exit observation has no exact retained product process");
         return true;
+    }
+    // RetainedProductMenu records the attached native menu rather than assuming UIAutomation exposes nonclient controls.
+    public static string[] RetainedProductMenu(int pid, IntPtr window) {
+        if (!IsRetainedProductWindowVisible(pid, window)) throw new Exception("menu target is not the visible admitted product window");
+        IntPtr menu=GetMenu(window);
+        if (menu == IntPtr.Zero) throw new Exception("the admitted product window has no attached native menu");
+        int count=GetMenuItemCount(menu);
+        if (count < 1 || count > 32) throw new Exception("unexpected native application menu size");
+        List<string> names=new List<string>();
+        for (int i=0; i<count; i++) {
+            StringBuilder name=new StringBuilder(1024);
+            if (GetMenuString(menu, (uint)i, name, name.Capacity, 0x400) < 1) throw new Exception("native application menu label is unavailable");
+            string label=name.ToString().Replace("&", "");
+            names.Add(label);
+            if (label != "Harbor") continue;
+            IntPtr sub=GetSubMenu(menu, i);
+            int items=GetMenuItemCount(sub);
+            if (sub == IntPtr.Zero || items < 1 || items > 32) throw new Exception("native Harbor submenu is unavailable");
+            for (int j=0; j<items; j++) {
+                name.Length=0;
+                if (GetMenuString(sub, (uint)j, name, name.Capacity, 0x400) > 0) names.Add("Harbor/" + name.ToString().Replace("&", ""));
+            }
+        }
+        return names.ToArray();
     }
     public static bool IsRetainedProductWindowForeground(int pid, IntPtr window) {
         if (!IsRetainedProductWindowVisible(pid, window)) throw new Exception("foreground target is not the visible admitted product window");
