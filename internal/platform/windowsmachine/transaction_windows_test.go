@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"testing"
 	"time"
@@ -70,29 +71,22 @@ func TestNativeMachineTransactionPreservesForeignAndAbandonedObjects(t *testing.
 				t.Fatal(err)
 			}
 			attributes := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
-			type created struct {
-				handle windows.Handle
-				err    error
+			object, err := windows.CreateMutexEx(&attributes, windows.StringToUTF16Ptr(name), 0, windows.READ_CONTROL|windows.SYNCHRONIZE|windows.MUTEX_MODIFY_STATE)
+			if err != nil {
+				t.Fatal(err)
 			}
-			ready := make(chan created, 1)
-			go func() {
-				if kind == "abandoned" {
-					runtime.LockOSThread()
+			defer windows.CloseHandle(object)
+			if kind == "abandoned" {
+				executable, err := os.Executable()
+				if err != nil {
+					t.Fatal(err)
 				}
-				flags := uint32(0)
-				if kind == "abandoned" {
-					flags = 1
+				command := exec.Command(executable, "-test.run=^TestNativeMachineAbandonmentChild$")
+				command.Env = append(os.Environ(), "HARBOR_MACHINE_ABANDONMENT_FIXTURE="+name)
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("owned abandonment fixture: %v: %s", err, output)
 				}
-				handle, err := windows.CreateMutexEx(&attributes, windows.StringToUTF16Ptr(name), flags, windows.READ_CONTROL|windows.SYNCHRONIZE|windows.MUTEX_MODIFY_STATE)
-				runtime.KeepAlive(descriptor)
-				ready <- created{handle, err}
-				// A locked goroutine exiting terminates its OS thread and leaves the retained owned mutex abandoned.
-			}()
-			object := <-ready
-			if object.err != nil {
-				t.Fatal(object.err)
 			}
-			defer windows.CloseHandle(object.handle)
 			called := false
 			if err := withMachineTransaction(context.Background(), name, func() error { called = true; return nil }); err == nil || called {
 				t.Fatalf("%s object admitted: %v, called=%v", kind, err, called)
@@ -129,4 +123,22 @@ func TestTransactionDescriptorRejectsAuthorityDrift(t *testing.T) {
 	if err := admitTransactionDescriptor(descriptor); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestNativeMachineAbandonmentChild ends only an explicitly created fixture process while it owns the parent's retained native mutex.
+func TestNativeMachineAbandonmentChild(t *testing.T) {
+	name := os.Getenv("HARBOR_MACHINE_ABANDONMENT_FIXTURE")
+	if name == "" {
+		t.Skip("owned child fixture was not requested")
+	}
+	runtime.LockOSThread()
+	mutex, err := windows.OpenMutex(windows.SYNCHRONIZE|windows.MUTEX_MODIFY_STATE, false, windows.StringToUTF16Ptr(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := windows.WaitForSingleObject(mutex, 0)
+	if err != nil || state != windows.WAIT_OBJECT_0 {
+		t.Fatalf("fixture ownership: state=%d error=%v", state, err)
+	}
+	os.Exit(0)
 }
