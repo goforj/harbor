@@ -59,6 +59,7 @@ def test_only_path(name):
                         ".github/workflows/linux-package-ui.yml",
                         ".github/workflows/windows-package-ui.yml",
                         ".github/workflows/windows-native-capacity.yml",
+                        ".github/workflows/windows-installation-admission.yml",
                         "internal/platform/loopback/backend_windows_diagnostic_integration_test.go"))
 
 

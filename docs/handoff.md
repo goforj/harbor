@@ -1,6 +1,18 @@
 # Development Handoff
 
-Status: PR #12 merged; fresh Unix packages pass native acceptance, Linux GUI lifecycle passes, macOS startup and Windows activation remain open
+Status: completing all installed platform gates; Linux GUI lifecycle passes, fresh macOS package and Windows foundation/native corrections are in progress
+
+## Completion continuation (2026-10-20)
+
+The user explicitly asked to continue until installed workflows function across all platforms, with sub-agents and separate CI. Do not stop at workflow creation, compilation, or a partial package pass. Root remains `/tmp/harbor-package-ui-20261019`, branch `test/installed-package-ui`, PR #13. Preserve the active user checkouts and installations. No release/tag/merge or signing purchase is authorized in this slice.
+
+Root product source `5b691b84ca6f2a2104fbd393177ad7ba7b08f46c` adds Standard scheduling for fresh macOS agents, exact frozen legacy Background admission, and failed-start fixture cleanup through ordinary unregister. Focused root/desktop tests and independent review pass. The macOS agent (`linux_gui`) owns package run [39373153230](https://github.com/goforj/harbor/actions/runs/39373153230) and the subsequent native GUI dispatch on `fix/macos-package-cold-start`; do not duplicate them. Profiling and timestamped process capture now distinguish typechecking, Vite, and Go phases without inspecting unrelated processes. Existing legacy agents are preserved rather than silently migrated.
+
+`windows_network` owns `/tmp/harbor-windows-network`, branch `fix/windows-network-diagnostics`. Commits `2f201425`, `bdc656fe`, and `f9981bef` pin only proof source sockets, add a creation-only Windows address correction, and exercise its deterministic native transition. Matrix [39373512859](https://github.com/goforj/harbor/actions/runs/39373512859) passed ten strict and ten diagnostic cycles on both Server 2022 and 2025. Deterministic native run [39373804046](https://github.com/goforj/harbor/actions/runs/39373804046) and independent review are pending. No Windows networking commits are integrated into root yet. Windows Set ignores input creation timestamps, so the guarded transition is optimistic observation-based mutation, not an atomic birth compare-and-set.
+
+`windows_native` owns `/tmp/harbor-windows-installed-foundation-20261019`, branch `fix/windows-installed-foundation`. Installation metadata commit `ccd247e` and native admission commit `e6e92b0` are reviewable slices. Actual runtime launch/demotion, migration locking, task ownership, installer layout/signing, and full installed GUI proof remain to complete. Its native unit gate is moving from the capacity workflow to separate `windows-installation-admission.yml`; root's source verifier allows only that exact new test workflow path. The network agent keeps ownership of the capacity matrix. `workflow_review` independently reviews both Windows slices. Do not cherry-pick a partial foundation as a completed feature.
+
+The suspended-child hosted fixture may establish functional behavior under verified effective restrictions. It must inspect the actual child and prove individual protected access denials plus positive private-data/IPC access. It does not establish genuine UAC consent, hostile-code containment, or a supported Windows client-desktop profile. Do not loosen token checks merely to obtain a green run. After final production integration, rebuild exact native packages and rerun the corresponding installed GUI gates with retained hashes, provenance, and cleanup receipts.
 
 ## Parallel platform continuation (2026-10-19)
 
