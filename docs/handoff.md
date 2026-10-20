@@ -36,3 +36,9 @@ Next: finish native Windows ownership and interrupted-operation settlement check
 - Cross-platform support requires native OS evidence. Cross-compilation and hosted functional fixtures do not prove genuine consent, client-desktop behavior, reboot recovery, Docker-provider behavior, signing, or release readiness.
 
 See [Delivery plan](./delivery-plan.md) for the broader product objective and [Testing](./testing.md) for required native profiles and release proof. The source tree and linked run artifacts are authoritative for present behavior.
+
+## Latest continuation: broker flow control
+
+Draft [PR #18](https://github.com/goforj/harbor/pull/18) tracks `feat/transparent-daemon-recovery`. At `0badda5`, Windows passes the initial native continuity suite but the ten-run repeat exposes a startup log stall. A deterministic unbuffered-transport test reproduces the broker command-queue deadlock: acknowledgements cannot drain while the sender blocks on output. The correction moves acknowledgement processing to the independent reader and allows client Close to interrupt an outbound write. Ten local race-enabled repetitions and the full local process race suite pass. The latest product correction still needs native Windows repetition and fresh packages.
+
+Windows producer `39506412675` succeeded at `0badda5`, but do not use it for the corrected feature. Unix producer `39506409177` was cancelled. Auto GUI runs for PR #18 were cancelled or failed admission while fresh matching packages were unavailable; rerun their newest head-specific runs once exact fresh producers succeed. Do not weaken product-source admission. No public release, merge, or user-installation update has occurred.

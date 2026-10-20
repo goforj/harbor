@@ -7,6 +7,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -295,5 +296,111 @@ func TestOutputBrokerServerContextCancellationClosesConnection(t *testing.T) {
 	case <-serverDone:
 	case <-time.After(time.Second):
 		t.Fatal("ServeConnection() did not stop after context cancellation")
+	}
+}
+
+// outputBrokerWriteStartedConnection exposes a pending transport write without adding buffering to net.Pipe.
+type outputBrokerWriteStartedConnection struct {
+	net.Conn
+	once    sync.Once
+	started chan struct{}
+}
+
+// Write announces the first blocked frame so the test can exercise independent inbound acknowledgements.
+func (connection *outputBrokerWriteStartedConnection) Write(body []byte) (int, error) {
+	connection.once.Do(func() { close(connection.started) })
+	return connection.Conn.Write(body)
+}
+
+// TestSessionBrokerAcknowledgementsProgressWhileOutputIsBlocked proves small transport buffers cannot deadlock valid control traffic.
+func TestSessionBrokerAcknowledgementsProgressWhileOutputIsBlocked(t *testing.T) {
+	for _, consumeOutput := range []bool{true, false} {
+		t.Run(fmt.Sprintf("consume-output-%t", consumeOutput), func(t *testing.T) {
+
+			proof := outputBrokerServerTestProof(t)
+			endpoint, err := newOutputBrokerEndpointReference()
+			if err != nil {
+				t.Fatal(err)
+			}
+			proof.EndpointReference = endpoint
+			journal, err := OpenOutputBrokerJournal(canonicalTestPath(t, t.TempDir()), proof.ProjectID, proof.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer journal.Close()
+			server, err := NewOutputBrokerServer(OutputBrokerServerConfig{Listener: outputBrokerServerTestListener{}, Journal: journal, Peer: proof, AttachmentTicket: "flow-control-fixture"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, subscription, err := journal.Subscribe(0, 8)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer subscription.Close()
+			frame, err := journal.Append(OutputBrokerStreamStdout, 0, []byte("live\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			serverSide, clientSide := net.Pipe()
+			started := make(chan struct{})
+			serverConnection := outputBrokerServerTestConnection{Conn: &outputBrokerWriteStartedConnection{Conn: serverSide, started: started}, peer: local.PeerIdentity{UserID: "501", ProcessID: 9002}, endpoint: endpoint}
+			deadline := time.Now().Add(2 * time.Second)
+			if err := serverSide.SetDeadline(deadline); err != nil {
+				t.Fatal(err)
+			}
+			if err := clientSide.SetDeadline(deadline); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() {
+				defer close(done)
+				done <- server.serveAttachedConnection(ctx, serverConnection, rpc.NewDefaultFrameReader(serverConnection), rpc.NewDefaultFrameWriter(serverConnection), subscription)
+			}()
+			defer func() {
+				cancel()
+				_ = clientSide.Close()
+				_ = serverSide.Close()
+				select {
+				case err := <-done:
+					if err != nil && !t.Failed() {
+						t.Errorf("join output server: %v", err)
+					}
+				case <-time.After(time.Second):
+					t.Error("output server did not join")
+				}
+			}()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("server did not start its outbound frame")
+			}
+			writer, reader := rpc.NewDefaultFrameWriter(clientSide), rpc.NewDefaultFrameReader(clientSide)
+			for count := 0; count < 32; count++ {
+				command := OutputBrokerCommand{Version: OutputBrokerProtocolVersion, Kind: OutputBrokerCommandAck, Cursor: 0}
+				if err := WriteOutputBrokerEnvelope(writer, OutputBrokerEnvelope{Version: OutputBrokerProtocolVersion, Kind: OutputBrokerEnvelopeCommand, Command: &command}); err != nil {
+					t.Fatalf("valid acknowledgement stalled behind blocked output: %v", err)
+				}
+			}
+			if consumeOutput {
+				record, err := ReadOutputBrokerEnvelope(reader)
+				if err != nil || record.Record == nil || record.Record.Frame == nil || record.Record.Frame.Text != frame.Text {
+					t.Fatalf("output did not resume: %#v, %v", record, err)
+				}
+			}
+			command := OutputBrokerCommand{Version: OutputBrokerProtocolVersion, Kind: OutputBrokerCommandClose}
+			if err := WriteOutputBrokerEnvelope(writer, OutputBrokerEnvelope{Version: OutputBrokerProtocolVersion, Kind: OutputBrokerEnvelopeCommand, Command: &command}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("client close did not interrupt blocked output")
+			}
+
+		})
 	}
 }
