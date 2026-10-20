@@ -63,11 +63,10 @@ func verifySignature(file *os.File, publisher string) (result error) {
 	if native == 0 {
 		return errors.New("Windows Authenticode provider returned no primary certificate")
 	}
-	prefix := (*providerCertificatePrefix)(unsafe.Pointer(native))
-	if prefix.size < uint32(unsafe.Sizeof(*prefix)) || prefix.certificate == nil {
-		return errors.New("Windows Authenticode primary certificate has an invalid layout")
+	certificate, err := readProviderCertificatePrefix(native)
+	if err != nil {
+		return err
 	}
-	certificate := prefix.certificate
 	if certificate.EncodedCert == nil || certificate.Length == 0 || certificate.Length > 64*1024 {
 		return errors.New("Windows Authenticode primary certificate exceeds bounds")
 	}
@@ -76,4 +75,17 @@ func verifySignature(file *os.File, publisher string) (result error) {
 		return errors.New("Windows executable or script signer differs from compiled installed publisher")
 	}
 	return nil
+}
+
+// readProviderCertificatePrefix bounds native reads while the caller retains the owning verified trust state.
+func readProviderCertificatePrefix(address uintptr) (*windows.CertContext, error) {
+	var prefix providerCertificatePrefix
+	var copied uintptr
+	if err := windows.ReadProcessMemory(windows.CurrentProcess(), address, (*byte)(unsafe.Pointer(&prefix)), unsafe.Sizeof(prefix), &copied); err != nil {
+		return nil, fmt.Errorf("read verified Windows provider certificate: %w", err)
+	}
+	if copied != unsafe.Sizeof(prefix) || prefix.size < uint32(unsafe.Sizeof(prefix)) || prefix.certificate == nil {
+		return nil, errors.New("Windows Authenticode primary certificate has an invalid layout")
+	}
+	return prefix.certificate, nil
 }
