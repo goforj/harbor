@@ -18,7 +18,7 @@ import (
 
 // TestWindowsMaintenanceDispatch rejects additional authority arguments before session admission.
 func TestWindowsMaintenanceDispatch(t *testing.T) {
-	for _, arguments := range [][]string{nil, {"--unknown"}, {"--register-task", "--sid=S-1-5-18"}, {"--remove-task", "extra"}, {"--uninstall", "C:\\foreign"}, {"--finish-uninstall"}, {"--finish-uninstall", "--parent-handle=0"}, {"--finish-uninstall", "--parent-handle=04"}, {"--finish-uninstall", "--parent-handle=4", "extra"}} {
+	for _, arguments := range [][]string{{"--unknown"}, {"--register-task", "--sid=S-1-5-18"}, {"--remove-task", "extra"}, {"--uninstall", "C:\\foreign"}, {"--finish-uninstall"}, {"--finish-uninstall", "--parent-handle=0"}, {"--finish-uninstall", "--parent-handle=04"}, {"--finish-uninstall", "--parent-handle=4", "extra"}} {
 		if err := runMaintenance(context.Background(), arguments, maintenanceOperations{}); err == nil {
 			t.Fatalf("admitted arguments %q", arguments)
 		}
@@ -27,7 +27,7 @@ func TestWindowsMaintenanceDispatch(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			var events []string
 			operations := maintenanceOperations{
-				verify:    func() error { events = append(events, "verify"); return nil },
+				verify:    func(bool) error { events = append(events, "verify"); return nil },
 				register:  func(context.Context) error { events = append(events, "register"); return nil },
 				remove:    func(context.Context) error { events = append(events, "remove"); return nil },
 				bootstrap: func(context.Context) error { events = append(events, "bootstrap"); return nil },
@@ -59,7 +59,7 @@ func TestWindowsMaintenanceDispatch(t *testing.T) {
 				t.Fatal(events)
 			}
 			denied := errors.New("different interactive administrator")
-			operations.verify = func() error { return denied }
+			operations.verify = func(bool) error { return denied }
 			if err := runMaintenance(context.Background(), arguments, operations); !errors.Is(err, denied) {
 				t.Fatal(err)
 			}
@@ -251,5 +251,32 @@ func TestWindowsMaintenanceReceipt(t *testing.T) {
 	failed := maintenanceReceipt(selection, original, continuation, errors.New(strings.Repeat("x", 5000)))
 	if failed.Status != "failed" || len(failed.Error) != 4096 || failed.InstallationID != complete.InstallationID || failed.Continuation.NativeBirth != continuation.NativeBirth {
 		t.Fatalf("failed receipt=%+v", failed)
+	}
+}
+
+// TestWindowsMaintenanceUserEntrypoints accepts only the two conventional uninstall aliases and preserves quiet errors.
+func TestWindowsMaintenanceUserEntrypoints(t *testing.T) {
+	for _, arguments := range [][]string{nil, {"--silent"}} {
+		called := false
+		operations := maintenanceOperations{verify: func(allowElevation bool) error {
+			if !allowElevation {
+				t.Fatal("uninstall entry did not permit explicit elevation")
+			}
+			return nil
+		}, bootstrap: func(context.Context) error { called = true; return nil }}
+		if err := runMaintenance(context.Background(), arguments, operations); err != nil || !called {
+			t.Fatalf("arguments=%q,called=%v,error=%v", arguments, called, err)
+		}
+	}
+	if !interactiveMaintenance(nil) || !interactiveMaintenance([]string{"--uninstall"}) {
+		t.Fatal("interactive uninstall error would be hidden")
+	}
+	for _, arguments := range [][]string{{"--silent"}, {"--finish-uninstall"}, {"--register-task"}, {"--remove-task"}, {"--hold-stopped"}} {
+		if interactiveMaintenance(arguments) {
+			t.Fatalf("internal/quiet role would display modal error: %q", arguments)
+		}
+	}
+	if unsafe.Sizeof(maintenanceShellExecuteInfo{}) != 112 {
+		t.Fatalf("SHELLEXECUTEINFOW layout=%d", unsafe.Sizeof(maintenanceShellExecuteInfo{}))
 	}
 }

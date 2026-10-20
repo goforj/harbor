@@ -35,7 +35,7 @@ var maintenanceStageName = regexp.MustCompile(`^HarborUninstall-[a-f0-9]{32}$`)
 
 // maintenanceOperations separates allowlisted orchestration from native process and filesystem authority.
 type maintenanceOperations struct {
-	verify    func() error
+	verify    func(bool) error
 	register  func(context.Context) error
 	remove    func(context.Context) error
 	bootstrap func(context.Context) error
@@ -46,17 +46,22 @@ type maintenanceOperations struct {
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	operations := maintenanceOperations{verify: verifyMaintenanceSession, register: registerMaintenanceTask, remove: removeMaintenanceTask, bootstrap: bootstrapUninstall, finish: finishUninstall}
+	operations := maintenanceOperations{verify: verifyMaintenanceSession, register: registerMaintenanceTask, remove: removeMaintenanceTask, bootstrap: func(ctx context.Context) error {
+		return requestMaintenanceUninstall(ctx, len(os.Args) == 2 && os.Args[1] == "--silent")
+	}, finish: finishUninstall}
 	if err := runMaintenance(ctx, os.Args[1:], operations); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Harbor maintenance: %v\n", err)
+		if interactiveMaintenance(os.Args[1:]) {
+			showMaintenanceError(err)
+		}
 		os.Exit(1)
 	}
 }
 
 // runMaintenance validates internal handle syntax before granting any native maintenance operation.
 func runMaintenance(ctx context.Context, arguments []string, operations maintenanceOperations) error {
-	if len(arguments) == 0 {
-		return errors.New("a Windows maintenance operation is required")
+	if len(arguments) == 0 || (len(arguments) == 1 && arguments[0] == "--silent") {
+		arguments = []string{"--uninstall"}
 	}
 	action := arguments[0]
 	var parent windows.Handle
@@ -72,7 +77,7 @@ func runMaintenance(ctx context.Context, arguments []string, operations maintena
 	} else if len(arguments) != 1 || (action != "--register-task" && action != "--remove-task" && action != "--uninstall") {
 		return errors.New("Windows maintenance operation or arguments are not admitted")
 	}
-	if err := operations.verify(); err != nil {
+	if err := operations.verify(action == "--uninstall"); err != nil {
 		return fmt.Errorf("admit maintenance session: %w", err)
 	}
 	switch action {
@@ -102,8 +107,8 @@ func parseMaintenanceParent(argument string) (windows.Handle, error) {
 }
 
 // verifyMaintenanceSession refuses over-the-shoulder elevation and unprivileged machine mutation before admission.
-func verifyMaintenanceSession() error {
-	if !windows.GetCurrentProcessToken().IsElevated() {
+func verifyMaintenanceSession(allowElevation bool) error {
+	if !allowElevation && !windows.GetCurrentProcessToken().IsElevated() {
 		return errors.New("Windows maintenance requires elevated same-user approval")
 	}
 	return windowsinstallation.VerifyInteractiveSession()
@@ -702,4 +707,127 @@ func maintenanceReceipt(selection windowsinstallation.Selection, original, conti
 		}
 	}
 	return receipt
+}
+
+// interactiveMaintenance limits modal error reporting to explicit user uninstall entrypoints.
+func interactiveMaintenance(arguments []string) bool {
+	return len(arguments) == 0 || (len(arguments) == 1 && arguments[0] == "--uninstall")
+}
+
+// showMaintenanceError makes interactive bootstrap failures visible for the windowless maintenance executable.
+func showMaintenanceError(err error) {
+	text, conversion := windows.UTF16PtrFromString("Harbor could not uninstall.\n\n" + err.Error())
+	if conversion != nil {
+		text = windows.StringToUTF16Ptr("Harbor could not uninstall because installation admission failed.")
+	}
+	title := windows.StringToUTF16Ptr("Harbor")
+	_, _, _ = windows.NewLazySystemDLL("user32.dll").NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), 0x10)
+}
+
+// maintenanceShellExecuteInfo matches SHELLEXECUTEINFOW for one fixed, user-approved elevation request.
+type maintenanceShellExecuteInfo struct {
+	Size       uint32
+	Mask       uint32
+	Window     windows.Handle
+	Verb       *uint16
+	File       *uint16
+	Parameters *uint16
+	Directory  *uint16
+	Show       int32
+	Instance   windows.Handle
+	IDList     uintptr
+	Class      *uint16
+	ClassKey   windows.Handle
+	HotKey     uint32
+	Icon       windows.Handle
+	Process    windows.Handle
+}
+
+// requestMaintenanceUninstall requests explicit elevation only for the exact admitted installed uninstaller.
+func requestMaintenanceUninstall(ctx context.Context, silent bool) (result error) {
+	if windows.GetCurrentProcessToken().IsElevated() {
+		return bootstrapUninstall(ctx)
+	}
+	installation, err := admitMaintenance()
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, installation.Close()) }()
+	path, err := installation.Path("uninstaller")
+	if err != nil {
+		return err
+	}
+	current, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(current, path) {
+		return errors.New("uninstall elevation requires the fixed admitted Uninstall.exe")
+	}
+	source, err := openMaintenanceObject(path, false)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, source.Close()) }()
+	if err := installation.VerifyUninstallerCopy(source); err != nil {
+		return err
+	}
+	if err := admitMaintenanceImage(source); err != nil {
+		return err
+	}
+	operation := "--uninstall"
+	if silent {
+		operation = "--silent"
+	}
+	info := maintenanceShellExecuteInfo{Size: uint32(unsafe.Sizeof(maintenanceShellExecuteInfo{})), Mask: 0x40 | 0x100 | 0x400, Verb: windows.StringToUTF16Ptr("runas"), File: windows.StringToUTF16Ptr(path), Parameters: windows.StringToUTF16Ptr(operation), Directory: windows.StringToUTF16Ptr(filepath.Dir(path)), Show: 1}
+	ok, _, callErr := windows.NewLazySystemDLL("shell32.dll").NewProc("ShellExecuteExW").Call(uintptr(unsafe.Pointer(&info)))
+	runtime.KeepAlive(info)
+	if ok == 0 {
+		return fmt.Errorf("request same-user uninstall elevation: %w", callErr)
+	}
+	if info.Process == 0 {
+		return errors.New("uninstall elevation returned no retained process receipt")
+	}
+	defer func() { result = errors.Join(result, windows.CloseHandle(info.Process)) }()
+	image := make([]uint16, 32768)
+	size := uint32(len(image))
+	if err := windows.QueryFullProcessImageName(info.Process, 0, &image[0], &size); err != nil {
+		return err
+	}
+	if !strings.EqualFold(windows.UTF16ToString(image[:size]), path) {
+		return errors.New("uninstall elevation selected a different executable")
+	}
+	facts, err := inspectMaintenanceProcess(info.Process)
+	if err != nil {
+		return err
+	}
+	var session uint32
+	if err := maintenanceTokenSession(windows.GetCurrentProcessToken(), &session); err != nil {
+		return err
+	}
+	if facts.UserSID != installation.Selection().UserSID || facts.Session != session {
+		return errors.New("uninstall elevation selected a different user or session")
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		state, err := windows.WaitForSingleObject(info.Process, 50)
+		if err != nil {
+			return err
+		}
+		if state == windows.WAIT_OBJECT_0 {
+			var code uint32
+			if err := windows.GetExitCodeProcess(info.Process, &code); err != nil {
+				return err
+			}
+			if code != 0 {
+				return fmt.Errorf("elevated uninstall bootstrap exited with code %d", code)
+			}
+			return nil
+		}
+		if state != uint32(windows.WAIT_TIMEOUT) {
+			return errors.New("elevated uninstall returned an unexpected wait state")
+		}
+	}
 }
