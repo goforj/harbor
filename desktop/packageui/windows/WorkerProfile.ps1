@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Security.Principal;
 using System.Text;
+using System.Collections.Generic;
 public static class HarborUIProfile {
     [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
@@ -43,9 +44,27 @@ public static class HarborUIProfile {
             if (TokenInteger(token, 12) != Process.GetCurrentProcess().SessionId) throw new Exception("product changed interactive session");
         } finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
     }
+    static readonly List<IntPtr> launches = new List<IntPtr>();
+    [DllImport("kernel32.dll", SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateProcess(IntPtr process, uint code);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr process, uint milliseconds);
+    public static void QuiesceLaunchedUIs() {
+        foreach (IntPtr process in launches) {
+            uint code;
+            if (!GetExitCodeProcess(process, out code)) throw new System.ComponentModel.Win32Exception();
+            if (code == 259 && !TerminateProcess(process, 1)) throw new System.ComponentModel.Win32Exception();
+            if (WaitForSingleObject(process, 10000) != 0) throw new Exception("launched UI did not exit within the cleanup bound");
+        }
+    }
+    public static void CloseLaunchReceipts() {
+        foreach (IntPtr process in launches) CloseHandle(process);
+        launches.Clear();
+    }
     public static int Launch(string application, string directory) {
         IntPtr original = IntPtr.Zero, restricted = IntPtr.Zero, administrators = IntPtr.Zero, medium = IntPtr.Zero, label = IntPtr.Zero;
         ProcessInfo created = new ProcessInfo();
+        bool recorded = false;
         try {
             if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 0xF01FF, out original)) throw new System.ComponentModel.Win32Exception();
             if (!ConvertStringSidToSid("S-1-5-32-544", out administrators)) throw new System.ComponentModel.Win32Exception();
@@ -58,12 +77,19 @@ public static class HarborUIProfile {
             if (!SetTokenInformation(restricted, 25, label, length)) throw new System.ComponentModel.Win32Exception();
             StartupInfo startup = new StartupInfo(); startup.cb=Marshal.SizeOf(typeof(StartupInfo)); startup.desktop="winsta0\\default";
             if (application.Contains("\"")) throw new Exception("invalid executable path");
-            if (!CreateProcessAsUser(restricted, application, new StringBuilder("\""+application+"\""), IntPtr.Zero, IntPtr.Zero, false, 0, IntPtr.Zero, directory, ref startup, out created)) throw new System.ComponentModel.Win32Exception();
+            if (!CreateProcessAsUser(restricted, application, new StringBuilder("\""+application+"\""), IntPtr.Zero, IntPtr.Zero, false, 4, IntPtr.Zero, directory, ref startup, out created)) throw new System.ComponentModel.Win32Exception();
+            launches.Add(created.process);
+            recorded = true;
             AssertProductProcess((int)created.pid);
+            if (ResumeThread(created.thread) == uint.MaxValue) throw new System.ComponentModel.Win32Exception();
             return (int)created.pid;
         } finally {
             if (created.thread != IntPtr.Zero) CloseHandle(created.thread);
-            if (created.process != IntPtr.Zero) CloseHandle(created.process);
+            if (created.process != IntPtr.Zero && !recorded) {
+                TerminateProcess(created.process, 1);
+                WaitForSingleObject(created.process, 10000);
+                CloseHandle(created.process);
+            }
             if (label != IntPtr.Zero) Marshal.FreeHGlobal(label);
             if (medium != IntPtr.Zero) LocalFree(medium);
             if (administrators != IntPtr.Zero) LocalFree(administrators);

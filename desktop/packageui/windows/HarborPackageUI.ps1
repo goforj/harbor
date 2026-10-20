@@ -91,7 +91,8 @@ function Assert-HTTPS {
     if ($response.StatusCode -ne 200) { throw 'system-trusted HTTPS did not return 200' }
 }
 function Save-Observation([string]$Name) {
-    if ($null -ne $script:window) {
+    try {
+      if ($null -ne $script:window) {
         $controls = $script:window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
         $facts = for ($index=0; $index -lt [Math]::Min($controls.Count, 3000); $index++) {
             $current = $controls.Item($index).Current
@@ -99,6 +100,8 @@ function Save-Observation([string]$Name) {
         }
         $facts | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $EvidenceDirectory "$Name-controls.json") -Encoding utf8
     }
+    } catch { Write-Warning "control diagnostics failed: $_" }
+    try {
     $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
     $bitmap = [System.Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -106,6 +109,7 @@ function Save-Observation([string]$Name) {
         $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
         $bitmap.Save((Join-Path $EvidenceDirectory "$Name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
+    } catch { Write-Warning "screenshot diagnostics failed: $_" }
     try { Get-Snapshot | ConvertTo-Json -Depth 30 | Set-Content (Join-Path $EvidenceDirectory "$Name-snapshot.json") -Encoding utf8 } catch { Write-Warning $_ }
 }
 
@@ -115,9 +119,13 @@ try {
     $originalProcess = Open-Harbor
     Wait-Until 'medium-integrity installed daemon' { @(Get-Process -Name harbord -ErrorAction SilentlyContinue).Count -eq 1 } 60
     $daemonProcess = Get-Process -Name harbord
+    $null = $daemonProcess.Handle
     [HarborUIProfile]::AssertProductProcess($daemonProcess.Id)
     if ($daemonProcess.Path -cne (Join-Path $InstallRoot 'harbord.exe')) { throw 'daemon process is outside admitted installation' }
     Save-Observation 'installed-first-launch'
+    Wait-Until 'setup action or configured networking' {
+        $null -ne (Find-Control 'Set up secure networking' ([System.Windows.Automation.ControlType]::Button)) -or (Get-Snapshot).network_setup.configured -eq $true
+    } 30
     $setup = Find-Control 'Set up secure networking' ([System.Windows.Automation.ControlType]::Button)
     if ($null -ne $setup) { Invoke-Button 'Set up secure networking' }
     Wait-Until 'secure networking configured' { (Get-Snapshot).network_setup.configured -eq $true } 120
@@ -169,6 +177,39 @@ try {
         ui_quit='daemon and project remain ready'; ui_reopen='registration retained and HTTPS 200'; final_project_state='stopped'
     } | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'installed-ui.json') -Encoding utf8
 } catch {
+    $originalFailure = $_
     Save-Observation 'failure'
-    throw
+    try { [HarborUIProfile]::QuiesceLaunchedUIs() } catch { Write-Warning "failed to quiesce exact launched UI handles: $_" }
+    throw $originalFailure
+} finally {
+    $cleanup = [ordered]@{ gui_quiescent=$false; fixtures_stopped=$false; network_released=$false; daemon_absent=$false; retained_files=@{} }
+    try {
+        [HarborUIProfile]::QuiesceLaunchedUIs()
+        $cleanup.gui_quiescent = $true
+        $remaining = @(Get-Process -Name harbor-desktop -ErrorAction SilentlyContinue)
+        if ($remaining.Count -ne 0) { throw 'an unrecorded desktop process prevents host cleanup' }
+        $registered = Get-Project
+        if ($null -ne $registered -and $registered.state -cne 'stopped') {
+            & $cliPath project stop $registered.id
+            if ($LASTEXITCODE -ne 0) { throw 'fixture stop was not admitted' }
+            Wait-Until 'stopped cleanup fixture' { (Get-Project).state -ceq 'stopped' } 120
+        }
+        $cleanup.fixtures_stopped = $true
+        & $cliPath daemon release
+        if ($LASTEXITCODE -ne 0) { throw 'network release did not complete' }
+        $cleanup.network_released = $true
+        & $cliPath daemon stop
+        if ($LASTEXITCODE -ne 0) { throw 'daemon shutdown was not acknowledged' }
+        if ($null -ne $daemonProcess) {
+            Wait-Until 'exact installed daemon process exit' { $daemonProcess.HasExited } 30
+        }
+        if (@(Get-Process -Name harbord -ErrorAction SilentlyContinue).Count -ne 0) { throw 'a daemon process remains after shutdown' }
+        $cleanup.daemon_absent = $true
+        $paths = @((Join-Path $env:LOCALAPPDATA 'GoForj\Harbor\harbor.db'), (Join-Path $projectDirectory '.goforj.yml'), (Join-Path $projectDirectory 'go.mod'))
+        foreach ($path in $paths) {
+            if (Test-Path -LiteralPath $path -PathType Leaf) { $cleanup.retained_files[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
+        }
+    } catch { $cleanup.error = $_.ToString(); Write-Warning "partial installed cleanup: $_" }
+    $cleanup | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $EvidenceDirectory 'cleanup.json') -Encoding utf8
+    [HarborUIProfile]::CloseLaunchReceipts()
 }
