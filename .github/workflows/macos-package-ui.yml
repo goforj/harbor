@@ -95,6 +95,12 @@ jobs:
           launchctl getenv PATH > "$RUNNER_TEMP/harbor-ui-launchd-path.original" || test ! -s "$RUNNER_TEMP/harbor-ui-launchd-path.original"
           launchctl setenv PATH "$PATH"
 
+      - name: Enable keyboard navigation on the disposable desktop
+        run: |
+          set -euo pipefail
+          defaults read NSGlobalDomain AppleKeyboardUIMode > "$RUNNER_TEMP/harbor-ui-keyboard.original" 2>/dev/null || test ! -s "$RUNNER_TEMP/harbor-ui-keyboard.original"
+          defaults write NSGlobalDomain AppleKeyboardUIMode -int 3
+
       - name: Install verified native package
         env:
           VERIFIED_PACKAGE: ${{ steps.package.outputs.package }}
@@ -210,4 +216,16 @@ jobs:
             launchctl setenv PATH "$(cat "$original")"
           else
             launchctl unsetenv PATH
+          fi
+
+      - name: Restore disposable desktop keyboard preference
+        if: always()
+        run: |
+          set -euo pipefail
+          original="$RUNNER_TEMP/harbor-ui-keyboard.original"
+          if [[ ! -f "$original" ]]; then exit 0; fi
+          if [[ -s "$original" ]]; then
+            defaults write NSGlobalDomain AppleKeyboardUIMode -int "$(cat "$original")"
+          else
+            defaults delete NSGlobalDomain AppleKeyboardUIMode
           fi

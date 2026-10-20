@@ -67,6 +67,10 @@ final class HarborPackageUITests: XCTestCase {
         try assertProject(identifier, state: "ready")
         _ = try command("/usr/bin/open", ["-n", installedApplication.path])
         try awaitWindow()
+        try waitUntil("single-instance handoff completes") {
+            let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.goforj.harbor")
+            return running.count == 1 && running.first?.processIdentifier == originalProcess
+        }
         XCTAssertEqual(try installedProcess(), originalProcess, "second launch must restore the existing window")
         try assertProject(identifier, state: "ready")
 
@@ -150,11 +154,18 @@ final class HarborPackageUITests: XCTestCase {
     private func setCheckbox(_ label: String, selected: Bool) throws {
         let checkbox = application.checkBoxes[label]
         XCTAssertTrue(checkbox.waitForExistence(timeout: 20), "missing checkbox: \(label)\n\(application.debugDescription)")
-        if (checkbox.value as? String == "1") != selected {
+        if try checkboxIsSelected(checkbox) != selected {
             try focus(checkbox)
             checkbox.typeKey(" ", modifierFlags: [])
         }
-        XCTAssertEqual(checkbox.value as? String, selected ? "1" : "0", label)
+        XCTAssertEqual(try checkboxIsSelected(checkbox), selected, label)
+    }
+
+    private func checkboxIsSelected(_ checkbox: XCUIElement) throws -> Bool {
+        if let value = checkbox.value as? NSNumber { return value.boolValue }
+        let value = try XCTUnwrap(checkbox.value as? String)
+        XCTAssertTrue(value == "0" || value == "1", "unexpected checkbox value: \(value)")
+        return value == "1"
     }
 
     // focus uses the real keyboard path so WebKit scrolls fields above the fixed dialog footer.
