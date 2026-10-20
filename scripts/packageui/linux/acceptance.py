@@ -96,10 +96,15 @@ def checkbox(label, selected):
 def select(label, option):
     node = element(label, ['combo box'])
     focus(node)
+    key('alt+Down')
     key('Home')
     command('xdotool', 'type', '--clearmodifiers', option)
     key('Return')
-    wait('selected option ' + option, lambda: node.querySelection().getSelectedChild(0).name == option)
+    # WebKit exposes option state through its menu children; the combo itself
+    # intentionally has no AT-SPI Selection interface.
+    wait('selected option ' + option, lambda: any(
+        child.name == option and child.getState().contains(pyatspi.STATE_SELECTED)
+        for child in nodes(node)))
 
 
 def snapshot():
@@ -127,7 +132,7 @@ def capture(name):
     command('scrot', str(EVIDENCE / (name + '.png')))
     app = application()
     if app is not None:
-        rows = [node.getRoleName() + ': ' + node.name for node in nodes(app)]
+        rows = [node.getRoleName() + ': ' + node.name + ' states=' + str(node.getState().getStates()) for node in nodes(app)]
         (EVIDENCE / (name + '-accessibility.txt')).write_text('\n'.join(rows))
 
 
