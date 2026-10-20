@@ -17,11 +17,31 @@ class CaptureTraceTests(unittest.TestCase):
             trace = root / "project/_data/harbor/forj-dev.log"
             trace.parent.mkdir(parents=True)
             trace.write_text("frontend dependencies still starting\n")
+            package = root / "project/cmd/app/frontend/package.json"
+            package.parent.mkdir(parents=True)
+            package.write_text('{"scripts":{"build":"vite build"}}')
             evidence = temporary / "evidence"
             capture_macos.retain_traces(temporary, evidence)
             trace.unlink()
             capture_macos.retain_traces(temporary, evidence)
             self.assertEqual((evidence / (root.name + "-live-launch.log")).read_text(), "frontend dependencies still starting\n")
+            self.assertEqual((evidence / (root.name + "-cmd-app-frontend-package.json")).read_text(), package.read_text())
+
+    def test_only_copies_npm_logs_naming_the_fixture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            root = temporary / "harbor-package-ui-71BE2309-89EF-4120-B1EE-3EAD3C1106EE"
+            trace = root / "project/_data/harbor/forj-dev.log"
+            trace.parent.mkdir(parents=True)
+            trace.write_text("starting npm")
+            logs = temporary / "logs"
+            logs.mkdir()
+            (logs / "fixture-debug-0.log").write_text("cwd " + str(root / "project/cmd/app/frontend"))
+            (logs / "foreign-debug-0.log").write_text("another project")
+            evidence = temporary / "evidence"
+            capture_macos.retain_traces(temporary, evidence, logs)
+            self.assertEqual(len(list(evidence.glob("*-npm-*"))), 1)
+            self.assertTrue((evidence / (root.name + "-npm-fixture-debug-0.log")).is_file())
 
     def test_rejects_linked_or_foreign_traces(self):
         with tempfile.TemporaryDirectory() as directory:
