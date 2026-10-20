@@ -56,7 +56,9 @@ def test_only_path(name):
     """test_only_path excludes only the verification harness and documentation from product-source matching."""
     return (name.startswith(("desktop/packageui/", "scripts/packageui/", "docs/"))
             or name in ("README.md", ".github/workflows/macos-package-ui.yml",
-                        ".github/workflows/linux-package-ui.yml"))
+                        ".github/workflows/linux-package-ui.yml",
+                        ".github/workflows/windows-package-ui.yml",
+                        ".github/workflows/windows-native-capacity.yml"))
 
 
 def verify_product(expected, current):
