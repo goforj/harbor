@@ -60,14 +60,15 @@ function Set-Selection([string]$Name, [string]$Value) {
     [System.Windows.Forms.SendKeys]::SendWait($Value + '{ENTER}')
 }
 function Open-Harbor {
-    $shell = New-Object -ComObject Shell.Application
-    $launcher = Join-Path $PSScriptRoot 'LaunchHarbor.ps1'
-    $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $launcher + '" -DesktopPath "' + $desktopPath + '" -ToolsPath "' + $ToolsPath + '"'
-    $shell.ShellExecute((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'), $arguments, $InstallRoot, 'open', 0)
+    $priorPath = $env:PATH
+    try {
+        $env:PATH = "$ToolsPath;$env:PATH"
+        $launched = [HarborUIProfile]::Launch($desktopPath, $InstallRoot)
+    } finally { $env:PATH = $priorPath }
     Wait-Until 'one installed desktop process' { @(Get-Process -Name harbor-desktop -ErrorAction SilentlyContinue).Count -eq 1 } 60
     $process = Get-Process -Name harbor-desktop
     if ($process.Path -cne $desktopPath) { throw 'desktop process is outside admitted installation' }
-    if ([HarborUIProfile]::Integrity($process.Id) -ne 8192) { throw 'installed desktop must run at medium integrity' }
+    [HarborUIProfile]::AssertProductProcess($process.Id)
     Wait-Until 'visible installed window' {
         $process.Refresh()
         if ($process.MainWindowHandle -eq [IntPtr]::Zero) { return $false }
@@ -112,6 +113,10 @@ function Save-Observation([string]$Name) {
 Assert-InteractiveWorker
 try {
     $originalProcess = Open-Harbor
+    Wait-Until 'medium-integrity installed daemon' { @(Get-Process -Name harbord -ErrorAction SilentlyContinue).Count -eq 1 } 60
+    $daemonProcess = Get-Process -Name harbord
+    [HarborUIProfile]::AssertProductProcess($daemonProcess.Id)
+    if ($daemonProcess.Path -cne (Join-Path $InstallRoot 'harbord.exe')) { throw 'daemon process is outside admitted installation' }
     Save-Observation 'installed-first-launch'
     $setup = Find-Control 'Set up secure networking' ([System.Windows.Automation.ControlType]::Button)
     if ($null -ne $setup) { Invoke-Button 'Set up secure networking' }
