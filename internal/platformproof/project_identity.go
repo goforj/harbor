@@ -439,9 +439,11 @@ func servePayload(ctx context.Context, listener net.Listener, payload signedPayl
 		result <- fmt.Errorf("accept proof connection on %s: %w", listener.Addr(), err)
 		return
 	}
-	defer connection.Close()
 	_ = connection.SetWriteDeadline(deadlineFromContext(ctx))
-	if err := json.NewEncoder(connection).Encode(payload); err != nil {
+	writeErr := json.NewEncoder(connection).Encode(payload)
+	// Native address cleanup must not race an accepted proof socket still being closed.
+	_ = connection.Close()
+	if err := writeErr; err != nil {
 		result <- fmt.Errorf("write proof payload on %s: %w", listener.Addr(), err)
 		return
 	}
