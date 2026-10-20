@@ -9,7 +9,7 @@ import (
 // fixtureMetadata returns a complete deterministic Windows release identity without accessing host state.
 func fixtureMetadata(t *testing.T) (Manifest, Selection) {
 	t.Helper()
-	manifest := Manifest{SchemaVersion: 1, ProductID: ProductID, Version: "0.1.0-dev.1", SourceRevision: strings.Repeat("a", 40), ReleaseSequence: 1, SignerThumbprint: strings.Repeat("A", 40), Components: Plans(1)}
+	manifest := Manifest{Architecture: "amd64", SchemaVersion: 1, ProductID: ProductID, Version: "0.1.0-dev.1", SourceRevision: strings.Repeat("a", 40), ReleaseSequence: 1, SignerThumbprint: strings.Repeat("A", 40), Components: Plans(1)}
 	for index := range manifest.Components {
 		manifest.Components[index].Size = 1
 		manifest.Components[index].SHA256 = strings.Repeat("a", 64)
@@ -35,7 +35,7 @@ func TestMetadataSelectionAndManifestRejectDrift(t *testing.T) {
 			t.Fatal("drifted selection admitted")
 		}
 	}
-	for _, mutate := range []func(*Manifest){func(m *Manifest) { m.SchemaVersion++ }, func(m *Manifest) { m.ProductID = "foreign" }, func(m *Manifest) { m.ReleaseSequence++ }, func(m *Manifest) { m.SignerThumbprint = strings.Repeat("B", 40) }, func(m *Manifest) { m.Version = "stable" }, func(m *Manifest) { m.SourceRevision = "HEAD" }, func(m *Manifest) { m.Components = m.Components[:1] }, func(m *Manifest) { m.Components[0].Path = "../foreign.exe" }, func(m *Manifest) { m.Components[0].Role = "foreign" }, func(m *Manifest) { m.Components[0].Size = 0 }, func(m *Manifest) { m.Components[0].SHA256 = "invalid" }, func(m *Manifest) { m.Components[0].SHA256 = strings.Repeat("b", 64) }} {
+	for _, mutate := range []func(*Manifest){func(m *Manifest) { m.Architecture = "foreign" }, func(m *Manifest) { m.SchemaVersion++ }, func(m *Manifest) { m.ProductID = "foreign" }, func(m *Manifest) { m.ReleaseSequence++ }, func(m *Manifest) { m.SignerThumbprint = strings.Repeat("B", 40) }, func(m *Manifest) { m.Version = "stable" }, func(m *Manifest) { m.SourceRevision = "HEAD" }, func(m *Manifest) { m.Components = m.Components[:1] }, func(m *Manifest) { m.Components[0].Path = "../foreign.exe" }, func(m *Manifest) { m.Components[0].Role = "foreign" }, func(m *Manifest) { m.Components[0].Size = 0 }, func(m *Manifest) { m.Components[0].SHA256 = "invalid" }, func(m *Manifest) { m.Components[0].SHA256 = strings.Repeat("b", 64) }} {
 		changed := manifest
 		changed.Components = append([]Component(nil), manifest.Components...)
 		mutate(&changed)

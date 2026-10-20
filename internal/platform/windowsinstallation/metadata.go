@@ -62,6 +62,8 @@ type Component struct {
 
 // Manifest commits the complete signed payload selected by the machine-owned record.
 type Manifest struct {
+	// Architecture prevents a signed component set for another machine profile being selected.
+	Architecture string `json:"architecture"`
 	// SchemaVersion rejects unknown installation contracts before paths are selected.
 	SchemaVersion int `json:"schema_version"`
 	// ProductID prevents another product from selecting Harbor components.
@@ -148,7 +150,7 @@ func ValidateManifest(manifest Manifest, selection Selection) error {
 	if err := ValidateSelection(selection); err != nil {
 		return err
 	}
-	if manifest.SchemaVersion != SchemaVersion || manifest.ProductID != ProductID || manifest.ReleaseSequence != selection.ReleaseSequence || manifest.SignerThumbprint != selection.SignerThumbprint || manifest.BundleDigest != selection.BundleDigest || !versionPattern.MatchString(manifest.Version) || !revisionPattern.MatchString(manifest.SourceRevision) {
+	if manifest.Architecture != "amd64" || manifest.SchemaVersion != SchemaVersion || manifest.ProductID != ProductID || manifest.ReleaseSequence != selection.ReleaseSequence || manifest.SignerThumbprint != selection.SignerThumbprint || manifest.BundleDigest != selection.BundleDigest || !versionPattern.MatchString(manifest.Version) || !revisionPattern.MatchString(manifest.SourceRevision) {
 		return errors.New("Windows release manifest differs from committed installation identity")
 	}
 	plans := Plans(selection.ReleaseSequence)
