@@ -160,7 +160,7 @@ final class HarborPackageUITests: XCTestCase {
     // focus uses the real keyboard path so WebKit scrolls fields above the fixed dialog footer.
     private func focus(_ element: XCUIElement) throws {
         for _ in 0..<60 {
-            if element.hasKeyboardFocus { return }
+            if element.value(forKey: "hasKeyboardFocus") as? Bool == true { return }
             application.typeKey("\t", modifierFlags: [])
         }
         XCTFail("could not focus \(element.label)\n\(application.debugDescription)")
