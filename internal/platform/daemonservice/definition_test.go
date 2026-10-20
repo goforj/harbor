@@ -30,7 +30,7 @@ func TestMatchesDarwinDefinitionRejectsDrift(t *testing.T) {
 			}
 		}
 	}
-	if MatchesDarwinDefinition(nil) || MatchesDarwinDefinition(darwinDefinition("Interactive")) {
+	if MatchesDarwinDefinition(nil) || MatchesDarwinDefinition(bytes.Replace(DarwinDefinition(), []byte("<string>Standard</string>"), []byte("<string>Interactive</string>"), 1)) {
 		t.Fatal("unshipped definition admitted")
 	}
 }

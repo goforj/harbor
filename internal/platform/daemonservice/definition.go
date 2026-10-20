@@ -36,16 +36,16 @@ func LinuxDefinition() []byte {
 // DarwinDefinition is shared by first launch and ownership-aware uninstall.
 func DarwinDefinition() []byte {
 	// User-requested builds inherit the daemon's scheduling policy and must not be background-throttled.
-	return darwinDefinition("Standard")
+	return darwinDefinition()
 }
 
 // MatchesDarwinDefinition admits only current or exact previously shipped bytes for safe service reuse and removal.
 func MatchesDarwinDefinition(content []byte) bool {
-	return bytes.Equal(content, DarwinDefinition()) || bytes.Equal(content, darwinDefinition("Background"))
+	return bytes.Equal(content, DarwinDefinition()) || bytes.Equal(content, []byte(darwinLegacyBackgroundDefinition))
 }
 
-// darwinDefinition keeps the legacy identity identical except for its previously shipped scheduling policy.
-func darwinDefinition(processType string) []byte {
+// darwinDefinition emits the current fixed service identity for new installations.
+func darwinDefinition() []byte {
 	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -66,10 +66,38 @@ func darwinDefinition(processType string) []byte {
     <false/>
   </dict>
   <key>ProcessType</key>
-  <string>` + processType + `</string>
+  <string>Standard</string>
   <key>ThrottleInterval</key>
   <integer>5</integer>
 </dict>
 </plist>
 `)
 }
+
+// darwinLegacyBackgroundDefinition freezes the exact service bytes shipped before Standard scheduling.
+const darwinLegacyBackgroundDefinition = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.goforj.harbor.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/Application Support/GoForj/Harbor/daemon-launcher</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Library/Application Support/GoForj/Harbor/current</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+</dict>
+</plist>
+`
