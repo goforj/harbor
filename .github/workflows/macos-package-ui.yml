@@ -129,13 +129,17 @@ jobs:
           sudo -n install -d -m 0700 -o root -g wheel "$directory"
           sudo -n /bin/sh -ceu '
             umask 077
-            security authorizationdb read system.privilege.admin > "$1/original.plist"
-            plutil -lint "$1/original.plist" >/dev/null
-            test -s "$1/original.plist"
-            shasum -a 256 "$1/original.plist" > "$1/original.sha256"
+            for right in system.privilege.admin com.apple.trust-settings.admin; do
+              security authorizationdb read "$right" > "$1/$right.original.plist"
+              plutil -lint "$1/$right.original.plist" >/dev/null
+              test -s "$1/$right.original.plist"
+              shasum -a 256 "$1/$right.original.plist" > "$1/$right.original.sha256"
+            done
             touch "$1/capture-complete"
           ' harbor-ui-authorization "$directory"
+          # The hosted unattended fixture grants execution and trust-settings consent separately.
           sudo -n security authorizationdb write system.privilege.admin allow
+          sudo -n security authorizationdb write com.apple.trust-settings.admin allow
 
       - name: Drive installed creation, HTTPS, hide, quit, and reopen
         run: |
@@ -239,20 +243,35 @@ jobs:
           directory=/var/root/harbor-package-ui-authorization
           if ! sudo -n test -f "$directory/capture-complete"; then exit 0; fi
           sudo -n /bin/sh -ceu '
-            shasum -a 256 -c "$1/original.sha256"
-            security authorizationdb write system.privilege.admin < "$1/original.plist"
-            security authorizationdb read system.privilege.admin > "$1/restored.plist"
-            for name in original restored; do
-              cp "$1/$name.plist" "$1/$name.normalized.plist"
-              for key in created modified; do
-                if plutil -type "$key" "$1/$name.normalized.plist" >/dev/null 2>&1; then
-                  plutil -remove "$key" "$1/$name.normalized.plist"
-                fi
-              done
-              plutil -convert json -r "$1/$name.normalized.plist"
+            failed=0
+            for right in system.privilege.admin com.apple.trust-settings.admin; do
+              # Attempt and verify each restoration even if the other right fails.
+              if (
+                shasum -a 256 -c "$1/$right.original.sha256" || exit 1
+                security authorizationdb write "$right" < "$1/$right.original.plist" || exit 1
+                security authorizationdb read "$right" > "$1/$right.restored.plist" || exit 1
+                for name in original restored; do
+                  cp "$1/$right.$name.plist" "$1/$right.$name.normalized.plist" || exit 1
+                  for key in created modified; do
+                    if plutil -type "$key" "$1/$right.$name.normalized.plist" >/dev/null 2>&1; then
+                      plutil -remove "$key" "$1/$right.$name.normalized.plist" || exit 1
+                    fi
+                  done
+                  plutil -convert json -r "$1/$right.$name.normalized.plist" || exit 1
+                done
+                cmp -s "$1/$right.original.normalized.plist" "$1/$right.restored.normalized.plist"
+              ); then
+                echo "Restored and verified $right"
+              else
+                echo "Failed to restore and verify $right" >&2
+                failed=1
+              fi
             done
-            cmp -s "$1/original.normalized.plist" "$1/restored.normalized.plist"
-            rm "$1/original.plist" "$1/original.sha256" "$1/capture-complete" "$1/restored.plist" "$1/original.normalized.plist" "$1/restored.normalized.plist"
+            test "$failed" -eq 0
+            for right in system.privilege.admin com.apple.trust-settings.admin; do
+              rm "$1/$right.original.plist" "$1/$right.original.sha256" "$1/$right.restored.plist" "$1/$right.original.normalized.plist" "$1/$right.restored.normalized.plist"
+            done
+            rm "$1/capture-complete"
             rmdir "$1"
           ' harbor-ui-authorization-restore "$directory"
 
