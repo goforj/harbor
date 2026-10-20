@@ -1,11 +1,12 @@
 package main
 
 import (
-	"github.com/goforj/harbor/internal/control"
-	"github.com/goforj/harbor/internal/domain"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/goforj/harbor/internal/control"
+	"github.com/goforj/harbor/internal/domain"
 )
 
 // TestObserveProjectFencesFailedSettlement rejects crossed selections and preserves active or uncertain state.
@@ -48,6 +49,7 @@ func TestObserveProjectFencesFailedSettlement(t *testing.T) {
 			a.Session = &control.ProjectSessionActivity{ID: "session-fixture", State: domain.SessionPlanned, Generation: 1}
 		}, false},
 		{"quarantined", func(s *domain.Snapshot, a *control.ProjectActivity) { s.Projects[0].State = domain.ProjectUnavailable }, false},
+		{"invalid operation", func(s *domain.Snapshot, a *control.ProjectActivity) { s.Operations[0].ID = "" }, true},
 		{"missing failed start", func(s *domain.Snapshot, a *control.ProjectActivity) { s.Operations = nil }, false},
 		{"nonterminal operation", func(s *domain.Snapshot, a *control.ProjectActivity) {
 			s.Operations[0].State = domain.OperationRunning
@@ -78,6 +80,12 @@ func TestObserveProjectFencesFailedSettlement(t *testing.T) {
 	withNewer.Operations = append(append([]domain.Operation(nil), snapshot.Operations...), newer)
 	if got, err := observeProject(withNewer, activity, "project-fixture", directory); err != nil || got.SettledFailed {
 		t.Fatalf("accepted historical failed start: %+v %v", got, err)
+	}
+	if _, err := observeProject(snapshot, activity, "invalid/id", directory); err == nil {
+		t.Fatal("accepted invalid project ID")
+	}
+	if _, err := observeProject(snapshot, activity, "project-fixture", directory+string(filepath.Separator)+".."); err == nil {
+		t.Fatal("accepted noncanonical absolute directory")
 	}
 	if _, err := observeProject(snapshot, activity, "project-fixture", "relative"); err == nil {
 		t.Fatal("accepted relative directory")
