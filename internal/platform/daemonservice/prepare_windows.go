@@ -127,7 +127,7 @@ func admitRuntimeShape(file *os.File, directory bool) error {
 		return err
 	}
 	if !strings.EqualFold(final, `\\?\`+file.Name()) {
-		return errors.New("Windows runtime object resolves outside its exact destination")
+		return fmt.Errorf("Windows runtime object resolves to %q instead of %q", final, `\\?\`+file.Name())
 	}
 	return nil
 }

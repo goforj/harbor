@@ -6,16 +6,18 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goforj/harbor/internal/platform/runtimepath"
+	"github.com/goforj/harbor/internal/platform/windowsfile"
 	"golang.org/x/sys/windows"
 )
 
 // TestWindowsPreparationHoldsAndReleasesSingleton proves the callback owns the exact production byte-range guard.
 func TestWindowsPreparationHoldsAndReleasesSingleton(t *testing.T) {
 	for _, fail := range []bool{false, true} {
-		root := filepath.Join(t.TempDir(), "runtime")
+		root := filepath.Join(runtimeFixtureRoot(t), "runtime")
 		want := errors.New("migration failure")
 		err := prepareDatabaseAt(root, func() error {
 			if err := prepareDatabaseAt(root, func() error { t.Fatal("concurrent migration ran"); return nil }); !errors.Is(err, ErrDaemonActive) {
@@ -40,7 +42,7 @@ func TestWindowsPreparationHoldsAndReleasesSingleton(t *testing.T) {
 
 // TestWindowsPreparationPreservesExistingDaemon uses the daemon's native byte offset, length and lock flags independently.
 func TestWindowsPreparationPreservesExistingDaemon(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "runtime")
+	root := filepath.Join(runtimeFixtureRoot(t), "runtime")
 	if err := prepareDatabaseAt(root, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +65,7 @@ func TestWindowsPreparationPreservesExistingDaemon(t *testing.T) {
 func TestWindowsPreparationRefusesUnsafeRuntime(t *testing.T) {
 	for _, shape := range []string{"runtime reparse", "parent reparse", "lock reparse", "lock hardlink", "lock directory", "runtime acl", "lock acl", "runtime owner", "lock owner", "relative"} {
 		t.Run(shape, func(t *testing.T) {
-			parent := t.TempDir()
+			parent := runtimeFixtureRoot(t)
 			root := filepath.Join(parent, "runtime")
 			if err := prepareDatabaseAt(root, func() error { return nil }); err != nil {
 				t.Fatal(err)
@@ -152,4 +154,19 @@ func setRuntimeFixtureSecurity(t *testing.T, path, sddl string) {
 	if err := errors.Join(err, windows.CloseHandle(handle)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// runtimeFixtureRoot removes Windows short-name aliases from only the temporary test directory.
+func runtimeFixtureRoot(t *testing.T) string {
+	t.Helper()
+	path := t.TempDir()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := windowsfile.FinalPath(windows.Handle(file.Fd()))
+	if err := errors.Join(err, file.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimPrefix(final, `\\?\`)
 }
