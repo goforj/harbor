@@ -45,7 +45,9 @@ jobs:
           Import-Certificate -FilePath "$fixture\signer.cer" -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
           Import-Certificate -FilePath "$fixture\signer.cer" -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
           $certificate.Thumbprint | Set-Content "$fixture\publisher.txt"
-          foreach ($path in @("$fixture\signed.exe", "$fixture\signed.ps1")) {
+          go build -tags=release -trimpath -ldflags "-X github.com/goforj/harbor/internal/platform/windowsinstallation.PublisherThumbprint=$($certificate.Thumbprint)" -o "$fixture\maintenance.exe" ./cmd/installer
+          if ($LASTEXITCODE -ne 0) { throw "native maintenance fixture build failed" }
+          foreach ($path in @("$fixture\signed.exe", "$fixture\signed.ps1", "$fixture\maintenance.exe")) {
             $signature = Set-AuthenticodeSignature -FilePath $path -Certificate $certificate -HashAlgorithm SHA256
             if ($signature.Status -ne "Valid") { throw "fixture signature is not valid" }
           }
@@ -58,6 +60,7 @@ jobs:
           "HARBOR_ADMISSION_PUBLISHER=$($certificate.Thumbprint)" | Out-File $env:GITHUB_ENV -Append
           "HARBOR_ADMISSION_SIGNED_PE=$fixture\signed.exe" | Out-File $env:GITHUB_ENV -Append
           "HARBOR_ADMISSION_SIGNED_SCRIPT=$fixture\signed.ps1" | Out-File $env:GITHUB_ENV -Append
+          "HARBOR_ADMISSION_MAINTENANCE_AGENT=$fixture\maintenance.exe" | Out-File $env:GITHUB_ENV -Append
           "HARBOR_ADMISSION_CERTIFICATE=$fixture\signer.cer" | Out-File $env:GITHUB_ENV -Append
       - name: Prove exact native admission and drift refusal
         working-directory: internal/platform/windowsinstallation
@@ -84,7 +87,7 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
-          go test ./cmd/daemonlauncher ./cmd/desktoplauncher ./cmd/clilauncher -count=1 -v
+          go test ./cmd/daemonlauncher ./cmd/desktoplauncher ./cmd/clilauncher ./cmd/installer -count=1 -v
           if ($LASTEXITCODE -ne 0) { throw "native stable launcher tests failed" }
       - name: Validate native desktop task activation adapter
         if: ${{ !cancelled() }}
