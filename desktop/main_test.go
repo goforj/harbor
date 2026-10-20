@@ -22,7 +22,7 @@ func TestApplicationOptionsPinNativeLifecycle(t *testing.T) {
 	if options.Name != "GoForj Harbor" || len(options.Services) != 1 || options.Assets.Handler == nil || options.OnShutdown == nil {
 		t.Fatal("incomplete native application contract")
 	}
-	if options.SingleInstance == nil || options.SingleInstance.UniqueID != desktopSingleInstanceID || options.SingleInstance.OnSecondInstanceLaunch == nil {
+	if options.SingleInstance == nil || options.SingleInstance.UniqueID != nativeSingleInstanceID(runtime.GOOS) || options.SingleInstance.OnSecondInstanceLaunch == nil {
 		t.Fatal("single-instance identity or activation missing")
 	}
 	if options.Mac.ApplicationShouldTerminateAfterLastWindowClosed || !options.Windows.DisableQuitOnLastWindowClosed || !options.Linux.DisableQuitOnLastWindowClosed {
@@ -189,5 +189,17 @@ func TestQuitMenuLeavesDaemonSessionUntilJoinedWailsShutdown(t *testing.T) {
 	case <-app.done:
 	default:
 		t.Fatal("Wails shutdown returned before the desktop owner exited")
+	}
+}
+
+// TestNativeSingleInstanceIDUsesValidLinuxBusName prevents Wails from exiting before its first window.
+func TestNativeSingleInstanceIDUsesValidLinuxBusName(t *testing.T) {
+	if actual := nativeSingleInstanceID("linux"); actual != "com.goforj.harbor" {
+		t.Fatalf("Linux single-instance identity = %q, want domain-style D-Bus name", actual)
+	}
+	for _, platform := range []string{"darwin", "windows"} {
+		if actual := nativeSingleInstanceID(platform); actual != desktopSingleInstanceID {
+			t.Fatalf("%s established single-instance identity changed to %q", platform, actual)
+		}
 	}
 }
