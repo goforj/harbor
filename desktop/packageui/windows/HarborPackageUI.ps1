@@ -404,6 +404,7 @@ try {
     }
     Await-ProjectState 'ready'
     Assert-HTTPS
+    Invoke-Button 'Projects'
     Invoke-Button 'Refresh Harbor state'
     if ($null -eq (Find-Control 'Stop project' ([System.Windows.Automation.ControlType]::Button))) {
         Invoke-Button 'Projects'
