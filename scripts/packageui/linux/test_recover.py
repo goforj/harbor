@@ -28,7 +28,7 @@ class RecoveryTests(unittest.TestCase):
             observed = iter(states)
 
             def snapshot():
-                state = next(observed)
+                state = next(observed, states[-1])
                 events.append('snapshot:' + state)
                 return {'network_setup': {'configured': configured}, 'projects': [{'id': 'fixture', 'path': '/foreign/project' if foreign else str(project), 'state': state}]}
 
