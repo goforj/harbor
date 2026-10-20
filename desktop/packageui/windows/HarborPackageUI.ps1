@@ -175,8 +175,20 @@ function Read-FixtureActivity($Project, [string]$Name) {
         -not [string]::Equals($receipt.observation.project.path, $projectDirectory, [StringComparison]::OrdinalIgnoreCase)) { throw 'activity receipt differs from the selected daemon or fixture' }
     return $receipt.observation
 }
+$script:startupCaptureSequence = 0
+$script:startupAfter = $null
+
 # Save-StartupDiagnostics retains bounded public fixture output before timeout teardown retires the session.
-function Save-StartupDiagnostics([string]$Name) {
+function Save-StartupDiagnostics([string]$Phase) {
+    $Name = 'startup-' + $script:startupCaptureSequence.ToString('D3') + '-' + $Phase
+    $script:startupCaptureSequence++
+    try {
+        if ($null -ne $script:startupAfter) {
+            $logs = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'npm-cache\_logs'
+            & python (Join-Path $PSScriptRoot '..\..\..\scripts\packageui\windows\capture_npm.py') --fixture $projectDirectory --logs $logs --evidence $EvidenceDirectory --after $script:startupAfter.ToString('o')
+            if ($LASTEXITCODE -ne 0) { throw 'bounded npm capture failed' }
+        }
+    } catch { Write-Warning "npm timing diagnostics omitted: $_" }
     try { Save-Observation $Name } catch { Write-Warning "startup observation failed: $_" }
     try { $project = Get-Project; if ($null -ne $project) { $null = Read-FixtureActivity $project $Name } } catch { Write-Warning "startup activity diagnostics failed: $_" }
     try {
@@ -235,17 +247,16 @@ function Save-StartupDiagnostics([string]$Name) {
     } catch { Write-Warning "startup process diagnostics failed: $_" }
 }
 function Await-ProjectState([string]$Expected) {
-    $diagnostics = @{ next_capture=[DateTime]::MinValue; sample=0 }
+    $diagnostics = @{ next_capture=[DateTime]::MinValue }
     Wait-Until "project state $Expected" {
         $project = Get-Project
         if ($Expected -ceq 'ready' -and [DateTime]::UtcNow -ge $diagnostics.next_capture) {
-            Save-StartupDiagnostics ('startup-' + $diagnostics.sample.ToString('D2'))
-            $diagnostics.sample++
+            Save-StartupDiagnostics 'sample'
             $diagnostics.next_capture = [DateTime]::UtcNow.AddSeconds(15)
         }
         if ($null -eq $project) { return $false }
         if ($project.state -in @('failed', 'quarantined')) {
-            if ($Expected -ceq 'ready') { Save-StartupDiagnostics 'startup-terminal' }
+            if ($Expected -ceq 'ready') { Save-StartupDiagnostics 'terminal' }
             throw "project entered $($project.state)"
         }
         return $project.state -ceq $Expected
@@ -335,6 +346,7 @@ try {
     Save-Observation 'creation-review'
     Invoke-Button 'Create project'
     Await-ProjectState 'stopped'
+    $script:startupAfter = [DateTime]::UtcNow
     Invoke-Button 'Start project'
     Await-ProjectState 'ready'
     Assert-HTTPS
