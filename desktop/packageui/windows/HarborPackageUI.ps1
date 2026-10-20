@@ -217,7 +217,16 @@ function Save-StartupDiagnostics([string]$Phase) {
         foreach ($row in $rows) { $byID[[int]$row.ProcessId] = $row }
         $facts = @()
         foreach ($row in $rows) {
-            if ($row.Name -notin @('forj.exe','go.exe','node.exe','npm.exe','cmd.exe','bash.exe','sh.exe','outputbroker.exe')) { continue }
+            if ($facts.Count -ge 128) { break }
+            $candidate = $row
+            $reachesDaemon = $false
+            for ($depth=0; $depth -lt 16; $depth++) {
+                if ([int]$candidate.ProcessId -eq $daemonProcess.Id) { $reachesDaemon = $true; break }
+                if (-not $byID.ContainsKey([int]$candidate.ParentProcessId)) { break }
+                $candidate = $byID[[int]$candidate.ParentProcessId]
+            }
+            if (-not $reachesDaemon -or [int]$row.ProcessId -eq $daemonProcess.Id) { continue }
+            # Snapshot ancestry only selects candidates; retained native handles and births below establish ownership.
             $held = [Collections.Generic.List[Diagnostics.Process]]::new()
             try {
                 $current = $row
