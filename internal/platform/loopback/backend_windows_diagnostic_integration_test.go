@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/internal/network/poolpolicy"
+	"github.com/goforj/harbor/internal/platformproof"
 	"golang.org/x/sys/windows"
 )
 
@@ -87,8 +88,13 @@ func TestWindowsNativeCapacityReadback(t *testing.T) {
 			}
 		}
 	})
-	for _, address := range addresses {
-		change, err := adapter.EnsureIfObserved(t.Context(), address, initial[address])
+	sequence := append(append([]netip.Addr(nil), addresses[8:40]...), addresses...)
+	for _, address := range sequence {
+		expected := initial[address]
+		if retained, ok := created[address]; ok {
+			expected = retained
+		}
+		change, err := adapter.EnsureIfObserved(t.Context(), address, expected)
 		if err != nil || change.After.State != StateExact {
 			t.Fatalf("ensure %s: %+v err=%+v", address, change, err)
 		}
@@ -97,4 +103,8 @@ func TestWindowsNativeCapacityReadback(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := platformproof.ProveProjectIdentities(t.Context(), platformproof.ProjectIdentityRequest{Addresses: addresses[:100], Port: 3306}); err != nil {
+		t.Fatal(err)
+	}
+
 }
