@@ -453,7 +453,8 @@ func servePayload(ctx context.Context, listener net.Listener, payload signedPayl
 // receivePayload connects to one exact identity and reads one bounded response.
 func receivePayload(ctx context.Context, address netip.Addr, port uint16) (signedPayload, error) {
 	endpoint := net.JoinHostPort(address.String(), strconv.Itoa(int(port)))
-	dialer := net.Dialer{}
+	// Pin the proof client to its loopback source instead of a wildcard ConnectEx bind.
+	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}}
 	connection, err := dialer.DialContext(ctx, "tcp4", endpoint)
 	if err != nil {
 		return signedPayload{}, fmt.Errorf("connect to project identity %s: %w", endpoint, err)

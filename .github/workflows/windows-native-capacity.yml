@@ -10,7 +10,11 @@ permissions:
 jobs:
   capacity:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
       GOWORK: "off"
@@ -34,7 +38,7 @@ jobs:
       - name: Capture repeated capacity readbacks and exact cleanup
         shell: pwsh
         run: |
-          go test -tags=platformmutation ./internal/platform/loopback -run '^TestWindowsNativeCapacityReadback$' -count=10 -timeout=10m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-native-capacity.log"
+          go test -tags=platformmutation ./internal/platform/loopback -run '^(TestWindowsNativeSkipAsSourceTransition|TestWindowsDiagnosticCreatedRowRejectsDrift)$' -count=10 -timeout=10m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-native-capacity.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain native socket state
         if: always()
@@ -49,7 +53,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-native-capacity-readbacks
+          name: windows-native-capacity-readbacks-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/windows-native-capacity.log
             ${{ runner.temp }}/windows-native-sockets.json
