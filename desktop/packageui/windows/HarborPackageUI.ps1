@@ -125,6 +125,16 @@ function Invoke-PreauthorizedNetworking([string]$Action) {
         $receipt.user_sid -cne $selection.user_sid -or $receipt.selection.action -cne $Action) { throw 'networking fixture receipt crossed selected process or authorization scope' }
     $script:approvalIndeterminate = $false
 }
+function Invoke-NativeUIQuit([int]$ProductProcessID) {
+    [HarborUIProfile]::ActivateRetainedProductWindow($ProductProcessID, $script:windowHandle)
+    $quitFocus = Find-Control 'Projects' ([System.Windows.Automation.ControlType]::Button)
+    if ($null -eq $quitFocus -or -not $quitFocus.Current.IsKeyboardFocusable) { throw 'installed UI has no keyboard-focusable Projects control for the native Quit shortcut' }
+    $quitFocus.SetFocus()
+    Wait-Until 'Quit shortcut target keyboard focus' { $quitFocus.Current.HasKeyboardFocus } 10
+    if (-not [HarborUIProfile]::IsRetainedProductWindowForeground($ProductProcessID, $script:windowHandle)) { throw 'Quit keyboard target is not in the exact foreground product window' }
+    [System.Windows.Forms.SendKeys]::SendWait('^q')
+    Wait-Until 'UI-only quit exits desktop' { [HarborUIProfile]::HasRetainedProductExited($ProductProcessID) }
+}
 function Open-Harbor {
     $launched = [HarborUIProfile]::Launch($launcherPath, $InstallRoot)
     Wait-Until 'one installed desktop process' { @(Get-Process -Name harbor-desktop -ErrorAction SilentlyContinue).Count -eq 1 } 60
@@ -245,14 +255,7 @@ try {
         ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'native-window-close.json') -Encoding UTF8
     if ((Get-Project).state -cne 'ready') { throw 'closing the UI stopped the project' }
     if ((Open-Harbor) -ne $originalProcess) { throw 'reopening did not restore the original desktop process' }
-    [HarborUIProfile]::ActivateRetainedProductWindow($originalProcess, $script:windowHandle)
-    $quitFocus = Find-Control 'Projects' ([System.Windows.Automation.ControlType]::Button)
-    if ($null -eq $quitFocus -or -not $quitFocus.Current.IsKeyboardFocusable) { throw 'installed UI has no keyboard-focusable Projects control for the native Quit shortcut' }
-    $quitFocus.SetFocus()
-    Wait-Until 'Quit shortcut target keyboard focus' { $quitFocus.Current.HasKeyboardFocus } 10
-    if (-not [HarborUIProfile]::IsRetainedProductWindowForeground($originalProcess, $script:windowHandle)) { throw 'Quit keyboard target is not in the exact foreground product window' }
-    [System.Windows.Forms.SendKeys]::SendWait('^q')
-    Wait-Until 'UI-only quit exits desktop' { [HarborUIProfile]::HasRetainedProductExited($originalProcess) }
+    Invoke-NativeUIQuit $originalProcess
     if ((Get-Project).state -cne 'ready') { throw 'UI-only quit stopped the project' }
     @{ pid=$originalProcess; native_window=$script:windowHandle.ToInt64().ToString(); foreground_before=$true; focus_target='Projects'; user_key_chord='Ctrl+Q'; process_exited=$true; project_state='ready' } |
         ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'native-window-quit.json') -Encoding UTF8
@@ -275,9 +278,7 @@ try {
     }
     Invoke-Button 'Stop project'
     Await-ProjectState 'stopped'
-    $script:window.SetFocus()
-    [System.Windows.Forms.SendKeys]::SendWait('^q')
-    Wait-Until 'final desktop quit' { $null -eq (Get-Process -Id $reopenedProcess -ErrorAction SilentlyContinue) }
+    Invoke-NativeUIQuit $reopenedProcess
     [ordered]@{
         application=$desktopPath; launcher=$launcherPath; daemon=$daemonPath; bundle_digest=$selection.bundle_digest; project_directory=$projectDirectory; project_id=(Get-Project).id
         creation='production graphical wizard through native UIAutomation'; start='ready and system-trusted HTTPS 200'
