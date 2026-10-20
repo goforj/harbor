@@ -22,8 +22,8 @@ type selection struct {
 
 // validate rejects arbitrary actions and incomplete native identity before connecting or requesting authority.
 func (selected selection) validate() error {
-	if selected.Action != "setup" && selected.Action != "release" {
-		return errors.New("only setup or release fixture actions are allowed")
+	if selected.Action != "setup" && selected.Action != "release" && selected.Action != "observe" {
+		return errors.New("only setup, release or read-only observe fixture actions are allowed")
 	}
 	if !installationIDPattern.MatchString(selected.InstallationID) || selected.DaemonPID == 0 || uint64(selected.DaemonPID) > uint64(^uint32(0)) || selected.DaemonBirth == 0 {
 		return errors.New("fixture requires exact installation and daemon identity")

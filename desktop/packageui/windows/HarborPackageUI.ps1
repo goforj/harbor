@@ -152,9 +152,33 @@ function Open-Harbor {
     if (-not [HarborUIProfile]::IsRetainedProductWindowVisible($process.Id, $script:windowHandle)) { throw 'reopened installed window is not natively visible' }
     return $process.Id
 }
+# Read-FixtureActivity uses the admitted daemon protocol without requesting any helper or lifecycle mutation.
+function Read-FixtureActivity($Project, [string]$Name) {
+    if ($null -eq $daemonProcess -or $daemonProcess.HasExited) { throw 'retained daemon is unavailable for activity observation' }
+    $path = Join-Path $EvidenceDirectory ($Name + '-activity.json')
+    $arguments = @('--action','observe','--installation-id',$selection.installation_id,'--daemon-pid',[string]$daemonProcess.Id,
+        '--daemon-birth',$daemonProcess.StartTime.ToFileTimeUtc().ToString(),'--project-id',$Project.id,'--project-directory',$projectDirectory)
+    $process = Start-Process -FilePath $env:HARBOR_PACKAGE_UI_WINDOWS_APPROVAL_TOOL -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $path -RedirectStandardError ($path + '.stderr')
+    try {
+        $null = $process.Handle
+        if (-not $process.WaitForExit(10000)) {
+            $process.Kill()
+            if (-not $process.WaitForExit(5000)) { throw 'read-only observer did not settle' }
+            throw 'read-only activity observation exceeded its deadline'
+        }
+        if ($process.ExitCode -ne 0) { throw 'read-only activity observer refused the selected fixture' }
+    } finally { $process.Dispose() }
+    $receipt = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    if ($receipt.complete -ne $true -or $receipt.selection.action -cne 'observe' -or $receipt.selection.installation_id -cne $selection.installation_id -or
+        $receipt.selection.daemon_pid -ne $daemonProcess.Id -or [string]$receipt.selection.daemon_birth -cne $daemonProcess.StartTime.ToFileTimeUtc().ToString() -or
+        $receipt.user_sid -cne $selection.user_sid -or $receipt.observation.project.id -cne $Project.id -or
+        -not [string]::Equals($receipt.observation.project.path, $projectDirectory, [StringComparison]::OrdinalIgnoreCase)) { throw 'activity receipt differs from the selected daemon or fixture' }
+    return $receipt.observation
+}
 # Save-StartupDiagnostics retains bounded public fixture output before timeout teardown retires the session.
 function Save-StartupDiagnostics([string]$Name) {
     try { Save-Observation $Name } catch { Write-Warning "startup observation failed: $_" }
+    try { $project = Get-Project; if ($null -ne $project) { $null = Read-FixtureActivity $project $Name } } catch { Write-Warning "startup activity diagnostics failed: $_" }
     try {
         $trace = $projectDirectory
         foreach ($segment in @('_data', 'harbor', 'forj-dev.log')) {
@@ -373,7 +397,13 @@ try {
         $registered = Get-Project
         if ($null -ne $registered) {
             $cleanup.fixture_source_state = $registered.state
-            if ($registered.state -ceq 'quarantined') { throw 'quarantined fixture cannot be settled by GUI cleanup' }
+            if ($registered.state -cin @('quarantined', 'unavailable')) { throw 'quarantined fixture cannot be settled by GUI cleanup' }
+            if ($registered.state -ceq 'failed') {
+                $settled = Read-FixtureActivity $registered 'cleanup-failed-settlement'
+                if ($settled.settled_failed -ne $true -or $settled.project.state -cne 'failed' -or $null -ne $settled.activity.session -or
+                    $settled.activity.project_id -cne $registered.id -or $settled.failed_start.project_id -cne $registered.id -or
+                    $settled.failed_start.kind -cne 'project.start' -or $settled.failed_start.state -cne 'failed') { throw 'failed fixture has no exact terminal failed-start and absent-session proof' }
+            }
         }
         if ($null -ne $registered -and $registered.state -cnotin @('stopped', 'failed')) {
             & $cliPath stop $registered.id 1> (Join-Path $EvidenceDirectory 'cleanup-stop-stdout.txt') 2> (Join-Path $EvidenceDirectory 'cleanup-stop-stderr.txt')

@@ -28,14 +28,15 @@ import (
 
 // receipt describes fixture authorization separately from unsupported real GUI consent and containment claims.
 type receipt struct {
-	Profile          string           `json:"profile"`
-	GUIConsentProved bool             `json:"gui_consent_proved"`
-	Selection        selection        `json:"selection"`
-	UserSID          string           `json:"user_sid,omitempty"`
-	Session          uint32           `json:"session,omitempty"`
-	Operations       []operationFence `json:"operations"`
-	Complete         bool             `json:"complete"`
-	Error            string           `json:"error,omitempty"`
+	Observation      *projectObservation `json:"observation,omitempty"`
+	Profile          string              `json:"profile"`
+	GUIConsentProved bool                `json:"gui_consent_proved"`
+	Selection        selection           `json:"selection"`
+	UserSID          string              `json:"user_sid,omitempty"`
+	Session          uint32              `json:"session,omitempty"`
+	Operations       []operationFence    `json:"operations"`
+	Complete         bool                `json:"complete"`
+	Error            string              `json:"error,omitempty"`
 }
 
 // main writes only bounded public evidence and never accepts a helper path, ticket or native capability from arguments.
@@ -59,10 +60,12 @@ func main() {
 // run keeps the installation and exact daemon native handles retained throughout all existing protocol calls.
 func run(arguments []string, evidence *receipt) (result error) {
 	flags := flag.NewFlagSet("windowsapproval", flag.ContinueOnError)
-	flags.StringVar(&evidence.Selection.Action, "action", "", "setup or release only")
+	flags.StringVar(&evidence.Selection.Action, "action", "", "setup, release or read-only observe")
 	flags.StringVar(&evidence.Selection.InstallationID, "installation-id", "", "exact admitted installation ID")
 	flags.UintVar(&evidence.Selection.DaemonPID, "daemon-pid", 0, "exact observed installed daemon PID")
 	flags.Uint64Var(&evidence.Selection.DaemonBirth, "daemon-birth", 0, "exact observed native daemon creation time")
+	projectID := flags.String("project-id", "", "exact disposable project for read-only observation")
+	directory := flags.String("project-directory", "", "exact checkout for read-only observation")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
@@ -71,6 +74,9 @@ func run(arguments []string, evidence *receipt) (result error) {
 	}
 	if err := evidence.Selection.validate(); err != nil {
 		return err
+	}
+	if evidence.Selection.Action != "observe" && (*projectID != "" || *directory != "") {
+		return errors.New("project selection is allowed only for read-only observation")
 	}
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		return errors.New("fixture requires the preauthorized high controller")
@@ -143,6 +149,21 @@ func run(arguments []string, evidence *receipt) (result error) {
 	snapshot, err := client.Snapshot(ctx)
 	if err != nil {
 		return err
+	}
+	if evidence.Selection.Action == "observe" {
+		if err := check(); err != nil {
+			return err
+		}
+		activity, err := client.ProjectActivity(ctx, control.ProjectActivityRequest{ProjectID: domain.ProjectID(*projectID)})
+		if err != nil {
+			return err
+		}
+		observation, err := observeProject(snapshot, activity, domain.ProjectID(*projectID), *directory)
+		if err != nil {
+			return err
+		}
+		evidence.Observation = &observation
+		return check()
 	}
 	if len(snapshot.Projects) != 0 {
 		return errors.New("fixture networking authority requires no registered projects")
