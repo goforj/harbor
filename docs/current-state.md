@@ -1,5 +1,15 @@
 # Current Implementation State
 
+## Parallel installed platform gates (2026-10-19)
+
+Separate installed GUI workflows now target macOS XCTest, Ubuntu GTK/WebKit through AT-SPI, and Windows UIAutomation. Each admits retained native-tested package bytes, verifies digests and provenance, and compares immutable product source before installation. Dedicated Windows capacity diagnostics retain exact native IP Helper observations. Independent review covers admission, process lifetime, and ownership-aware failure cleanup. Passing local harness checks does not establish a passing graphical lifecycle.
+
+The first Ubuntu GUI run, [39362697645](https://github.com/goforj/harbor/actions/runs/39362697645), exposed a real startup blocker: the shared UUID starts with a digit, which Wails rejects as a Linux D-Bus single-instance name. Linux now uses `com.goforj.harbor`; macOS and Windows retain their previous identifiers. Focused desktop tests pass. The Linux fixture is a full XFCE X11 session on Xvfb, supplementary to the supported GNOME Wayland profile, and its complete GUI lifecycle needs a fresh retained DEB.
+
+Windows clean-installed GUI activation remains blocked. Its release desktop still selects the unavailable daemon adapter; the flat NSIS package has no admitted daemon launcher, singleton-guarded Windows migration path, installation selection, or per-user task lifecycle. Only the helper is signed in the disposable package. Do not prestart a source daemon to claim onboarding. [Windows package run 39363422541](https://github.com/goforj/harbor/actions/runs/39363422541) passes native package/HTTPS/uninstall acceptance, which remains distinct from a clean installed graphical launch. The GUI gate uses a verified same-user medium-integrity child in the hosted interactive session; it does not establish Windows client-desktop support or real UAC consent.
+
+Windows address stability also remains open: native runs have returned `SkipAsSource=false` immediately after a successful create requesting true, with the exact other assignment attributes and a fresh creation timestamp. Ownership guards still reject that drift. A separate proof bug is fixed: accepted sockets now close before proof completion permits alias retirement. Repeated native socket tests have also reported `WSAEADDRINUSE`; successful cycles do not close either intermittent finding.
+
 ## Readiness probe deadlines (2026-10-19)
 
 The real installed GUI gate created and registered its minimal Vue/API project, then exposed a startup failure in [run 39360249869](https://github.com/goforj/harbor/actions/runs/39360249869). Its retained daemon snapshot identifies `project.readiness.invalid` with `context deadline exceeded`. Harbor treated one bounded HTTP attempt expiring as invalid readiness while the total startup budget still remained.

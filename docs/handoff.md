@@ -1,6 +1,18 @@
 # Development Handoff
 
-Status: PR #12 merged; installed GUI gate exposed a readiness timeout bug, with a focused fix ready for fresh packaging
+Status: PR #12 merged; parallel installed platform gates expose startup and Windows activation gaps, with fresh macOS/Ubuntu packaging in progress
+
+## Parallel platform continuation (2026-10-19)
+
+The user explicitly authorized sub-agents and separate CI workflows. Root work remains `/tmp/harbor-package-ui-20261019`, branch `test/installed-package-ui`, PR #13. Linux work is integrated from `/tmp/harbor-linux-package-ui-20261019` (PR #15); Windows diagnostics, producer provenance, and GUI work are integrated from `/tmp/harbor-windows-package-ui-20261019` (PR #14). Source parity against packaged product commit `1014280f3cbf652fab0d126b14c11257820ae659` passes; only explicitly allowed test harness and diagnostic sources differ. Preserve the user's active checkouts and installations.
+
+Fresh package rehearsal [39363377263](https://github.com/goforj/harbor/actions/runs/39363377263) targets `1014280`, including bounded readiness attempts, socket close-before-proof-completion, and the Linux-only valid D-Bus identifier. Ubuntu passed; macOS is still running. The previous `a3af592` rehearsal was canceled while both native jobs were queued so the Linux fix could be included. The retained `1862751` package rehearsal [39361523550](https://github.com/goforj/harbor/actions/runs/39361523550) passed both native package jobs and assembly, but its later macOS GUI run exhausted the overall startup budget while frontend dependencies remained in progress. No complete installed GUI lifecycle is claimed.
+
+The macOS harness now copies the live launch trace before failed startup cleanup removes it, preserves the native driver's failure, and runs bounded recovery with a native bundle-validated quit and exact service absence checks. Local evidence is `/tmp/harbor-readiness-total-{before,after,lifecycle}.log`, `/tmp/harbor-package-ui-{native-close,singleinstance,cleanup-xcode}.log`, and native results under `/tmp/harbor-installed-ui-results-39361483896`.
+
+Windows native NSIS run [39363422541](https://github.com/goforj/harbor/actions/runs/39363422541) passes package installation, trusted HTTPS, cleanup, and retained package provenance. Actual clean-installed GUI activation remains blocked: Windows still lacks an admitted daemon launcher, migration preparation, installation selection, and per-user task lifecycle. A separate read-only activation investigation left `/tmp/harbor-windows-activation-20261019` clean; no unsafe partial task registration was added. Strict loopback ownership continues rejecting observed `SkipAsSource` drift, and repeated socket proof failures remain under investigation. Do not rerun until green and call either issue fixed.
+
+Next: consume the new successful retained packages in the Linux and macOS GUI gates, inspect live startup diagnostics for any remaining failure, and retain honest complete or partial cleanup receipts. The Windows GUI run must show its actual restricted-token launch and missing activation gap. Independent reviews have corrected asynchronous-stop, UI-reconnect, process-admission, diagnostic-error masking, and false-absence issues in the harnesses. Signing, supported GNOME Wayland/Windows client-desktop profiles, real consent, tray, reboot, and transactional Windows packaging remain separate gates.
 
 ## Startup and native-gate continuation (2026-10-19)
 
