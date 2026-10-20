@@ -329,11 +329,19 @@ function Save-Observation([string]$Name) {
 Assert-InteractiveWorker
 try {
     $originalProcess = Open-Harbor
+    $null = Get-Snapshot
     Wait-Until 'medium-integrity installed daemon' { @(Get-Process -Name harbord -ErrorAction SilentlyContinue).Count -eq 1 } 60
-    $daemonProcess = Get-Process -Name harbord
+    $initialDaemons = @(Get-Process -Name harbord -ErrorAction SilentlyContinue)
+    if ($initialDaemons.Count -ne 1) { throw 'initial installed daemon selection is ambiguous' }
+    $daemonProcess = $initialDaemons[0]
     $null = $daemonProcess.Handle
     [HarborUIProfile]::AssertProductProcess($daemonProcess.Id)
-    if ($daemonProcess.Path -cne $daemonPath) { throw 'daemon process is outside admitted installation' }
+    if ($daemonProcess.HasExited -or $daemonProcess.Path -cne $daemonPath) { throw 'initial daemon is unavailable or outside admitted installation' }
+    [ordered]@{
+        phase='initial-selection-after-authoritative-snapshot'; pid=$daemonProcess.Id
+        native_birth=$daemonProcess.StartTime.ToFileTimeUtc().ToString(); image=$daemonProcess.Path
+        session=$daemonProcess.SessionId; token_profile_verified=$true
+    } | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'initial-daemon-selection.json') -Encoding UTF8
     Save-Observation 'installed-first-launch'
     Wait-Until 'fresh setup action' {
         $null -ne (Find-Control 'Set up secure networking' ([System.Windows.Automation.ControlType]::Button))
