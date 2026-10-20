@@ -1,6 +1,14 @@
 # Development Handoff
 
-Status: updating PR #12 acceptance pins to released GoForj v0.34.1 before merge
+Status: PR #12 merged; implementing unattended installed macOS GUI checks on disposable GitHub workers
+
+## Installed UI continuation (2026-10-19)
+
+PR #12 merged as `74adee22d2be81ee3699fa245b7269f4d6c49733` after all 41 checks passed. Build-only native package run [39354344032](https://github.com/goforj/harbor/actions/runs/39354344032) passed at `a689e093ce3c8906f15344fd7b062f2b324bff3b` with released GoForj v0.34.1. Both packages retained complete uninstall receipts, preserved user database/project files, and passed installed daemon activation, reopen/restart, and trusted HTTPS. Publication was skipped.
+
+The user has no disposable personal Mac and requested one-off GitHub-worker installation and critical-workflow tests. `/tmp/harbor-package-ui-20261019`, branch `test/installed-package-ui`, adds an XCTest host/harness, a manually dispatchable and paths-scoped PR workflow, package/source verification, and release documentation. Product code and package bytes are unchanged. The harness launches `/Applications/Harbor.app` and operates its real accessibility controls. No source-development installation is used or restarted. Local native compilation, package digest/provenance verification, verifier tests, and workflow syntax pass; hosted execution is next.
+
+One next goal: run the installed GUI workflow, correct concrete failures, retain its native screenshots/results and uninstall receipt, and record the honest coverage boundary. Preauthorized CI privileges do not prove consent prompts; this first minimal Vue/API project does not prove Docker volume preservation, tray interactions, reboot, signed updates, or Linux/Windows GUI behavior. Preserve all active user checkouts and projects.
 
 Last updated: 2026-10-19
 

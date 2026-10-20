@@ -24,7 +24,28 @@ If packaging or validation fails, no public release is created. Fix the source t
 
 This path publishes development previews, not a signed product release or automatic update channel. Signing, genuine interactive consent, reboot recovery, and signed update evidence remain governed by [Installation and release](./installation-and-release.md) and [Testing](./testing.md).
 
+## Unattended installed macOS UI checks
+
+`Installed macOS GUI workflows` installs the exact PKG retained by a successful `Prerelease artifacts` run on a fresh GitHub-hosted macOS 26 Apple-silicon worker. It verifies both package checksums and provenance, then requires the checked-out product code to match the package source. Test harness and documentation changes may differ. Product changes require a new package rehearsal.
+
+Run it after packaging without publishing or using a personal development installation:
+
+```sh
+gh workflow run macos-package-ui.yml --repo goforj/harbor \
+  --ref main -f package_run_id=<successful-package-run-id>
+```
+
+Changes to this harness also trigger a same-repository PR check against the latest successful package run. The source guard rejects a stale package when product code differs. There is no fork-code execution through `pull_request_target`.
+
+XCTest operates the installed Wails window through macOS accessibility, rather than injecting JavaScript or replacing the package executable. Its planned coverage is graphical creation of a minimal Vue/API project, Start, system-trusted HTTPS, close-to-hide, single-instance reopen, Quit Harbor UI without stopping the project, another launch, and Stop. The job then removes owned networking, uninstalls, and checks retained database and project-file hashes. Screenshots, the `.xcresult`, lifecycle evidence, and original package provenance are uploaded as `Harbor-installed-macos-ui-<run-number>`.
+
+This is unattended GUI automation in a real graphical session. It installs the released GoForj CLI and Wire, and temporarily exposes that toolchain through the worker's graphical-session `PATH`. Administrator approval is preauthorized on the disposable worker and restored afterward. Genuine consent prompts, default desktop toolchain discovery, Docker-backed projects, tray menu interactions, reboot, signed updates, and installed Linux/Windows GUI workflows remain separate coverage. A hosted result is still pending for this harness.
+
 ## Latest package rehearsal (2026-10-19)
+
+[Build-only run 39354344032](https://github.com/goforj/harbor/actions/runs/39354344032) passed on product source `a689e093ce3c8906f15344fd7b062f2b324bff3b`, now merged through PR #12 as `74adee22d2be81ee3699fa245b7269f4d6c49733`. Both native packages use released GoForj v0.34.1 and retained complete fresh-database, installed daemon adapter reopen/restart, trusted HTTPS, user-data preservation, and uninstall receipts. Assembly passed; publication was skipped. This is the package set selected for the first installed GUI rehearsal.
+
+### Earlier rehearsal
 
 [Build-only run 39339451091](https://github.com/goforj/harbor/actions/runs/39339451091) passed on merged main commit `03e6c52759f65178cdcfb0bc103ac5e6cedb2a7a`, using rehearsal version `0.1.0-beta.1`. The macOS 26 Apple-silicon PKG and Ubuntu 24.04 amd64 DEB both passed clean native installation, packaged daemon/CLI networking setup, three generated GoForj v0.34.0 projects with distinct system-trusted HTTPS responses, terminal networking cleanup, and native package removal. Ubuntu preserved a foreign package sentinel. macOS additionally preserved a mismatched fixed helper and foreign administrator trust, and restored its temporary authorization policy.
 

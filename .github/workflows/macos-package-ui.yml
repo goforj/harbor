@@ -1,0 +1,212 @@
+name: Installed macOS GUI workflows
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/macos-package-ui.yml
+      - desktop/packageui/**
+      - scripts/packageui/**
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: Successful Prerelease artifacts run whose exact tested PKG will be installed
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: installed-macos-ui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installed-ui:
+    name: Real installed macOS window
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Admit disposable GUI worker
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" = 26
+          test "$(id -u)" != 0
+          launchctl print "gui/$(id -u)" >/dev/null
+          automationmodetool | grep -F 'DOES NOT REQUIRE'
+          test ! -e /Applications/Harbor.app
+          test ! -e "$HOME/Library/Application Support/GoForj/Harbor/harbor.db"
+          test ! -e /tmp/harbor-package-ui-evidence.json
+
+      - name: Download exact native-tested packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PACKAGE_RUN_ID" ]]; then
+            PACKAGE_RUN_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].id // empty')"
+          fi
+          [[ "$PACKAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID" > package-run.json
+          gh run download "$PACKAGE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name Harbor-prerelease-publication --dir package-assets
+
+      - name: Verify package digests and source provenance
+        id: package
+        run: python3 scripts/packageui/verify.py assets
+
+      - name: Check out exact packaged product source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.package.outputs.source_commit }}
+          path: .ci/package-source
+          persist-credentials: false
+
+      - name: Verify test harness targets identical product code
+        run: python3 scripts/packageui/verify.py source
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache-dependency-path: go.sum
+
+      - name: Install released project creation prerequisites
+        run: |
+          set -euo pipefail
+          binary_directory="$RUNNER_TEMP/harbor-ui-tools"
+          mkdir -p "$binary_directory"
+          GOWORK=off GOBIN="$binary_directory" go install github.com/goforj/goforj/cmd/forj@v0.34.1
+          GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
+          test "$("$binary_directory/forj" --version)" = v0.34.1
+          printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
+
+      - name: Expose prerequisite toolchain to the graphical user session
+        run: |
+          set -euo pipefail
+          launchctl getenv PATH > "$RUNNER_TEMP/harbor-ui-launchd-path.original" || test ! -s "$RUNNER_TEMP/harbor-ui-launchd-path.original"
+          launchctl setenv PATH "$PATH"
+
+      - name: Install verified native package
+        env:
+          VERIFIED_PACKAGE: ${{ steps.package.outputs.package }}
+        run: |
+          set -euo pipefail
+          sudo -n installer -pkg "package-assets/$VERIFIED_PACKAGE" -target /
+          test -x /Applications/Harbor.app/Contents/MacOS/harbor-desktop
+          test -x /usr/local/bin/harbor
+          shasum -a 256 /Applications/Harbor.app/Contents/MacOS/harbor-desktop > "$RUNNER_TEMP/harbor-ui-installed-app.sha256"
+          /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Harbor.app
+
+      - name: Capture disposable-worker authorization policy
+        run: |
+          set -euo pipefail
+          directory=/var/root/harbor-package-ui-authorization
+          sudo -n test ! -e "$directory"
+          sudo -n install -d -m 0700 -o root -g wheel "$directory"
+          sudo -n /bin/sh -ceu '
+            umask 077
+            security authorizationdb read system.privilege.admin > "$1/original.plist"
+            plutil -lint "$1/original.plist" >/dev/null
+            test -s "$1/original.plist"
+            shasum -a 256 "$1/original.plist" > "$1/original.sha256"
+            touch "$1/capture-complete"
+          ' harbor-ui-authorization "$directory"
+          sudo -n security authorizationdb write system.privilege.admin allow
+
+      - name: Drive installed creation, HTTPS, hide, quit, and reopen
+        run: |
+          set -euo pipefail
+          xcodebuild -project desktop/packageui/macos/HarborPackageUI.xcodeproj \
+            -scheme HarborPackageUITests -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/harbor-package-ui-build" \
+            -resultBundlePath "$RUNNER_TEMP/harbor-package-ui.xcresult" \
+            -parallel-testing-enabled NO test CODE_SIGN_IDENTITY=- ONLY_ACTIVE_ARCH=YES
+          shasum -a 256 -c "$RUNNER_TEMP/harbor-ui-installed-app.sha256"
+          mkdir -p harbor-package-ui-evidence
+          cp /tmp/harbor-package-ui-evidence.json harbor-package-ui-evidence/installed-ui.json
+
+      - name: Release owned networking and record retained user files
+        run: |
+          set -euo pipefail
+          /usr/local/bin/harbor release
+          /usr/local/bin/harbor daemon stop
+          shasum -a 256 "$HOME/Library/Application Support/GoForj/Harbor/harbor.db" > "$RUNNER_TEMP/harbor-ui-retained.sha256"
+          python3 - <<'PY'
+          import json, subprocess, os
+          from pathlib import Path
+          data = json.loads(Path('harbor-package-ui-evidence/installed-ui.json').read_text())
+          project = Path(data['project_directory'])
+          assert str(project).startswith('/tmp/harbor-package-ui-')
+          with open(os.environ['RUNNER_TEMP'] + '/harbor-ui-retained.sha256', 'a') as output:
+              subprocess.run(['shasum', '-a', '256', str(project / '.goforj.yml'), str(project / 'go.mod')], stdout=output, check=True)
+          PY
+
+      - name: Uninstall package and verify user data survives
+        run: |
+          set -euo pipefail
+          sudo -n "/Library/Application Support/GoForj/Harbor/current/bin/harbor-installer" \
+            uninstall --user-id "$(id -u)" --group-id "$(id -g)"
+          test ! -e /Applications/Harbor.app
+          test ! -e "$HOME/Library/LaunchAgents/com.goforj.harbor.daemon.plist"
+          if launchctl print "gui/$(id -u)/com.goforj.harbor.daemon" >/dev/null 2>&1; then
+            echo 'installed user service survived uninstall' >&2
+            exit 1
+          fi
+          shasum -a 256 -c "$RUNNER_TEMP/harbor-ui-retained.sha256" > harbor-package-ui-evidence/uninstall-preservation.txt
+
+      - name: Restore disposable-worker authorization policy
+        if: always()
+        run: |
+          set -euo pipefail
+          directory=/var/root/harbor-package-ui-authorization
+          if ! sudo -n test -f "$directory/capture-complete"; then exit 0; fi
+          sudo -n /bin/sh -ceu '
+            shasum -a 256 -c "$1/original.sha256"
+            security authorizationdb write system.privilege.admin < "$1/original.plist"
+            security authorizationdb read system.privilege.admin > "$1/restored.plist"
+            for name in original restored; do
+              cp "$1/$name.plist" "$1/$name.normalized.plist"
+              for key in created modified; do
+                if plutil -type "$key" "$1/$name.normalized.plist" >/dev/null 2>&1; then
+                  plutil -remove "$key" "$1/$name.normalized.plist"
+                fi
+              done
+              plutil -convert json -r "$1/$name.normalized.plist"
+            done
+            cmp -s "$1/original.normalized.plist" "$1/restored.normalized.plist"
+            rm "$1/original.plist" "$1/original.sha256" "$1/capture-complete" "$1/restored.plist" "$1/original.normalized.plist" "$1/restored.normalized.plist"
+            rmdir "$1"
+          ' harbor-ui-authorization-restore "$directory"
+
+      - name: Retain native UI results and package provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Harbor-installed-macos-ui-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/harbor-package-ui.xcresult
+            harbor-package-ui-evidence/
+            package-assets/provenance.json
+            package-assets/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Restore graphical user session toolchain environment
+        if: always()
+        run: |
+          set -euo pipefail
+          original="$RUNNER_TEMP/harbor-ui-launchd-path.original"
+          if [[ ! -f "$original" ]]; then exit 0; fi
+          if [[ -s "$original" ]]; then
+            launchctl setenv PATH "$(cat "$original")"
+          else
+            launchctl unsetenv PATH
+          fi

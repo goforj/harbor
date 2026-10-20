@@ -1,10 +1,16 @@
 # Current Implementation State
 
+## Unattended installed UI automation (2026-10-19)
+
+Harbor PR #12 is merged as `74adee22d2be81ee3699fa245b7269f4d6c49733` after 41 successful checks. Its final package rehearsal, [39354344032](https://github.com/goforj/harbor/actions/runs/39354344032), passed both native package jobs with released GoForj v0.34.1, installed daemon reopen/restart, trusted HTTPS, user-file preservation, and retained uninstall receipts. Assembly passed and publication was skipped.
+
+An additional GitHub-hosted macOS workflow now admits the exact tested PKG and matching product source before driving the real installed window with XCTest. The harness covers graphical creation, Start, trusted HTTPS, hide/reopen, UI-only quit/relaunch, Stop, and post-uninstall retained file hashes. Local package verification, verifier unit tests, workflow syntax, and native test compilation pass. Hosted UI execution remains pending. See [the runbook and explicit coverage limits](./releases.md#unattended-installed-macos-ui-checks).
+
 ## GoForj CLI maintenance (2026-10-19)
 
 CI, hosted lifecycle jobs, native package acceptance, and generated-project acceptance now select released GoForj v0.34.1. That patch centralizes local database readiness and recognizes standard historical database hooks once per service while preserving custom hook ordering. This changes the external CLI selected for Harbor acceptance, not Harbor's framework module dependencies, generated-project configuration metadata, or the intentional relative desktop module replacement.
 
-GoForj PR #252 merged at `1566ce542af416cdf643bc07e35986ff8de760ad`; its 51 PR checks passed. The published CLI is installed locally, and Test4 restarted through Harbor with its original configuration unchanged, one database preparation, no historical wait-script execution, preserved frontend hook order, and system-trusted HTTPS 200. Native Harbor package evidence below predates this CLI pin until a new rehearsal is recorded.
+GoForj PR #252 merged at `1566ce542af416cdf643bc07e35986ff8de760ad`; its 51 PR checks passed. The published CLI is installed locally, and Test4 restarted through Harbor with its original configuration unchanged, one database preparation, no historical wait-script execution, preserved frontend hook order, and system-trusted HTTPS 200. Native package run 39354344032 above also passed with this CLI pin.
 
 ## Installed daemon lifecycle (2026-10-19)
 
