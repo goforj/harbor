@@ -143,7 +143,7 @@ jobs:
       - name: Release owned networking and record retained user files
         run: |
           set -euo pipefail
-          /usr/local/bin/harbor release
+          /usr/local/bin/harbor daemon release
           /usr/local/bin/harbor daemon stop
           python3 - <<'PY'
           import os, re, subprocess, time
