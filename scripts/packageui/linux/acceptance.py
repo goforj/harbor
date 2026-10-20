@@ -202,7 +202,9 @@ directory = root / 'project'
 try:
     launch()
     capture('installed-first-launch')
-    if wait('first-run UI', lambda: find('Set up secure networking') or find('New project'), 60).name == 'Set up secure networking':
+    # Overview can expose New project before its networking setup card finishes rendering.
+    wait('first-run UI', lambda: find('Set up secure networking') or find('New project'), 60)
+    if snapshot().get('network_setup', {}).get('configured') is not True:
         click('Set up secure networking')
     wait('configured networking', lambda: snapshot().get('network_setup', {}).get('configured'), 90)
     click('New project')
