@@ -279,7 +279,7 @@ func integrationRegistryAdmitParent(descriptor *windows.SECURITY_DESCRIPTOR) err
 			continue
 		}
 		if grant.Mask&(windows.GENERIC_ALL|windows.GENERIC_WRITE|windows.WRITE_DAC|windows.WRITE_OWNER|windows.DELETE|registry.SET_VALUE|registry.CREATE_SUB_KEY|registry.CREATE_LINK) != 0 {
-			return errors.New("Windows uninstall parent allows foreign mutation")
+			return fmt.Errorf("Windows uninstall parent allows foreign mutation: SID=%s mask=%#x flags=%#x descriptor=%s", grant.SID, grant.Mask, grant.Flags, descriptor.String())
 		}
 	}
 	return nil
