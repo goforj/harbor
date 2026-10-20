@@ -242,6 +242,26 @@ func command(ctx context.Context, executable string, arguments ...string) (strin
 	return string(output.data), nil
 }
 
+// createPeerParent exclusively creates the canonical UUID fixture shape already admitted by native cleanup and capture tools.
+func createPeerParent(temporary, token string) (string, error) {
+	if len(token) != 32 {
+		return "", errors.New("peer fixture requires a complete random identifier")
+	}
+	identifier, err := hex.DecodeString(token)
+	if err != nil {
+		return "", errors.New("peer fixture identifier must be hexadecimal")
+	}
+	identifier[6] = (identifier[6] & 0x0f) | 0x40
+	identifier[8] = (identifier[8] & 0x3f) | 0x80
+	token = strings.ToUpper(hex.EncodeToString(identifier))
+	name := "harbor-package-ui-" + token[:8] + "-" + token[8:12] + "-" + token[12:16] + "-" + token[16:20] + "-" + token[20:]
+	parent := filepath.Join(temporary, name)
+	if err := os.Mkdir(parent, 0700); err != nil {
+		return "", err
+	}
+	return parent, nil
+}
+
 // createPeer generates a public released GoForj fixture and customizes only its test App init.
 func (driver *recovery) createPeer(ctx context.Context) error {
 	forj, err := exec.LookPath("forj")
@@ -259,7 +279,7 @@ func (driver *recovery) createPeer(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	parent, err := os.MkdirTemp(temporary, "harbor-package-ui-recovery-")
+	parent, err := createPeerParent(temporary, nonce())
 	if err != nil {
 		return err
 	}

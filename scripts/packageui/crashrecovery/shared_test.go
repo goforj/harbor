@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -519,6 +520,46 @@ func TestAssignedProjectAddressSelectsOnlyCanonicalProviderAddress(t *testing.T)
 		changed.Overrides[1].Value = value
 		if _, err := assignedProjectAddress(changed, "peer", "127.0.0.1"); err == nil {
 			t.Fatal("invalid provider assignment accepted")
+		}
+	}
+}
+
+// TestCreatePeerParentMatchesExistingCleanupBoundary proves UUID shape, canonical fixture admission, and exclusive preservation.
+func TestCreatePeerParentMatchesExistingCleanupBoundary(t *testing.T) {
+	temporary, err := fixtureTemporaryRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := nonce()
+	parent, err := createPeerParent(temporary, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(parent, "project")
+	marker := filepath.Join(parent, "preserved")
+	t.Cleanup(func() { os.Remove(marker); os.Remove(project); os.Remove(parent) })
+	if !regexp.MustCompile(`^harbor-package-ui-[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$`).MatchString(filepath.Base(parent)) {
+		t.Fatalf("cleanup-incompatible fixture name: %s", parent)
+	}
+	if err := os.Mkdir(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if canonical, err := fixtureRoot(project); err != nil || canonical != project {
+		t.Fatalf("fixture admission: %q, %v", canonical, err)
+	}
+	if err := os.WriteFile(marker, []byte("preserve existing fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createPeerParent(temporary, token); err == nil {
+		t.Fatal("existing fixture reused")
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || string(data) != "preserve existing fixture" {
+		t.Fatal("existing fixture changed")
+	}
+	for _, invalid := range []string{"", strings.Repeat("a", 31), strings.Repeat("g", 32), strings.Repeat("a", 33)} {
+		if _, err := createPeerParent(temporary, invalid); err == nil {
+			t.Fatal("invalid fixture identifier accepted")
 		}
 	}
 }
