@@ -8,6 +8,10 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/host/networkpolicy"
+	"github.com/goforj/harbor/internal/platform/trust"
+	"github.com/goforj/harbor/internal/trust/certroot"
+	"github.com/goforj/harbor/internal/trust/localca"
 	"golang.org/x/sys/windows"
 )
 
@@ -77,4 +81,49 @@ func TestNativeRestrictedMachineTrustObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Log("read-only existing machine ROOT enumeration succeeded without certificate mutations")
+	authority, err := localca.New(localca.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	material := authority.Material()
+	request, err := trust.NewRequestForRequester("windows-low-observer-native", facts.UserSID, networkpolicy.WindowsMachineTrust, certroot.Root{
+		CertificatePEM: material.CertificatePEM, Fingerprint: material.Fingerprint, NotBefore: material.NotBefore, NotAfter: material.NotAfter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := trust.NewMachine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := adapter.Observe(t.Context(), request)
+	if err != nil {
+		t.Fatalf("production machine trust observer under actual E0 token: %v", err)
+	}
+	assessment, err := observation.Classify()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assessment.State != trust.StateAbsent || assessment.Owned != trust.OwnedStateAbsent {
+		t.Fatalf("generated uninstalled public root was not absent: %+v", assessment)
+	}
+	before, err := observation.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.EnsureIfObserved(t.Context(), request, before); !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("actual E0 trust mutation did not preserve machine write refusal: %v", err)
+	}
+	after, err := adapter.Observe(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := after.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint != before {
+		t.Fatal("refused E0 mutation changed relevant machine trust contents")
+	}
+	t.Log("production Adapter.Observe succeeded under actual restricted token; EnsureIfObserved denied before certificate write, public-root contents unchanged")
 }
