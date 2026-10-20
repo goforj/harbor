@@ -85,10 +85,15 @@ public static class HarborUIProfile {
         } finally { Marshal.FreeHGlobal(data); }
     }
     static void AssertEffectiveToken(IntPtr token) {
+        string userSID;
         using (WindowsIdentity identity = new WindowsIdentity(token)) {
+            userSID=identity.User.Value;
             if (identity.User.Value != WindowsIdentity.GetCurrent().User.Value) throw new Exception("product changed user SID");
             if (new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)) throw new Exception("product retains enabled administrator membership");
         }
+        IntPtr owner = TokenBuffer(token, 4);
+        try { if (new SecurityIdentifier(Marshal.ReadIntPtr(owner)).Value != userSID) throw new Exception("product default object owner differs from its user SID"); }
+        finally { Marshal.FreeHGlobal(owner); }
         IntPtr groups = TokenBuffer(token, 2);
         try {
             int count = Marshal.ReadInt32(groups);
@@ -199,6 +204,7 @@ public static class HarborUIProfile {
                 string privateFile=Path.Combine(privateRoot, "positive.txt");
                 File.WriteAllText(privateFile, "actual child token can write private user data");
                 if (File.ReadAllText(privateFile) != "actual child token can write private user data") throw new Exception("private data readback differs");
+                if (File.GetAccessControl(privateFile).GetOwner(typeof(SecurityIdentifier)).Value != sid) throw new Exception("child-created private file has a different owner");
                 AccessReceipts.Add("private-user-file:read-write");
                 server=new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 4096, 4096, pipeSecurity);
                 connection=server.BeginWaitForConnection(null, null);
@@ -247,6 +253,9 @@ public static class HarborUIProfile {
             foreach (LuidAndAttributes privilege in Privileges(original)) if (PrivilegeName(privilege.luid) != "SeChangeNotifyPrivilege") deleted.Add(privilege);
             // DISABLE_MAX_PRIVILEGE ignores the deletion list and leaves reenableable entries behind.
             if (!CreateRestrictedToken(original, 0, 1, disable, (uint)deleted.Count, deleted.ToArray(), 0, IntPtr.Zero, out restricted)) throw new Win32Exception();
+            IntPtr user=TokenBuffer(restricted, 1);
+            try { if (!SetTokenInformation(restricted, 4, user, IntPtr.Size)) throw new Win32Exception(); }
+            finally { Marshal.FreeHGlobal(user); }
             if (!ConvertStringSidToSid("S-1-16-8192", out medium)) throw new System.ComponentModel.Win32Exception();
             int length = Marshal.SizeOf(typeof(SidAndAttributes)) + (int)GetLengthSid(medium);
             label = Marshal.AllocHGlobal(length);
