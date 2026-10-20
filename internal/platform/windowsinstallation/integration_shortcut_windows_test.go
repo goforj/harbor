@@ -66,8 +66,8 @@ func TestNativeIntegrationShortcut(t *testing.T) {
 	if err := os.WriteFile(sentinel, []byte("preserve"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := admitted.retire(); err == nil {
-		t.Fatal("removed a directory containing foreign neighbor")
+	if err := admitted.retire(); err != nil {
+		t.Fatalf("failed to preserve shared shortcut directory: %v", err)
 	}
 	if err := admitted.Close(); err != nil {
 		t.Fatal(err)

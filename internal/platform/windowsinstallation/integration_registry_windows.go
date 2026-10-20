@@ -168,7 +168,7 @@ func integrationInspectRegistry(key registry.Key, values map[string]integrationR
 	if information.SubKeyCount != 0 || int(information.ValueCount) != len(values) {
 		return errors.New("Windows uninstall registration contains foreign entries")
 	}
-	names, err := key.ReadValueNames(len(values) + 1)
+	names, err := key.ReadValueNames(-1)
 	if err != nil {
 		return err
 	}

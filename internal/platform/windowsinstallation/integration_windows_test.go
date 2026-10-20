@@ -5,6 +5,7 @@ package windowsinstallation
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -18,7 +19,7 @@ func integrationTestAnchor(t *testing.T) string {
 	if root == "" {
 		t.Skip("requires the native admission workflow's disposable protected fixture")
 	}
-	root = filepath.Join(root, t.Name())
+	root = filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_"))
 	descriptor, err := windows.SecurityDescriptorFromString("O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)")
 	if err != nil {
 		t.Fatal(err)

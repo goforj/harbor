@@ -292,7 +292,10 @@ func (shortcut *integrationShortcut) retire() error {
 		shortcut.File = nil
 	}
 	if shortcut.Directory != nil && shortcut.Receipt.Directory.Created {
-		result = errors.Join(result, retireIntegrationFile(shortcut.Directory))
+		err := retireIntegrationFile(shortcut.Directory)
+		if !errors.Is(err, windows.ERROR_DIR_NOT_EMPTY) {
+			result = errors.Join(result, err)
+		}
 	}
 	return result
 }
