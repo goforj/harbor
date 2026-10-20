@@ -141,6 +141,13 @@ def collect_release_diagnostics(directory):
         observe([CLI, "daemon", "snapshot"])
     except Exception as error:
         diagnostics["snapshot_error"] = str(error)
+    for arguments in (["/usr/bin/csrutil", "status"],
+                      ["/usr/bin/security", "authorizationdb", "read", "com.apple.trust-settings.admin"],
+                      ["/usr/bin/security", "authorizationdb", "read", "config.modify.trust-settings"]):
+        try:
+            observe(arguments, timeout=5)
+        except Exception as error:
+            diagnostics.setdefault("trust_policy_errors", []).append(str(error))
     try:
         service = f"gui/{os.getuid()}/com.goforj.harbor.daemon"
         definition = observe(["/bin/launchctl", "print", service], retain_stdout=False)
