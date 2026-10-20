@@ -33,6 +33,8 @@ public static class HarborUIProfile {
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern IntPtr CreateFile(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegOpenKeyEx(IntPtr root, string name, uint options, uint access, out IntPtr key);
     [DllImport("advapi32.dll")] static extern int RegCloseKey(IntPtr key);
+    [DllImport("advapi32.dll", SetLastError=true)] static extern uint GetSecurityInfo(IntPtr handle, int kind, uint information, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+    [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool ConvertSecurityDescriptorToStringSecurityDescriptor(IntPtr descriptor, uint revision, uint information, out IntPtr text, out uint length);
     [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool ConvertStringSidToSid(string text, out IntPtr sid);
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool SetTokenInformation(IntPtr token, int kind, IntPtr data, int length);
     [DllImport("advapi32.dll")] static extern uint GetLengthSid(IntPtr sid);
@@ -167,18 +169,36 @@ public static class HarborUIProfile {
         IntPtr token;
         if (!OpenProcessToken(GetCurrentProcess(), 10, out token)) throw new Win32Exception();
         try { AssertEffectiveToken(token); } finally { CloseHandle(token); }
-        foreach (uint right in new uint[] { 1, 2, 0x20, 0x40, 0x40000, 0x80000 }) RequireDeniedProcess(highPID, right);
+        List<string> granted=new List<string>();
+        foreach (uint right in new uint[] { 1, 2, 0x20, 0x40, 0x40000, 0x80000 }) {
+            IntPtr process=OpenProcess(right, false, highPID);
+            int error=Marshal.GetLastWin32Error();
+            if (process != IntPtr.Zero) { CloseHandle(process); granted.Add("process:"+right); AccessReceipts.Add("UNEXPECTED-GRANT:process:"+right); }
+            else if (error != 5) throw new Win32Exception(error, "high-process denial was not access denied");
+            else AccessReceipts.Add("process:denied:"+right);
+        }
         IntPtr highProcess=OpenProcess(0x1000, false, highPID);
         if (highProcess == IntPtr.Zero) throw new Win32Exception();
         try {
             foreach (uint right in new uint[] { 1, 2, 4 }) {
                 IntPtr highToken;
-                if (OpenProcessToken(highProcess, right, out highToken)) { CloseHandle(highToken); throw new Exception("restricted process retains high-token right "+right); }
+                if (OpenProcessToken(highProcess, right, out highToken)) { CloseHandle(highToken); granted.Add("token:"+right); AccessReceipts.Add("UNEXPECTED-GRANT:token:"+right); continue; }
                 int error=Marshal.GetLastWin32Error();
                 if (error != 5) throw new Win32Exception(error, "high-token denial was not access denied");
                 AccessReceipts.Add("token:denied:"+right);
             }
         } finally { CloseHandle(highProcess); }
+        if (granted.Count != 0) throw new Exception("restricted process retains protected rights: "+String.Join(",", granted.ToArray()));
+    }
+    static string ObjectSecurity(IntPtr handle) {
+        IntPtr owner, group, dacl, sacl, descriptor, text=IntPtr.Zero;
+        uint error=GetSecurityInfo(handle, 6, 0x15, out owner, out group, out dacl, out sacl, out descriptor);
+        if (error != 0) throw new Win32Exception((int)error, "read retained high process security");
+        try {
+            uint length;
+            if (!ConvertSecurityDescriptorToStringSecurityDescriptor(descriptor, 1, 0x15, out text, out length)) throw new Win32Exception();
+            return Marshal.PtrToStringUni(text);
+        } finally { if (text != IntPtr.Zero) LocalFree(text); LocalFree(descriptor); }
     }
     static void RunNativeProcessProbe(IntPtr token, int highPID, string privateRoot) {
         string result=Path.Combine(privateRoot, "process-probe.json");
@@ -228,6 +248,7 @@ public static class HarborUIProfile {
                     if (identity.User.Value != sid || !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator) || TokenIntegrity(highFixtureToken) <= 8192 || TokenInteger(highFixtureToken, 12) != Process.GetCurrentProcess().SessionId) throw new Exception("high fixture does not have ordinary same-user interactive administrator authority");
                 }
             } finally { CloseHandle(highFixtureToken); }
+            AccessReceipts.Add("high-fixture:object-security:"+ObjectSecurity(highFixture.process));
             privateRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "harbor-ui-token-"+Guid.NewGuid().ToString("N"));
             DirectorySecurity security=new DirectorySecurity();
             security.SetSecurityDescriptorSddlForm("O:"+sid+"D:P(A;OICI;FA;;;"+sid+")");
