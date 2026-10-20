@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"unsafe"
 
 	"github.com/goforj/harbor/internal/platform/windowsinstallation"
+	"golang.org/x/sys/windows"
 )
 
 // main admits the installed desktop before creating its restricted native process and private job.
@@ -16,6 +18,7 @@ func main() {
 	code, err := runDesktopLauncher(os.Args[1:], launchInstalledDesktop)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Harbor desktop launcher: %v\n", err)
+		showLaunchError(err)
 		os.Exit(1)
 	}
 	os.Exit(int(code))
@@ -46,4 +49,14 @@ func launchInstalledDesktop() (code uint32, result error) {
 		return code, fmt.Errorf("wait for installed desktop: %w", err)
 	}
 	return code, nil
+}
+
+// showLaunchError keeps admission failures visible when the installed wrapper uses the Windows GUI subsystem.
+func showLaunchError(err error) {
+	message, conversion := windows.UTF16PtrFromString("Harbor could not open.\n\n" + err.Error())
+	if conversion != nil {
+		message = windows.StringToUTF16Ptr("Harbor could not open because installation admission failed.")
+	}
+	title := windows.StringToUTF16Ptr("Harbor")
+	_, _, _ = windows.NewLazySystemDLL("user32.dll").NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(message)), uintptr(unsafe.Pointer(title)), 0x10)
 }
