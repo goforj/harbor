@@ -4,7 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"encoding/json"
+	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
+	"strings"
 )
 
 // TestSelectionRefusesIncompleteFixtureAuthority keeps the high tool limited to one fixed action and native identity.
@@ -100,5 +103,52 @@ func TestOperationFenceRequiresExactProgress(t *testing.T) {
 	operation.IntentID = "intent-other"
 	if err := selected.advance(operation, 4); err == nil {
 		t.Fatal("accepted another intent")
+	}
+}
+
+// TestPlaneCheckpointPreservesWindowsDirectCompletion accepts the product's direct-listener terminal state without requesting a low-port helper.
+func TestPlaneCheckpointPreservesWindowsDirectCompletion(t *testing.T) {
+	now := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		state    domain.OperationState
+		phase    string
+		complete bool
+		valid    bool
+	}{
+		{domain.OperationSucceeded, "completed", true, true},
+		{domain.OperationRequiresApproval, "awaiting low-port approval", false, true},
+		{domain.OperationRequiresApproval, "awaiting trust approval", false, false},
+		{domain.OperationSucceeded, "unexpected", false, false},
+	} {
+		operation, err := domain.NewOperation("operation-plane", "intent-plane", domain.OperationKindNetworkDataPlaneSetup, "", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		operation, err = operation.Transition(domain.OperationRunning, "preparing", now.Add(time.Second), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		operation, err = operation.Transition(test.state, test.phase, now.Add(2*time.Second), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		complete, err := planeCheckpoint(control.NetworkDataPlaneSetupOperation{Operation: operation, Revision: 3})
+		if (err == nil) != test.valid || (err == nil && complete != test.complete) {
+			t.Fatalf("checkpoint %s/%s: complete=%t err=%v", test.state, test.phase, complete, err)
+		}
+	}
+	if _, err := planeCheckpoint(control.NetworkDataPlaneSetupOperation{}); err == nil {
+		t.Fatal("accepted malformed plane checkpoint")
+	}
+}
+
+// TestNativeBirthReceiptRetainsDecimalIdentity keeps creation time exact across JSON consumers with limited numeric precision.
+func TestNativeBirthReceiptRetainsDecimalIdentity(t *testing.T) {
+	data, err := json.Marshal(selection{"setup", "0123456789abcdef0123456789abcdef", 123, 134369590329171600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"daemon_birth":"134369590329171600"`) {
+		t.Fatalf("native birth lost exact string encoding: %s", data)
 	}
 }

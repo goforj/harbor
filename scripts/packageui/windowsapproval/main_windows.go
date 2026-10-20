@@ -310,8 +310,12 @@ func setup(ctx context.Context, client *control.Client, native *launcher.Launche
 		return err
 	}
 	plane = *trusted.Setup
-	if !control.RequiresNetworkDataPlaneLowPortApproval(plane) {
-		return errors.New("fresh trust approval did not select low-port checkpoint")
+	completed, err := planeCheckpoint(plane)
+	if err != nil {
+		return err
+	}
+	if completed {
+		return requireConfigured(ctx, client, check)
 	}
 	selected, err = fence(plane.Operation, plane.Revision, evidence.Selection.intent("plane"), domain.OperationKindNetworkDataPlaneSetup)
 	if err != nil {
@@ -334,6 +338,11 @@ func setup(ctx context.Context, client *control.Client, native *launcher.Launche
 	if err := selected.advance(ports.Confirmation.Operation, ports.Confirmation.Revision); err != nil {
 		return err
 	}
+	return requireConfigured(ctx, client, check)
+}
+
+// requireConfigured accepts direct Windows listeners only after the daemon confirms the complete network foundation.
+func requireConfigured(ctx context.Context, client *control.Client, check func() error) error {
 	snapshot, err := client.Snapshot(ctx)
 	if err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 )
 
@@ -16,7 +17,7 @@ type selection struct {
 	Action         string `json:"action"`
 	InstallationID string `json:"installation_id"`
 	DaemonPID      uint   `json:"daemon_pid"`
-	DaemonBirth    uint64 `json:"daemon_birth"`
+	DaemonBirth    uint64 `json:"daemon_birth,string"`
 }
 
 // validate rejects arbitrary actions and incomplete native identity before connecting or requesting authority.
@@ -66,4 +67,18 @@ func (selected operationFence) advance(operation domain.Operation, revision doma
 		return fmt.Errorf("fixture confirmation did not advance selected operation %s", selected.ID)
 	}
 	return nil
+}
+
+// planeCheckpoint admits Windows direct-listener completion without inventing an unnecessary privileged low-port operation.
+func planeCheckpoint(plane control.NetworkDataPlaneSetupOperation) (bool, error) {
+	if err := plane.Validate(); err != nil {
+		return false, err
+	}
+	if control.NetworkDataPlaneSetupCompleted(plane) {
+		return true, nil
+	}
+	if control.RequiresNetworkDataPlaneLowPortApproval(plane) {
+		return false, nil
+	}
+	return false, errors.New("trust approval did not select completed ingress or the exact low-port checkpoint")
 }

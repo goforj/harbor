@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory=$true)][string]$ToolsPath
 )
 $ErrorActionPreference = 'Stop'
+$script:approvalIndeterminate = $false
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
 $fixedRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) 'GoForj\Harbor'
 if (-not [string]::Equals([IO.Path]::GetFullPath($InstallRoot), $fixedRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'GUI test requires the fixed admitted installation' }
@@ -104,13 +105,14 @@ function Invoke-PreauthorizedNetworking([string]$Action) {
     $birth = $daemonProcess.StartTime.ToFileTimeUtc().ToString()
     $path = Join-Path $EvidenceDirectory ("preauthorized-networking-" + $Action + '.json')
     $arguments = @('--action', $Action, '--installation-id', $selection.installation_id, '--daemon-pid', [string]$daemonProcess.Id, '--daemon-birth', $birth)
+    $script:approvalIndeterminate = $true
     $process = Start-Process -FilePath $tool -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $path -RedirectStandardError ($path + '.stderr')
     try {
         $null = $process.Handle
         if (-not $process.WaitForExit(190000)) {
             $process.Kill()
             if (-not $process.WaitForExit(5000)) { throw 'owned preauthorized fixture process did not settle after its deadline' }
-            throw 'preauthorized networking fixture exceeded its native deadline'
+            throw 'preauthorized networking fixture exceeded its native deadline; elevated helper quiescence is unproved'
         }
         $exit = $process.ExitCode
     } finally { $process.Dispose() }
@@ -121,6 +123,7 @@ function Invoke-PreauthorizedNetworking([string]$Action) {
         $receipt.complete -ne $true -or $receipt.selection.installation_id -cne $selection.installation_id -or
         $receipt.selection.daemon_pid -ne $daemonProcess.Id -or [string]$receipt.selection.daemon_birth -cne $birth -or
         $receipt.user_sid -cne $selection.user_sid -or $receipt.selection.action -cne $Action) { throw 'networking fixture receipt crossed selected process or authorization scope' }
+    $script:approvalIndeterminate = $false
 }
 function Open-Harbor {
     $launched = [HarborUIProfile]::Launch($launcherPath, $InstallRoot)
@@ -278,10 +281,11 @@ try {
     try { [HarborUIProfile]::QuiesceLaunchedUIs() } catch { Write-Warning "failed to quiesce exact launched UI handles: $_" }
     throw $originalFailure
 } finally {
-    $cleanup = [ordered]@{ launched_token_facts=[HarborUIProfile]::LastLaunchFacts; gui_quiescent=$false; fixtures_stopped=$false; fixture_unregistered=$false; network_released=$false; daemon_absent=$false; retained_files=@{}; missing_files=@() }
+    $cleanup = [ordered]@{ launched_token_facts=[HarborUIProfile]::LastLaunchFacts; gui_quiescent=$false; approval_indeterminate=$script:approvalIndeterminate; fixtures_stopped=$false; fixture_unregistered=$false; network_released=$false; daemon_absent=$false; retained_files=@{}; missing_files=@() }
     try {
         [HarborUIProfile]::QuiesceLaunchedUIs()
         $cleanup.gui_quiescent = $true
+        if ($script:approvalIndeterminate) { throw 'approval is indeterminate; elevated helper quiescence is unproved, so machine cleanup and uninstall are blocked until disposable worker retirement' }
         $remaining = @(Get-Process -Name harbor-desktop -ErrorAction SilentlyContinue)
         if ($remaining.Count -ne 0) { throw 'an unrecorded desktop process prevents host cleanup' }
         $registered = Get-Project
@@ -315,6 +319,7 @@ try {
             }
         }
     } catch { $cleanup.error = $_.ToString(); Write-Warning "partial installed cleanup: $_" }
+    $cleanup.approval_indeterminate = $script:approvalIndeterminate
     $cleanup | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $EvidenceDirectory 'cleanup.json') -Encoding utf8
     [HarborUIProfile]::CloseLaunchReceipts()
 }

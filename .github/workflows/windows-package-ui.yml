@@ -271,6 +271,7 @@ jobs:
           $path = "$env:RUNNER_TEMP\harbor-installed-ui-evidence\cleanup.json"
           if (-not (Test-Path $path -PathType Leaf)) { throw 'installed UI cleanup receipt is missing' }
           $cleanup = Get-Content $path -Raw | ConvertFrom-Json
+          if ($cleanup.approval_indeterminate -ne $false) { throw 'unproved elevated helper settlement prevents further machine cleanup or uninstall' }
           foreach ($fact in @('gui_quiescent','fixtures_stopped','fixture_unregistered','network_released','daemon_absent')) {
             if ($cleanup.$fact -ne $true) { throw "partial installed cleanup: $fact was not verified" }
           }
