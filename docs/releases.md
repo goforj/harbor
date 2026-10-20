@@ -42,4 +42,6 @@ The Windows gate accepts only the exact package from the Windows development pac
 
 ## Isolated Docker diagnostics
 
+Windows product admission measures primary-token facts from retained actual process handles. Protected-machine denials and private file/IPC positives impersonate a duplicate of that exact token. The separate standalone profile additionally runs a native helper for informational cross-high process/token observations. Product-token receipts explicitly mark that observer skipped because its token origin does not meet the hosted controller's process-creation privilege exemption; they do not claim actual-product cross-high observations or containment. All mandatory machine-access checks remain enforced.
+
 Use `docker-project-diagnostics.yml` to exercise the generated MySQL project acceptance job without rebuilding the desktop matrix. Its canonical source is the `docker-adapter` job in `ci.yml`; regenerate the diagnostic workflow with `python3 scripts/packageui/render_docker_workflow.py` after changing that job. A failed run retains bounded disposable-fixture traces and state/output snapshots under `failure-diagnostics`; these files are diagnostic evidence, not a successful product proof.

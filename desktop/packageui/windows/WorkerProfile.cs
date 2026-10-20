@@ -40,7 +40,6 @@ public static class HarborUIProfile {
     [DllImport("advapi32.dll")] static extern uint GetLengthSid(IntPtr sid);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
     [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr token, string application, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string directory, ref StartupInfo startup, out ProcessInfo process);
-    [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string application, StringBuilder command, uint flags, IntPtr environment, string directory, ref StartupInfo startup, out ProcessInfo process);
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcess(string application, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string directory, ref StartupInfo startup, out ProcessInfo process);
     static int TokenInteger(IntPtr token, int kind) {
         IntPtr data = Marshal.AllocHGlobal(4);
@@ -191,8 +190,8 @@ public static class HarborUIProfile {
         if (process == IntPtr.Zero) throw new System.ComponentModel.Win32Exception();
         IntPtr token = IntPtr.Zero;
         try {
-            if (!OpenProcessToken(process, 11, out token)) throw new System.ComponentModel.Win32Exception();
-            AssertChildToken(token, pid);
+            if (!OpenProcessToken(process, 10, out token)) throw new System.ComponentModel.Win32Exception();
+            AssertChildToken(token, pid, false);
         } finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
     }
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder path, ref uint size);
@@ -207,21 +206,22 @@ public static class HarborUIProfile {
             if (!QueryFullProcessImageName(process, 0, image, ref size)) throw new Win32Exception(Marshal.GetLastWin32Error(), "query retained installed process image");
             if (!String.Equals(image.ToString(), expectedImage, StringComparison.OrdinalIgnoreCase)) throw new Exception("actual product process image differs from the selected installation");
             if (WaitForSingleObject(process, 0) != 258) throw new Exception("selected product process is no longer running");
-            if (!OpenProcessToken(process, 11, out token)) throw new Win32Exception(Marshal.GetLastWin32Error(), "open actual installed primary token");
+            if (!OpenProcessToken(process, 10, out token)) throw new Win32Exception(Marshal.GetLastWin32Error(), "open actual installed primary token");
             AssertEffectiveToken(token);
             // Retain the admitted exact process before optional diagnostics can fail.
             launches.Add(process);
             retained = true;
-            AssertChildToken(token, pid);
+            AssertChildToken(token, pid, false);
         } finally {
             if (token != IntPtr.Zero) CloseHandle(token);
             if (!retained) CloseHandle(process);
         }
     }
-    static void AssertChildToken(IntPtr token, int pid) {
+    // Product checks retain exact-token machine probes; only the standalone fixture gathers cross-high observations.
+    static void AssertChildToken(IntPtr token, int pid, bool observeCrossHigh) {
         LastLaunchFacts = "profile=hosted-preauthorized-restricted-functional;"+DescribeToken(token, pid);
         AssertEffectiveToken(token);
-        ProveEffectiveAccess(token);
+        ProveEffectiveAccess(token, observeCrossHigh);
     }
     static void RequireDeniedFile(string path, uint right, bool directory) {
         IntPtr file = CreateFile(path, right, 7, IntPtr.Zero, 3, directory ? 0x02000000u : 0u, IntPtr.Zero);
@@ -284,8 +284,7 @@ public static class HarborUIProfile {
         Exception originalFailure=null;
         try {
             AccessReceipts.Add("probe-controller:"+EffectiveControllerFacts());
-            // The measured token may originate in a product grandchild, outside AsUser's direct restricted-token exemption.
-            if (!CreateProcessWithTokenW(token, 0, executable, command, 4, IntPtr.Zero, privateRoot, ref startup, out probe)) throw new Win32Exception(Marshal.GetLastWin32Error(), "launch permission probe with the exact installed primary token");
+            if (!CreateProcessAsUser(token, executable, command, IntPtr.Zero, IntPtr.Zero, false, 4, IntPtr.Zero, privateRoot, ref startup, out probe)) throw new Win32Exception(Marshal.GetLastWin32Error(), "launch standalone permission observer with its directly derived fixture token");
             IntPtr actual;
             if (!OpenProcessToken(probe.process, 10, out actual)) throw new Win32Exception(Marshal.GetLastWin32Error(), "inspect actual permission-probe child token");
             try { AssertEffectiveToken(actual); } finally { CloseHandle(actual); }
@@ -331,7 +330,7 @@ public static class HarborUIProfile {
             throw new AggregateException("native permission fixture cleanup failed", errors);
         }
     }
-    static void ProveEffectiveAccess(IntPtr token) {
+    static void ProveEffectiveAccess(IntPtr token, bool observeCrossHigh) {
         IntPtr ownToken=IntPtr.Zero, impersonation=IntPtr.Zero;
         string privateRoot=null;
         NamedPipeServerStream server=null;
@@ -342,19 +341,21 @@ public static class HarborUIProfile {
             if (!OpenProcessToken(GetCurrentProcess(), 8, out ownToken)) throw new Win32Exception();
             if (TokenIntegrity(ownToken) <= 8192) throw new Exception("hosted fixture requires an independently high parent for direct authority probes");
             string sid=WindowsIdentity.GetCurrent().User.Value;
-            string systemRoot=Environment.GetFolderPath(Environment.SpecialFolder.System);
-            string systemProbe=Path.Combine(systemRoot, "whoami.exe");
-            StartupInfo startup=new StartupInfo(); startup.cb=Marshal.SizeOf(typeof(StartupInfo));
-            if (!CreateProcess(systemProbe, new StringBuilder("\""+systemProbe+"\""), IntPtr.Zero, IntPtr.Zero, false, 4, IntPtr.Zero, systemRoot, ref startup, out highFixture)) throw new Win32Exception();
-            IntPtr highFixtureToken;
-            if (!OpenProcessToken(highFixture.process, 0x2000A, out highFixtureToken)) throw new Win32Exception();
-            try {
-                using (WindowsIdentity identity=new WindowsIdentity(highFixtureToken)) {
-                    if (identity.User.Value != sid || !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator) || TokenIntegrity(highFixtureToken) <= 8192 || TokenInteger(highFixtureToken, 12) != Process.GetCurrentProcess().SessionId) throw new Exception("high fixture does not have ordinary same-user interactive administrator authority");
-                }
-                AccessReceipts.Add("high-fixture:token-object-security:"+ObjectSecurity(highFixtureToken));
-            } finally { CloseHandle(highFixtureToken); }
-            AccessReceipts.Add("high-fixture:object-security:"+ObjectSecurity(highFixture.process));
+            if (observeCrossHigh) {
+                string systemRoot=Environment.GetFolderPath(Environment.SpecialFolder.System);
+                string systemProbe=Path.Combine(systemRoot, "whoami.exe");
+                StartupInfo startup=new StartupInfo(); startup.cb=Marshal.SizeOf(typeof(StartupInfo));
+                if (!CreateProcess(systemProbe, new StringBuilder("\""+systemProbe+"\""), IntPtr.Zero, IntPtr.Zero, false, 4, IntPtr.Zero, systemRoot, ref startup, out highFixture)) throw new Win32Exception();
+                IntPtr highFixtureToken;
+                if (!OpenProcessToken(highFixture.process, 0x2000A, out highFixtureToken)) throw new Win32Exception();
+                try {
+                    using (WindowsIdentity identity=new WindowsIdentity(highFixtureToken)) {
+                        if (identity.User.Value != sid || !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator) || TokenIntegrity(highFixtureToken) <= 8192 || TokenInteger(highFixtureToken, 12) != Process.GetCurrentProcess().SessionId) throw new Exception("high fixture does not have ordinary same-user interactive administrator authority");
+                    }
+                    AccessReceipts.Add("high-fixture:token-object-security:"+ObjectSecurity(highFixtureToken));
+                } finally { CloseHandle(highFixtureToken); }
+                AccessReceipts.Add("high-fixture:object-security:"+ObjectSecurity(highFixture.process));
+            }
             privateRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "harbor-ui-token-"+Guid.NewGuid().ToString("N"));
             DirectorySecurity security=new DirectorySecurity();
             security.SetSecurityDescriptorSddlForm("O:"+sid+"D:P(A;OICI;FA;;;"+sid+")");
@@ -388,7 +389,9 @@ public static class HarborUIProfile {
             }
             if (!connection.AsyncWaitHandle.WaitOne(5000)) throw new Exception("private IPC connection did not complete");
             server.EndWaitForConnection(connection);
-            RunNativeProcessProbe(token, (int)highFixture.pid, privateRoot);
+            AccessReceipts.Add("machine-access:actual-token-impersonation;private-file-and-ipc:passed");
+            if (observeCrossHigh) RunNativeProcessProbe(token, (int)highFixture.pid, privateRoot);
+            else AccessReceipts.Add("actual-product-cross-high-observer:skipped;primary-token-facts:measured;machine-access:actual-token-impersonation;containment:unsupported");
         } catch (Exception error) { originalFailure=error; throw; }
         finally {
             FinishCleanup(originalFailure, new Action[] {
@@ -450,7 +453,7 @@ public static class HarborUIProfile {
             recorded = true;
             IntPtr actualToken;
             if (!OpenProcessToken(created.process, 11, out actualToken)) throw new Win32Exception();
-            try { AssertChildToken(actualToken, (int)created.pid); } finally { CloseHandle(actualToken); }
+            try { AssertChildToken(actualToken, (int)created.pid, true); } finally { CloseHandle(actualToken); }
             if (ResumeThread(created.thread) == uint.MaxValue) throw new System.ComponentModel.Win32Exception();
             return (int)created.pid;
         } finally {
