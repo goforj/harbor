@@ -11,12 +11,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
 )
 
-const generatedComposeDiagnosticBytes = 64 * 1024
+const (
+	generatedComposeDiagnosticBytes      = 64 * 1024
+	generatedComposeStateDiagnosticBytes = generatedComposeDiagnosticBytes + 4096
+	generatedComposeOutputPages          = 8
+)
 
 // generatedComposeDiagnosticSnapshot keeps only the latest bounded evidence for one disposable fixture.
 type generatedComposeDiagnosticSnapshot struct {
@@ -46,11 +51,11 @@ func startGeneratedComposeDiagnosticSampler(
 			observed := capture(ctx)
 			for index, snapshot := range observed {
 				if len(snapshot.StateAndOutput) > 0 {
-					retained[index].StateAndOutput = boundGeneratedComposeDiagnostic(snapshot.StateAndOutput)
+					retained[index].StateAndOutput = boundGeneratedComposeDiagnostic(snapshot.StateAndOutput, generatedComposeStateDiagnosticBytes)
 					retained[index].StateObservedAt = snapshot.StateObservedAt
 				}
 				if len(snapshot.Trace) > 0 {
-					retained[index].Trace = boundGeneratedComposeDiagnostic(snapshot.Trace)
+					retained[index].Trace = boundGeneratedComposeDiagnostic(snapshot.Trace, generatedComposeDiagnosticBytes)
 					retained[index].TraceObservedAt = snapshot.TraceObservedAt
 				}
 			}
@@ -100,6 +105,52 @@ func captureGeneratedComposeDiagnostics(
 	return snapshots
 }
 
+// readGeneratedComposeOutputTail follows bounded cursor pages while retaining only the newest transcript bytes.
+func readGeneratedComposeOutputTail(
+	ctx context.Context,
+	read func(uint64) (projectprocess.OutputChunk, error),
+) (projectprocess.OutputChunk, error) {
+	var retained projectprocess.OutputChunk
+	var cursor uint64
+	for page := 0; page < generatedComposeOutputPages; page++ {
+		if err := ctx.Err(); err != nil {
+			return retained, err
+		}
+		chunk, err := read(cursor)
+		if err != nil {
+			return retained, err
+		}
+		if !chunk.Available && !chunk.Historical {
+			return retained, nil
+		}
+		if chunk.Reset && cursor != 0 {
+			retained.Text = ""
+		}
+		text := retained.Text + chunk.Text
+		truncated := retained.Truncated || chunk.Truncated
+		if len(text) > generatedComposeDiagnosticBytes {
+			text = text[len(text)-generatedComposeDiagnosticBytes:]
+			for len(text) > 0 && !utf8.RuneStart(text[0]) {
+				text = text[1:]
+			}
+			truncated = true
+		}
+		retained = projectprocess.OutputChunk{
+			Available: chunk.Available, Historical: chunk.Historical,
+			Reset: retained.Reset || chunk.Reset, Truncated: truncated,
+			HasMore: chunk.HasMore, NextCursor: chunk.NextCursor, Text: text,
+		}
+		if !chunk.HasMore {
+			return retained, nil
+		}
+		if chunk.NextCursor <= cursor && !chunk.Reset {
+			return retained, fmt.Errorf("supervisor output cursor did not advance from %d", cursor)
+		}
+		cursor = chunk.NextCursor
+	}
+	return retained, nil
+}
+
 // generatedComposeStateAndOutput records lifecycle phase and exact session output without retaining credentials.
 func generatedComposeStateAndOutput(
 	ctx context.Context,
@@ -121,9 +172,16 @@ func generatedComposeStateAndOutput(
 	fmt.Fprintf(&snapshot, "session=%s state=%s error=%v\n", session.ID, session.State, sessionErr)
 	outputAvailable := false
 	if sessionErr == nil {
-		output, outputErr := supervisor.ReadOutputHistory(project.id, session.ID, 0)
+		output, outputErr := readGeneratedComposeOutputTail(ctx, func(cursor uint64) (projectprocess.OutputChunk, error) {
+			if chunk := supervisor.ReadOutput(project.id, session.ID, cursor); chunk.Available {
+				return chunk, nil
+			}
+			return supervisor.ReadOutputHistory(project.id, session.ID, cursor)
+		})
 		outputAvailable = outputErr == nil && (output.Available || output.Historical)
-		fmt.Fprintf(&snapshot, "supervisor_output available=%t historical=%t truncated=%t has_more=%t next_cursor=%d error=%v\n%s", output.Available, output.Historical, output.Truncated, output.HasMore, output.NextCursor, outputErr, output.Text)
+		fmt.Fprintf(&snapshot, "supervisor_output available=%t historical=%t truncated=%t has_more=%t next_cursor=%d page_limit=%d error=%v\n", output.Available, output.Historical, output.Truncated, output.HasMore, output.NextCursor, generatedComposeOutputPages, outputErr)
+		metadata := boundGeneratedComposeDiagnostic([]byte(snapshot.String()), generatedComposeStateDiagnosticBytes-generatedComposeDiagnosticBytes)
+		return append(metadata, []byte(output.Text)...), outputAvailable && ctx.Err() == nil
 	}
 	return []byte(snapshot.String()), outputAvailable && ctx.Err() == nil
 }
@@ -160,13 +218,13 @@ func retainGeneratedComposeFailureDiagnostics(
 			continue
 		}
 		snapshot, _ := generatedComposeStateAndOutput(ctx, store, journal, supervisor, project)
-		retainGeneratedComposeDiagnostic(t, destination, name+"-state-and-output.txt", snapshot)
+		retainGeneratedComposeDiagnostic(t, destination, name+"-state-and-output.txt", snapshot, generatedComposeStateDiagnosticBytes)
 		if index >= len(history) {
 			continue
 		}
 		previous := history[index]
 		if len(previous.StateAndOutput) > 0 {
-			retainGeneratedComposeDiagnostic(t, destination, name+"-before-retirement.txt", previous.StateAndOutput)
+			retainGeneratedComposeDiagnostic(t, destination, name+"-before-retirement.txt", previous.StateAndOutput, generatedComposeStateDiagnosticBytes)
 		}
 		trace, err := readGeneratedComposeLaunchTrace(fixtureRoot, name)
 		traceObservedAt := time.Now().UTC()
@@ -176,18 +234,18 @@ func retainGeneratedComposeFailureDiagnostics(
 			traceObservedAt = previous.TraceObservedAt
 		}
 		metadata := fmt.Sprintf("active_state_captured_at=%s\ntrace_captured_at=%s\n", previous.StateObservedAt.Format(time.RFC3339Nano), traceObservedAt.Format(time.RFC3339Nano))
-		retainGeneratedComposeDiagnostic(t, destination, name+"-capture-times.txt", []byte(metadata))
+		retainGeneratedComposeDiagnostic(t, destination, name+"-capture-times.txt", []byte(metadata), generatedComposeDiagnosticBytes)
 		if len(trace) == 0 {
 			continue
 		}
-		retainGeneratedComposeDiagnostic(t, destination, name+"-forj-dev.log", trace)
+		retainGeneratedComposeDiagnostic(t, destination, name+"-forj-dev.log", trace, generatedComposeDiagnosticBytes)
 	}
 }
 
 // retainGeneratedComposeDiagnostic bounds both uploaded files and test output, without overwriting existing files.
-func retainGeneratedComposeDiagnostic(t *testing.T, destination *os.Root, name string, contents []byte) {
+func retainGeneratedComposeDiagnostic(t *testing.T, destination *os.Root, name string, contents []byte, maximumBytes int) {
 	t.Helper()
-	contents = boundGeneratedComposeDiagnostic(contents)
+	contents = boundGeneratedComposeDiagnostic(contents, maximumBytes)
 	t.Logf("Docker failure diagnostics %s:\n%s", name, contents)
 	if destination == nil {
 		return
@@ -204,10 +262,10 @@ func retainGeneratedComposeDiagnostic(t *testing.T, destination *os.Root, name s
 }
 
 // boundGeneratedComposeDiagnostic owns one immutable bounded copy for memory, files, and test output.
-func boundGeneratedComposeDiagnostic(contents []byte) []byte {
-	if len(contents) > generatedComposeDiagnosticBytes {
+func boundGeneratedComposeDiagnostic(contents []byte, maximumBytes int) []byte {
+	if len(contents) > maximumBytes {
 		marker := []byte("\n[additional failure diagnostics omitted]\n")
-		result := append([]byte(nil), contents[:generatedComposeDiagnosticBytes-len(marker)]...)
+		result := append([]byte(nil), contents[:maximumBytes-len(marker)]...)
 		return append(result, marker...)
 	}
 	return append([]byte(nil), contents...)
@@ -426,7 +484,7 @@ func TestGeneratedComposeDiagnosticRetention(t *testing.T) {
 	}
 	defer root.Close()
 	contents := []byte(strings.Repeat("x", generatedComposeDiagnosticBytes+10))
-	retainGeneratedComposeDiagnostic(t, root, "project-01-state-and-output.txt", contents)
+	retainGeneratedComposeDiagnostic(t, root, "project-01-state-and-output.txt", contents, generatedComposeDiagnosticBytes)
 	got, err := root.ReadFile("project-01-state-and-output.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -434,7 +492,7 @@ func TestGeneratedComposeDiagnosticRetention(t *testing.T) {
 	if len(got) != generatedComposeDiagnosticBytes || !strings.HasSuffix(string(got), "\n[additional failure diagnostics omitted]\n") {
 		t.Fatalf("artifact lacks a bounded truncation marker: %d bytes", len(got))
 	}
-	retainGeneratedComposeDiagnostic(t, root, "project-01-state-and-output.txt", []byte("replacement"))
+	retainGeneratedComposeDiagnostic(t, root, "project-01-state-and-output.txt", []byte("replacement"), generatedComposeDiagnosticBytes)
 	again, err := root.ReadFile("project-01-state-and-output.txt")
 	if err != nil || string(again) != string(got) {
 		t.Fatalf("existing diagnostics overwritten: %v", err)
@@ -451,7 +509,7 @@ func TestGeneratedComposeDiagnosticSamplerBoundsReplacement(t *testing.T) {
 	defer cancel()
 	observed := make(chan int, 1)
 	var calls int
-	latest := []byte("latest-" + strings.Repeat("x", generatedComposeDiagnosticBytes))
+	latest := []byte("latest-" + strings.Repeat("x", generatedComposeStateDiagnosticBytes))
 	at := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
 	stop := startGeneratedComposeDiagnosticSampler(ctx, time.Millisecond, func(ctx context.Context) [3]generatedComposeDiagnosticSnapshot {
 		calls++
@@ -485,8 +543,9 @@ func TestGeneratedComposeDiagnosticSamplerBoundsReplacement(t *testing.T) {
 	retained := stop()
 	latest[0] = 'z'
 	for index, snapshot := range retained {
-		for _, contents := range [][]byte{snapshot.StateAndOutput, snapshot.Trace} {
-			if len(contents) != generatedComposeDiagnosticBytes || !strings.HasPrefix(string(contents), "latest-") || !strings.HasSuffix(string(contents), "\n[additional failure diagnostics omitted]\n") {
+		for field, contents := range [][]byte{snapshot.StateAndOutput, snapshot.Trace} {
+			wantBytes := []int{generatedComposeStateDiagnosticBytes, generatedComposeDiagnosticBytes}[field]
+			if len(contents) != wantBytes || !strings.HasPrefix(string(contents), "latest-") || !strings.HasSuffix(string(contents), "\n[additional failure diagnostics omitted]\n") {
 				t.Fatalf("fixture %d lost its latest bounded owned copy: %d bytes", index, len(contents))
 			}
 		}
@@ -554,13 +613,24 @@ func TestGeneratedComposeDiagnosticSamplerRetainsRetiredTrace(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	observed := make(chan bool)
+	transcript := strings.Repeat("earlier fixture output\n", 8000) + "UNIQUE FINAL STARTUP FAILURE\n"
 	stop := startGeneratedComposeDiagnosticSampler(ctx, time.Millisecond, func(ctx context.Context) [3]generatedComposeDiagnosticSnapshot {
 		trace, err := readGeneratedComposeLaunchTrace(root, "project-01")
+		var stateAndOutput []byte
+		if err == nil {
+			output, readErr := readGeneratedComposeOutputTail(ctx, func(cursor uint64) (projectprocess.OutputChunk, error) {
+				end := min(int(cursor)+projectprocess.MaximumOutputChunkBytes, len(transcript))
+				return projectprocess.OutputChunk{Available: true, Text: transcript[int(cursor):end], NextCursor: uint64(end), HasMore: end < len(transcript)}, nil
+			})
+			if readErr == nil {
+				stateAndOutput = append([]byte("phase=waiting-for-readiness\ncaptured_at=2026-10-20T08:00:00Z\n"), []byte(output.Text)...)
+			}
+		}
 		select {
 		case observed <- err == nil:
 		case <-ctx.Done():
 		}
-		return [3]generatedComposeDiagnosticSnapshot{{Trace: trace, TraceObservedAt: time.Now().UTC()}}
+		return [3]generatedComposeDiagnosticSnapshot{{Trace: trace, TraceObservedAt: time.Now().UTC(), StateAndOutput: stateAndOutput, StateObservedAt: time.Now().UTC()}}
 	})
 	defer stop()
 	select {
@@ -586,7 +656,106 @@ func TestGeneratedComposeDiagnosticSamplerRetainsRetiredTrace(t *testing.T) {
 		break
 	}
 	retained := stop()
+	if !strings.HasPrefix(string(retained[0].StateAndOutput), "phase=waiting-for-readiness\ncaptured_at=") || !strings.HasSuffix(string(retained[0].StateAndOutput), "UNIQUE FINAL STARTUP FAILURE\n") || len(retained[0].StateAndOutput) > generatedComposeStateDiagnosticBytes {
+		t.Fatal("retirement lost metadata or the final failure beyond the first output page")
+	}
 	if string(retained[0].Trace) != "fixture startup phase\n" || retained[0].TraceObservedAt.IsZero() {
 		t.Fatalf("trace retirement discarded captured evidence: %#v", retained[0])
 	}
+}
+
+// TestGeneratedComposeOutputTail proves cursor paging retains late failures and remains bounded under source changes.
+func TestGeneratedComposeOutputTail(t *testing.T) {
+	t.Run("newest output", func(t *testing.T) {
+		text := strings.Repeat("old output\n", 20000) + "UNIQUE LATE FAILURE\n"
+		reads := 0
+		chunk, err := readGeneratedComposeOutputTail(t.Context(), func(cursor uint64) (projectprocess.OutputChunk, error) {
+			reads++
+			end := min(int(cursor)+projectprocess.MaximumOutputChunkBytes, len(text))
+			return projectprocess.OutputChunk{Historical: true, Text: text[int(cursor):end], NextCursor: uint64(end), HasMore: end < len(text)}, nil
+		})
+		if err != nil || reads < 2 || len(chunk.Text) != generatedComposeDiagnosticBytes || !strings.HasSuffix(chunk.Text, "UNIQUE LATE FAILURE\n") || !chunk.Truncated || chunk.HasMore || chunk.NextCursor != uint64(len(text)) || !chunk.Historical {
+			t.Fatalf("tail metadata or final failure lost: reads=%d bytes=%d cursor=%d truncated=%t has_more=%t error=%v", reads, len(chunk.Text), chunk.NextCursor, chunk.Truncated, chunk.HasMore, err)
+		}
+	})
+	t.Run("UTF-8 tail boundary", func(t *testing.T) {
+		reads := 0
+		var cursor uint64
+		chunk, err := readGeneratedComposeOutputTail(t.Context(), func(uint64) (projectprocess.OutputChunk, error) {
+			reads++
+			text := strings.Repeat("界", 20000)
+			if reads == 2 {
+				text += "end"
+			}
+			cursor += uint64(len(text))
+			return projectprocess.OutputChunk{Available: true, Text: text, NextCursor: cursor, HasMore: reads == 1}, nil
+		})
+		if err != nil || !utf8.ValidString(chunk.Text) || len(chunk.Text) > generatedComposeDiagnosticBytes || !strings.HasSuffix(chunk.Text, "end") {
+			t.Fatalf("tail split a UTF-8 code point: bytes=%d error=%v", len(chunk.Text), err)
+		}
+	})
+	t.Run("read error", func(t *testing.T) {
+		want := fmt.Errorf("fixture history unavailable")
+		_, err := readGeneratedComposeOutputTail(t.Context(), func(uint64) (projectprocess.OutputChunk, error) {
+			return projectprocess.OutputChunk{}, want
+		})
+		if err != want {
+			t.Fatalf("read error = %v, want %v", err, want)
+		}
+	})
+	t.Run("page budget", func(t *testing.T) {
+		reads := 0
+		chunk, err := readGeneratedComposeOutputTail(t.Context(), func(cursor uint64) (projectprocess.OutputChunk, error) {
+			reads++
+			return projectprocess.OutputChunk{Available: true, Text: strings.Repeat("x", generatedComposeDiagnosticBytes), NextCursor: cursor + generatedComposeDiagnosticBytes, HasMore: true}, nil
+		})
+		if err != nil || reads != generatedComposeOutputPages || len(chunk.Text) != generatedComposeDiagnosticBytes || !chunk.HasMore || !chunk.Truncated {
+			t.Fatalf("page budget not retained: reads=%d bytes=%d has_more=%t error=%v", reads, len(chunk.Text), chunk.HasMore, err)
+		}
+	})
+	t.Run("nonadvancing cursor", func(t *testing.T) {
+		_, err := readGeneratedComposeOutputTail(t.Context(), func(uint64) (projectprocess.OutputChunk, error) {
+			return projectprocess.OutputChunk{Available: true, HasMore: true}, nil
+		})
+		if err == nil {
+			t.Fatal("nonadvancing output cursor accepted")
+		}
+	})
+	t.Run("reset", func(t *testing.T) {
+		reads := 0
+		chunk, err := readGeneratedComposeOutputTail(t.Context(), func(uint64) (projectprocess.OutputChunk, error) {
+			reads++
+			if reads == 1 {
+				return projectprocess.OutputChunk{Available: true, Text: "old", NextCursor: 3, HasMore: true}, nil
+			}
+			return projectprocess.OutputChunk{Available: true, Text: "new", NextCursor: 3, Reset: true}, nil
+		})
+		if err != nil || chunk.Text != "new" || !chunk.Reset {
+			t.Fatalf("reset output mixed with old cursor: %#v, %v", chunk, err)
+		}
+	})
+	t.Run("retired during paging", func(t *testing.T) {
+		reads := 0
+		chunk, err := readGeneratedComposeOutputTail(t.Context(), func(uint64) (projectprocess.OutputChunk, error) {
+			reads++
+			if reads == 1 {
+				return projectprocess.OutputChunk{Historical: true, Text: "last available", NextCursor: 14, HasMore: true}, nil
+			}
+			return projectprocess.OutputChunk{}, nil
+		})
+		if err != nil || chunk.Text != "last available" || !chunk.Historical || !chunk.HasMore {
+			t.Fatalf("retirement discarded or overstated available output: %#v, %v", chunk, err)
+		}
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err := readGeneratedComposeOutputTail(ctx, func(uint64) (projectprocess.OutputChunk, error) {
+			t.Fatal("read output after cancellation")
+			return projectprocess.OutputChunk{}, nil
+		})
+		if err != context.Canceled {
+			t.Fatalf("cancelled read returned %v", err)
+		}
+	})
 }
