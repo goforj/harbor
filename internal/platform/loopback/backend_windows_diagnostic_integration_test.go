@@ -334,3 +334,111 @@ func TestWindowsDiagnosticCreatedRowRejectsDrift(t *testing.T) {
 		t.Fatal("admitted unknown birth")
 	}
 }
+
+// windowsForcedSourceSelection reproduces Windows' intermittent create result on exact fresh rows only.
+type windowsForcedSourceSelection struct {
+	windowsIPHelper
+	t         *testing.T
+	corrected int
+}
+
+// createAddress forces only the observed source flag on this just-created preferred birth for native regression.
+func (helper *windowsForcedSourceSelection) createAddress(row *windows.MibUnicastIpAddressRow) error {
+	var before, after windows.Filetime
+	windows.GetSystemTimeAsFileTime(&before)
+	if err := helper.windowsIPHelper.createAddress(row); err != nil {
+		return err
+	}
+	windows.GetSystemTimeAsFileTime(&after)
+	observed, err := helper.windowsIPHelper.address(*row)
+	if err != nil {
+		return err
+	}
+	birth := observed.CreationTimeStamp
+	if birth.Nanoseconds() < before.Nanoseconds() || birth.Nanoseconds() > after.Nanoseconds() || !createdWindowsTransitionRow(observed, *row, birth) {
+		return fmt.Errorf("forced fixture requires exact fresh preferred creation: %+v", observed)
+	}
+	helper.t.Cleanup(func() {
+		cleanup := &platformBackend{ipHelper: helper.windowsIPHelper, reconciliationAttempts: windowsReconciliationAttempts, reconciliationInterval: windowsReconciliationInterval}
+		if err := cleanup.rollbackCreatedAddress(*row, &windowsAddressCreation{birth: birth}); err != nil {
+			helper.t.Error(err)
+		}
+	})
+	if err := diagnosticWindowsTableMatches(helper.windowsIPHelper, observed); err != nil {
+		return err
+	}
+	updated := observed
+	updated.SkipAsSource = 0
+	if err := helper.windowsIPHelper.setAddress(&updated); err != nil {
+		return err
+	}
+	verified, err := helper.windowsIPHelper.address(*row)
+	if err != nil {
+		return err
+	}
+	if verified != updated {
+		return fmt.Errorf("forced fixture changed another field: %+v", verified)
+	}
+	if err := diagnosticWindowsTableMatches(helper.windowsIPHelper, verified); err != nil {
+		return err
+	}
+	return nil
+}
+
+// setAddress records only the production correction because fixture injection calls the underlying native helper.
+func (helper *windowsForcedSourceSelection) setAddress(row *windows.MibUnicastIpAddressRow) error {
+	helper.corrected++
+	return helper.windowsIPHelper.setAddress(row)
+}
+
+// TestWindowsNativeForcedSourceSelectionCreation proves the production transaction against deterministic native SkipAsSource drift.
+func TestWindowsNativeForcedSourceSelectionCreation(t *testing.T) {
+	value := os.Getenv("HARBOR_WINDOWS_DIAGNOSTIC_POOL")
+	if value == "" {
+		t.Skip("HARBOR_WINDOWS_DIAGNOSTIC_POOL explicitly selects an isolated native proof range")
+	}
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil || prefix.String() != value || prefix.Bits() != poolpolicy.PrefixBits {
+		t.Fatal("native regression requires an explicit canonical loopback /24")
+	}
+	addresses, err := poolpolicy.Addresses(prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform := newPlatformBackend().(*platformBackend)
+	helper := &windowsForcedSourceSelection{windowsIPHelper: platform.ipHelper, t: t}
+	platform.ipHelper = helper
+	adapter := newAdapter(platform)
+	for _, address := range addresses[:100] {
+		initial, err := adapter.Observe(t.Context(), address)
+		if err != nil || initial.State != StateAbsent {
+			t.Fatalf("require absent %s: %+v err=%v", address, initial, err)
+		}
+		fingerprint, err := initial.Fingerprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		change, err := adapter.EnsureIfObserved(t.Context(), address, fingerprint)
+		if err != nil || change.After.State != StateExact {
+			t.Fatalf("production correction %s: %+v err=%v", address, change, err)
+		}
+		owned, err := change.After.Fingerprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if _, err := adapter.ReleaseIfObserved(ctx, address, owned); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	if helper.corrected != 100 {
+		t.Fatalf("production setter corrections=%d want100", helper.corrected)
+	}
+	if _, err := platformproof.ProveProjectIdentities(t.Context(), platformproof.ProjectIdentityRequest{Addresses: addresses[:100], Port: 3306}); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("production native corrections=%d with exact independent readback and cleanup", helper.corrected)
+}

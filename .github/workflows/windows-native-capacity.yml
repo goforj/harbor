@@ -38,7 +38,7 @@ jobs:
       - name: Capture repeated capacity readbacks and exact cleanup
         shell: pwsh
         run: |
-          go test -tags=platformmutation ./internal/platform/loopback -run '^(TestWindowsNativeCapacityReadback|TestWindowsNativeSkipAsSourceTransition|TestWindowsDiagnosticCreatedRowRejectsDrift)$' -count=10 -timeout=10m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-native-capacity.log"
+          go test -tags=platformmutation ./internal/platform/loopback -run '^(TestWindowsNativeForcedSourceSelectionCreation|TestWindowsNativeCapacityReadback|TestWindowsNativeSkipAsSourceTransition|TestWindowsDiagnosticCreatedRowRejectsDrift)$' -count=10 -timeout=10m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-native-capacity.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain native socket state
         if: always()
