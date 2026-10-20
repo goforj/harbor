@@ -50,6 +50,13 @@ func TestNativeInteractiveShellBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	window, _, _ := getShellWindow.Call()
+	verification := VerifyInteractiveSession()
+	if (window == 0 || session == 0) && verification == nil {
+		t.Fatal("public interactive verification admitted a headless session")
+	}
+	if window != 0 && session != 0 && verification != nil {
+		t.Fatal(verification)
+	}
 	process, err := retainInteractiveShell(user.User.Sid.String(), session)
 	if window == 0 || session == 0 {
 		if err == nil {

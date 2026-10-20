@@ -16,6 +16,24 @@ var (
 	getWindowThreadProcessID = windows.NewLazySystemDLL("user32.dll").NewProc("GetWindowThreadProcessId")
 )
 
+// VerifyInteractiveSession refuses service logons and elevation under a different account before machine installation writes.
+func VerifyInteractiveSession() error {
+	token := windows.GetCurrentProcessToken()
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return err
+	}
+	var session uint32
+	if err := tokenInteger(token, windows.TokenSessionId, &session); err != nil {
+		return err
+	}
+	shell, err := retainInteractiveShell(user.User.Sid.String(), session)
+	if err != nil {
+		return err
+	}
+	return windows.CloseHandle(shell)
+}
+
 // retainInteractiveShell binds activation to the current desktop's actual Explorer token rather than a requested account.
 func retainInteractiveShell(user string, session uint32) (_ windows.Handle, result error) {
 	window, _, _ := getShellWindow.Call()
