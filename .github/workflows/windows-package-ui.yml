@@ -144,7 +144,7 @@ jobs:
           $env:GOMODCACHE = "$env:RUNNER_TEMP\harbor-ui-gomodcache"
           $env:GOBIN = "$env:RUNNER_TEMP\harbor-ui-tools"
           New-Item -ItemType Directory -Path $env:GOBIN | Out-Null
-          go install github.com/goforj/goforj/cmd/forj@v0.34.1
+          go install github.com/goforj/goforj/cmd/forj@v0.35.1
           if ($LASTEXITCODE -ne 0) { throw 'released GoForj installation failed' }
           go install github.com/goforj/wire/cmd/wire@v1.2.0
           if ($LASTEXITCODE -ne 0) { throw 'Wire installation failed' }

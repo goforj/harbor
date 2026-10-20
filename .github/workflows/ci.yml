@@ -220,8 +220,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: goforj/goforj
-          # GoForj #253 authenticates MySQL readiness and rejects its temporary initialization server.
-          ref: 7e38e5f041cc2f449f5ec33baaaa2139ac4b6b50
+          # Released GoForj authenticates MySQL readiness and rejects its temporary initialization server.
+          ref: v0.35.1
           path: .ci/goforj
           persist-credentials: false
 

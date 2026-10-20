@@ -90,9 +90,9 @@ jobs:
           set -euo pipefail
           binary_directory="$RUNNER_TEMP/harbor-ui-tools"
           mkdir -p "$binary_directory"
-          GOWORK=off GOBIN="$binary_directory" go install github.com/goforj/goforj/cmd/forj@v0.34.1
+          GOWORK=off GOBIN="$binary_directory" go install github.com/goforj/goforj/cmd/forj@v0.35.1
           GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
-          test "$("$binary_directory/forj" --version)" = v0.34.1
+          test "$("$binary_directory/forj" --version)" = v0.35.1
           GOWORK=off go build -o "$binary_directory/harbor-fixture-approval" ./scripts/packageui/fixtureapproval
           printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
           printf 'HARBOR_PACKAGE_UI_APPROVAL_TOOL=%s/harbor-fixture-approval\n' "$binary_directory" >> "$GITHUB_ENV"
