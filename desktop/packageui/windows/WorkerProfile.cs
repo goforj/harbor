@@ -47,6 +47,7 @@ public static class HarborUIProfile {
     public static string[] ProtectedDirectories = new string[0];
     public static string[] ProtectedFiles = new string[0];
     public static string ProtectedRegistryKey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System";
+    public static string ProcessProbeScript;
     public static readonly List<string> AccessReceipts = new List<string>();
     static IntPtr TokenBuffer(IntPtr token, int kind) {
         int length;
@@ -138,7 +139,7 @@ public static class HarborUIProfile {
         if (process == IntPtr.Zero) throw new System.ComponentModel.Win32Exception();
         IntPtr token = IntPtr.Zero;
         try {
-            if (!OpenProcessToken(process, 10, out token)) throw new System.ComponentModel.Win32Exception();
+            if (!OpenProcessToken(process, 11, out token)) throw new System.ComponentModel.Win32Exception();
             AssertChildToken(token, pid);
         } finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
     }
@@ -160,6 +161,50 @@ public static class HarborUIProfile {
         if (process != IntPtr.Zero) { CloseHandle(process); throw new Exception("restricted token retains high-process right "+right); }
         if (error != 5) throw new Win32Exception(error, "high-process denial was not access denied");
         AccessReceipts.Add("process:denied:"+right);
+    }
+    public static void ProveNativeProcessRights(int highPID) {
+        IntPtr token;
+        if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 10, out token)) throw new Win32Exception();
+        try { AssertEffectiveToken(token); } finally { CloseHandle(token); }
+        foreach (uint right in new uint[] { 1, 2, 0x20, 0x40, 0x40000, 0x80000 }) RequireDeniedProcess(highPID, right);
+        IntPtr highProcess=OpenProcess(0x1000, false, highPID);
+        if (highProcess == IntPtr.Zero) throw new Win32Exception();
+        try {
+            foreach (uint right in new uint[] { 1, 2, 4 }) {
+                IntPtr highToken;
+                if (OpenProcessToken(highProcess, right, out highToken)) { CloseHandle(highToken); throw new Exception("restricted process retains high-token right "+right); }
+                int error=Marshal.GetLastWin32Error();
+                if (error != 5) throw new Win32Exception(error, "high-token denial was not access denied");
+                AccessReceipts.Add("token:denied:"+right);
+            }
+        } finally { CloseHandle(highProcess); }
+    }
+    static void RunNativeProcessProbe(IntPtr token, int highPID, string privateRoot) {
+        string result=Path.Combine(privateRoot, "process-probe.json");
+        if (String.IsNullOrEmpty(ProcessProbeScript) || ProcessProbeScript.Contains("\"") || result.Contains("\"")) throw new Exception("native process probe path is invalid");
+        string executable=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+        StringBuilder command=new StringBuilder("\""+executable+"\" -NoProfile -NonInteractive -File \""+ProcessProbeScript+"\" -HighProcessId "+highPID+" -ResultPath \""+result+"\"");
+        StartupInfo startup=new StartupInfo(); startup.cb=Marshal.SizeOf(typeof(StartupInfo));
+        ProcessInfo probe=new ProcessInfo();
+        try {
+            if (!CreateProcessAsUser(token, executable, command, IntPtr.Zero, IntPtr.Zero, false, 4, IntPtr.Zero, privateRoot, ref startup, out probe)) throw new Win32Exception();
+            IntPtr actual;
+            if (!OpenProcessToken(probe.process, 10, out actual)) throw new Win32Exception();
+            try { AssertEffectiveToken(actual); } finally { CloseHandle(actual); }
+            if (ResumeThread(probe.thread) == uint.MaxValue) throw new Win32Exception();
+            if (WaitForSingleObject(probe.process, 30000) != 0) throw new Exception("native permission probe exceeded its bound");
+            uint code;
+            if (!GetExitCodeProcess(probe.process, out code)) throw new Win32Exception();
+            string receipt=File.Exists(result) ? File.ReadAllText(result) : "missing native permission receipt";
+            AccessReceipts.Add("actual-process-probe:"+receipt);
+            if (code != 0) throw new Exception("actual restricted process denied-permission probe failed: "+receipt);
+        } finally {
+            if (probe.thread != IntPtr.Zero) CloseHandle(probe.thread);
+            if (probe.process != IntPtr.Zero) {
+                if (WaitForSingleObject(probe.process, 0) != 0) { TerminateProcess(probe.process, 1); WaitForSingleObject(probe.process, 10000); }
+                CloseHandle(probe.process);
+            }
+        }
     }
     static void ProveEffectiveAccess(IntPtr token) {
         IntPtr ownToken=IntPtr.Zero, impersonation=IntPtr.Zero;
@@ -199,19 +244,6 @@ public static class HarborUIProfile {
                     if (error != 5) throw new Win32Exception(error, "protected registry denial was not access denied");
                     AccessReceipts.Add("registry:denied:"+right);
                 }
-                int highPID=(int)highFixture.pid;
-                foreach (uint right in new uint[] { 1, 2, 0x20, 0x40, 0x40000, 0x80000 }) RequireDeniedProcess(highPID, right);
-                IntPtr highProcess=OpenProcess(0x1000, false, highPID);
-                if (highProcess == IntPtr.Zero) throw new Win32Exception();
-                try {
-                    foreach (uint right in new uint[] { 1, 2, 4 }) {
-                        IntPtr highToken;
-                        if (OpenProcessToken(highProcess, right, out highToken)) { CloseHandle(highToken); throw new Exception("restricted token retains high-token right "+right); }
-                        int error=Marshal.GetLastWin32Error();
-                        if (error != 5) throw new Win32Exception(error, "high-token denial was not access denied");
-                        AccessReceipts.Add("token:denied:"+right);
-                    }
-                } finally { CloseHandle(highProcess); }
                 // Positive objects originate under the measured child token, without privileged SACL authoring.
                 Directory.CreateDirectory(privateRoot, security);
                 string privateFile=Path.Combine(privateRoot, "positive.txt");
@@ -228,6 +260,7 @@ public static class HarborUIProfile {
             }
             if (!connection.AsyncWaitHandle.WaitOne(5000)) throw new Exception("private IPC connection did not complete");
             server.EndWaitForConnection(connection);
+            RunNativeProcessProbe(token, (int)highFixture.pid, privateRoot);
         } finally {
             if (highFixture.thread != IntPtr.Zero) CloseHandle(highFixture.thread);
             if (highFixture.process != IntPtr.Zero) {
@@ -287,7 +320,7 @@ public static class HarborUIProfile {
             launches.Add(created.process);
             recorded = true;
             IntPtr actualToken;
-            if (!OpenProcessToken(created.process, 10, out actualToken)) throw new Win32Exception();
+            if (!OpenProcessToken(created.process, 11, out actualToken)) throw new Win32Exception();
             try { AssertChildToken(actualToken, (int)created.pid); } finally { CloseHandle(actualToken); }
             if (ResumeThread(created.thread) == uint.MaxValue) throw new System.ComponentModel.Win32Exception();
             return (int)created.pid;

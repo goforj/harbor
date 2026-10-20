@@ -1,4 +1,5 @@
 Add-Type -Path (Join-Path $PSScriptRoot 'WorkerProfile.cs')
+[HarborUIProfile]::ProcessProbeScript = Join-Path $PSScriptRoot 'ProbeProcessRights.ps1'
 
 function Assert-InteractiveWorker {
     $session = (Get-Process -Id $PID).SessionId
