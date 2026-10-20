@@ -8,6 +8,7 @@ import tempfile
 import time
 
 import pyatspi
+from gi.repository import GLib
 
 
 APP = '/usr/lib/goforj-harbor/harbor-desktop'
@@ -40,9 +41,14 @@ def nodes(root):
 
 
 def application():
-    for app in pyatspi.Registry.getDesktop(0):
-        if app.get_process_id() == process.pid:
-            return app
+    try:
+        for app in pyatspi.Registry.getDesktop(0):
+            if app.get_process_id() == process.pid:
+                return app
+    except GLib.GError:
+        # A WebKit process can retire while AT-SPI enumerates its application.
+        # Callers retain their bounded wait and obtain a fresh tree next time.
+        return None
     return None
 
 
@@ -50,9 +56,12 @@ def find(label, roles=None):
     app = application()
     if app is None:
         return None
-    for node in nodes(app):
-        if node.name == label and (roles is None or node.getRoleName() in roles):
-            return node
+    try:
+        for node in nodes(app):
+            if node.name == label and (roles is None or node.getRoleName() in roles):
+                return node
+    except GLib.GError:
+        return None
     return None
 
 
@@ -130,10 +139,21 @@ def https(slug):
 
 def capture(name):
     command('scrot', str(EVIDENCE / (name + '.png')))
-    app = application()
-    if app is not None:
-        rows = [node.getRoleName() + ': ' + node.name + ' states=' + str(node.getState().getStates()) for node in nodes(app)]
-        (EVIDENCE / (name + '-accessibility.txt')).write_text('\n'.join(rows))
+    deadline = time.monotonic() + 5
+    error = 'installed accessibility application is temporarily unavailable'
+    while time.monotonic() < deadline:
+        app = application()
+        if app is not None:
+            try:
+                rows = [node.getRoleName() + ': ' + node.name + ' states=' + str(node.getState().getStates()) for node in nodes(app)]
+                (EVIDENCE / (name + '-accessibility.txt')).write_text('\n'.join(rows))
+                return
+            except GLib.GError as caught:
+                error = str(caught)
+        time.sleep(.1)
+    # Tree capture is diagnostic. Actual controls still must satisfy their own
+    # native accessibility checks and hard deadlines after a document reload.
+    (EVIDENCE / (name + '-accessibility-error.txt')).write_text(error + '\n')
 
 
 def launch():
