@@ -188,6 +188,15 @@ public static class HarborUIProfile {
                 AccessReceipts.Add("token:denied:"+right);
             }
         } finally { CloseHandle(highProcess); }
+        highProcess=OpenProcess(0x1000, false, highPID);
+        if (highProcess == IntPtr.Zero) throw new Win32Exception();
+        try {
+            IntPtr highToken;
+            if (OpenProcessToken(highProcess, 10, out highToken)) {
+                try { AccessReceipts.Add("opened-high-token:"+DescribeToken(highToken, highPID)); }
+                finally { CloseHandle(highToken); }
+            } else AccessReceipts.Add("opened-high-token:query-duplicate-denied:"+Marshal.GetLastWin32Error());
+        } finally { CloseHandle(highProcess); }
         if (granted.Count != 0) throw new Exception("restricted process retains protected rights: "+String.Join(",", granted.ToArray()));
     }
     static string ObjectSecurity(IntPtr handle) {
@@ -242,11 +251,12 @@ public static class HarborUIProfile {
             StartupInfo startup=new StartupInfo(); startup.cb=Marshal.SizeOf(typeof(StartupInfo));
             if (!CreateProcess(systemProbe, new StringBuilder("\""+systemProbe+"\""), IntPtr.Zero, IntPtr.Zero, false, 4, IntPtr.Zero, systemRoot, ref startup, out highFixture)) throw new Win32Exception();
             IntPtr highFixtureToken;
-            if (!OpenProcessToken(highFixture.process, 10, out highFixtureToken)) throw new Win32Exception();
+            if (!OpenProcessToken(highFixture.process, 0x2000A, out highFixtureToken)) throw new Win32Exception();
             try {
                 using (WindowsIdentity identity=new WindowsIdentity(highFixtureToken)) {
                     if (identity.User.Value != sid || !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator) || TokenIntegrity(highFixtureToken) <= 8192 || TokenInteger(highFixtureToken, 12) != Process.GetCurrentProcess().SessionId) throw new Exception("high fixture does not have ordinary same-user interactive administrator authority");
                 }
+                AccessReceipts.Add("high-fixture:token-object-security:"+ObjectSecurity(highFixtureToken));
             } finally { CloseHandle(highFixtureToken); }
             AccessReceipts.Add("high-fixture:object-security:"+ObjectSecurity(highFixture.process));
             privateRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "harbor-ui-token-"+Guid.NewGuid().ToString("N"));
