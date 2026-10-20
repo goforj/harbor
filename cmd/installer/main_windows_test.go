@@ -101,28 +101,34 @@ func TestWindowsMaintenanceStagePaths(t *testing.T) {
 
 // TestWindowsMaintenanceStageSecurity exercises every staged ACL and mandatory-label rejection without host mutation.
 func TestWindowsMaintenanceStageSecurity(t *testing.T) {
+	const userSID = "S-1-5-21-1-2-3-1000"
+	maintenanceStageSDDL := maintenanceStagePolicy(userSID)
 	exact, err := windows.SecurityDescriptorFromString(maintenanceStageSDDL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := admitMaintenanceDescriptor(exact, true); err != nil {
+	if err := admitMaintenanceDescriptor(exact, true, userSID); err != nil {
 		t.Fatal(err)
 	}
 	fileDescriptor, err := windows.SecurityDescriptorFromString(strings.Replace(maintenanceStageSDDL, "(ML;OICI;", "(ML;;", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := admitMaintenanceDescriptor(fileDescriptor, false); err != nil {
+	if err := admitMaintenanceDescriptor(fileDescriptor, false, userSID); err != nil {
 		t.Fatal(err)
 	}
-	if err := admitMaintenanceDescriptor(fileDescriptor, true); err == nil {
+	if err := admitMaintenanceDescriptor(fileDescriptor, true, userSID); err == nil {
 		t.Fatal("nonpropagating directory label admitted")
 	}
-	if err := admitMaintenanceDescriptor(exact, false); err == nil {
+	if err := admitMaintenanceDescriptor(exact, false, userSID); err == nil {
 		t.Fatal("propagating regular-file label admitted")
 	}
 
 	for _, descriptor := range []string{
+		strings.Replace(maintenanceStageSDDL, "0x1200a9", "FA", 1),
+		strings.Replace(maintenanceStageSDDL, userSID, "S-1-5-21-1-2-3-1001", 1),
+		strings.Replace(maintenanceStageSDDL, "(A;OICI;0x1200a9;;;"+userSID+")", "", 1),
+		strings.Replace(maintenanceStageSDDL, "(A;OICI;0x1200a9;;;"+userSID+")", "(A;;0x1200a9;;;"+userSID+")", 1),
 		strings.Replace(maintenanceStageSDDL, "O:BA", "O:SY", 1),
 		strings.Replace(maintenanceStageSDDL, "D:P", "D:", 1),
 		strings.Replace(maintenanceStageSDDL, "(A;OICI;FA;;;SY)", "", 1),
@@ -139,7 +145,7 @@ func TestWindowsMaintenanceStageSecurity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fixture descriptor %q: %v", descriptor, err)
 		}
-		if err := admitMaintenanceDescriptor(native, true); err == nil {
+		if err := admitMaintenanceDescriptor(native, true, userSID); err == nil {
 			t.Fatalf("admitted descriptor %q", descriptor)
 		}
 	}
@@ -204,6 +210,12 @@ func TestNativeMaintenanceProtectedStage(t *testing.T) {
 	if os.Getenv("HARBOR_ADMISSION_FIXTURE_ROOT") == "" {
 		t.Skip("disposable native CI fixture was not configured")
 	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSID := user.User.Sid.String()
+	maintenanceStageSDDL := maintenanceStagePolicy(userSID)
 	system, err := windows.GetWindowsDirectory()
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +245,7 @@ func TestNativeMaintenanceProtectedStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer directory.Close()
-	if err := admitMaintenanceStage(directory); err != nil {
+	if err := admitMaintenanceStage(directory, userSID); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "fixture.exe")
@@ -256,7 +268,7 @@ func TestNativeMaintenanceProtectedStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	if err := admitMaintenanceStage(file); err != nil {
+	if err := admitMaintenanceStage(file, userSID); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(path, path+".foreign"); err == nil {

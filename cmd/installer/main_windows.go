@@ -259,7 +259,7 @@ func createMaintenanceStage(installation *windowsinstallation.Installation, sour
 		return files, err
 	}
 	root := filepath.Join(system, "Temp", "HarborUninstall-"+hex.EncodeToString(random[:]))
-	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(maintenanceStageSDDL, "S:")[0])
+	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(maintenanceStagePolicy(installation.Selection().UserSID), "S:")[0])
 	if err != nil {
 		return files, err
 	}
@@ -272,7 +272,7 @@ func createMaintenanceStage(installation *windowsinstallation.Installation, sour
 		return files, err
 	}
 	files = append(files, directory)
-	if err := admitMaintenanceStage(directory); err != nil {
+	if err := admitMaintenanceStage(directory, installation.Selection().UserSID); err != nil {
 		return files, err
 	}
 	path := filepath.Join(root, "HarborUninstall.exe")
@@ -297,7 +297,7 @@ func createMaintenanceStage(installation *windowsinstallation.Installation, sour
 		return files, err
 	}
 	files = append(files, retained)
-	if err := admitMaintenanceStage(retained); err != nil {
+	if err := admitMaintenanceStage(retained, installation.Selection().UserSID); err != nil {
 		return files, err
 	}
 	if err := installation.VerifyUninstallerCopy(retained); err != nil {
@@ -409,7 +409,7 @@ func retainMaintenanceStage(installation *windowsinstallation.Installation) (fil
 		}
 		files = append(files, file)
 		if path == current || path == filepath.Dir(current) {
-			if err := admitMaintenanceStage(file); err != nil {
+			if err := admitMaintenanceStage(file, installation.Selection().UserSID); err != nil {
 				return files, err
 			}
 		}
@@ -463,6 +463,11 @@ func openMaintenanceObjectAccess(path string, directory bool, extra uint32) (*os
 	return file, nil
 }
 
+// maintenanceStagePolicy gives only the selected user the loader's read/execute access while keeping staging immutable to restricted workers.
+func maintenanceStagePolicy(userSID string) string {
+	return strings.Replace(maintenanceStageSDDL, "S:", "(A;OICI;0x1200a9;;;"+userSID+")S:", 1)
+}
+
 // labelMaintenanceDirectory pins the new machine-only directory before applying the mandatory label independently of audit SACL privileges.
 func labelMaintenanceDirectory(path string) (*os.File, error) {
 	file, err := openMaintenanceObjectAccess(path, true, windows.WRITE_OWNER)
@@ -491,7 +496,7 @@ func labelMaintenanceObject(handle windows.Handle) error {
 }
 
 // admitMaintenanceStage refuses ordinary-user mutation or a missing high-integrity write barrier on a staged object.
-func admitMaintenanceStage(file *os.File) error {
+func admitMaintenanceStage(file *os.File, userSID string) error {
 	descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.LABEL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
@@ -500,12 +505,12 @@ func admitMaintenanceStage(file *os.File) error {
 	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &information); err != nil {
 		return err
 	}
-	return admitMaintenanceDescriptor(descriptor, information.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0)
+	return admitMaintenanceDescriptor(descriptor, information.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0, userSID)
 }
 
 // admitMaintenanceDescriptor accepts only the explicit protected machine ACL and high mandatory label used for this staging protocol.
 // Windows preserves label propagation on directories and removes it from regular files.
-func admitMaintenanceDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, directory bool) error {
+func admitMaintenanceDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, directory bool, userSID string) error {
 	owner, _, err := descriptor.Owner()
 	if err != nil {
 		return err
@@ -521,17 +526,21 @@ func admitMaintenanceDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, directo
 	if err != nil {
 		return err
 	}
-	if dacl == nil || dacl.AceCount != 2 {
+	if dacl == nil || dacl.AceCount != 3 {
 		return errors.New("uninstall staging ACL has unexpected grants")
 	}
 	seen := map[string]bool{}
-	for index := uint32(0); index < 2; index++ {
+	for index := uint32(0); index < 3; index++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, index, &ace); err != nil {
 			return err
 		}
 		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
-		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || ace.Mask != 0x1f01ff || (sid != "S-1-5-32-544" && sid != "S-1-5-18") || seen[sid] {
+		expectedMask := windows.ACCESS_MASK(0x1f01ff)
+		if sid == userSID {
+			expectedMask = 0x1200a9
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || ace.Mask != expectedMask || (sid != "S-1-5-32-544" && sid != "S-1-5-18" && sid != userSID) || seen[sid] {
 			return errors.New("uninstall staging ACL differs from the protected machine policy")
 		}
 		seen[sid] = true
@@ -710,7 +719,7 @@ type maintenanceResult struct {
 // recordMaintenanceResult creates an immutable one-shot outcome so detached continuation failure remains observable.
 func recordMaintenanceResult(root string, selection windowsinstallation.Selection, original, continuation *maintenanceProcessIdentity, failure error) (result error) {
 	receipt := maintenanceReceipt(selection, original, continuation, failure)
-	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(maintenanceStageSDDL, "S:")[0])
+	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(maintenanceStagePolicy(selection.UserSID), "S:")[0])
 	if err != nil {
 		return err
 	}

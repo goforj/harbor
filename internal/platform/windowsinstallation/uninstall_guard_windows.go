@@ -350,7 +350,7 @@ func (installation *Installation) retainUninstallGuardStage(staged *os.File) (fi
 			if err != nil {
 				return files, err
 			}
-			if err := admitUninstallGuardStageDescriptor(descriptor, directory); err != nil {
+			if err := admitUninstallGuardStageDescriptor(descriptor, directory, installation.selection.UserSID); err != nil {
 				return files, err
 			}
 		}
@@ -406,9 +406,14 @@ func openUninstallGuardObject(path string, directory bool) (*os.File, error) {
 	return file, nil
 }
 
+// uninstallGuardStagePolicy permits the selected restricted loader to read/execute only, without giving it any staging mutation authority.
+func uninstallGuardStagePolicy(userSID string) string {
+	return strings.Replace(uninstallGuardStageSDDL, "S:", "(A;OICI;0x1200a9;;;"+userSID+")S:", 1)
+}
+
 // admitUninstallGuardStageDescriptor admits only the protected machine grants and inherited high mandatory label used by maintenance staging.
 // Windows preserves label propagation on directories and removes it from regular files.
-func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, directory bool) error {
+func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, directory bool, userSID string) error {
 	owner, _, err := descriptor.Owner()
 	if err != nil {
 		return err
@@ -424,17 +429,21 @@ func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR,
 	if err != nil {
 		return err
 	}
-	if dacl == nil || dacl.AceCount != 2 {
+	if dacl == nil || dacl.AceCount != 3 {
 		return errors.New("uninstall guard stage has unexpected access grants")
 	}
 	seen := map[string]bool{}
-	for index := uint32(0); index < 2; index++ {
+	for index := uint32(0); index < 3; index++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, index, &ace); err != nil {
 			return err
 		}
 		principal := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
-		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || ace.Mask != fileAllAccess || (principal != administratorsSID && principal != systemSID) || seen[principal] {
+		expectedMask := windows.ACCESS_MASK(fileAllAccess)
+		if principal == userSID {
+			expectedMask = 0x1200a9
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || ace.Mask != expectedMask || (principal != administratorsSID && principal != systemSID && principal != userSID) || seen[principal] {
 			return errors.New("uninstall guard stage ACL differs from its protected machine policy")
 		}
 		seen[principal] = true
