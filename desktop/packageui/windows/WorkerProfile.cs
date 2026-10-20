@@ -40,6 +40,7 @@ public static class HarborUIProfile {
     [DllImport("advapi32.dll")] static extern uint GetLengthSid(IntPtr sid);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
     [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr token, string application, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string directory, ref StartupInfo startup, out ProcessInfo process);
+    [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string application, StringBuilder command, uint flags, IntPtr environment, string directory, ref StartupInfo startup, out ProcessInfo process);
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcess(string application, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string directory, ref StartupInfo startup, out ProcessInfo process);
     static int TokenInteger(IntPtr token, int kind) {
         IntPtr data = Marshal.AllocHGlobal(4);
@@ -190,19 +191,21 @@ public static class HarborUIProfile {
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder path, ref uint size);
     public static void RetainProductProcess(int pid, string expectedImage) {
         IntPtr process = OpenProcess(0x101001, false, pid);
-        if (process == IntPtr.Zero) throw new Win32Exception();
+        if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "retain actual installed process");
         IntPtr token = IntPtr.Zero;
         bool retained = false;
         try {
             StringBuilder image = new StringBuilder(32768);
             uint size = (uint)image.Capacity;
-            if (!QueryFullProcessImageName(process, 0, image, ref size)) throw new Win32Exception();
+            if (!QueryFullProcessImageName(process, 0, image, ref size)) throw new Win32Exception(Marshal.GetLastWin32Error(), "query retained installed process image");
             if (!String.Equals(image.ToString(), expectedImage, StringComparison.OrdinalIgnoreCase)) throw new Exception("actual product process image differs from the selected installation");
             if (WaitForSingleObject(process, 0) != 258) throw new Exception("selected product process is no longer running");
-            if (!OpenProcessToken(process, 11, out token)) throw new Win32Exception();
-            AssertChildToken(token, pid);
+            if (!OpenProcessToken(process, 11, out token)) throw new Win32Exception(Marshal.GetLastWin32Error(), "open actual installed primary token");
+            AssertEffectiveToken(token);
+            // Retain the admitted exact process before optional diagnostics can fail.
             launches.Add(process);
             retained = true;
+            AssertChildToken(token, pid);
         } finally {
             if (token != IntPtr.Zero) CloseHandle(token);
             if (!retained) CloseHandle(process);
@@ -269,15 +272,16 @@ public static class HarborUIProfile {
         if (String.IsNullOrEmpty(ProcessProbeScript) || ProcessProbeScript.Contains("\"") || result.Contains("\"")) throw new Exception("native process probe path is invalid");
         string executable=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
         StringBuilder command=new StringBuilder("\""+executable+"\" -NoProfile -NonInteractive -File \""+ProcessProbeScript+"\" -HighProcessId "+highPID+" -ResultPath \""+result+"\"");
-        StartupInfo startup=new StartupInfo(); startup.cb=Marshal.SizeOf(typeof(StartupInfo));
+        StartupInfo startup=new StartupInfo(); startup.cb=Marshal.SizeOf(typeof(StartupInfo)); startup.desktop="winsta0\\default";
         ProcessInfo probe=new ProcessInfo();
         Exception originalFailure=null;
         try {
-            if (!CreateProcessAsUser(token, executable, command, IntPtr.Zero, IntPtr.Zero, false, 4, IntPtr.Zero, privateRoot, ref startup, out probe)) throw new Win32Exception();
+            // The measured token may originate in a product grandchild, outside AsUser's direct restricted-token exemption.
+            if (!CreateProcessWithTokenW(token, 0, executable, command, 4, IntPtr.Zero, privateRoot, ref startup, out probe)) throw new Win32Exception(Marshal.GetLastWin32Error(), "launch permission probe with the exact installed primary token");
             IntPtr actual;
-            if (!OpenProcessToken(probe.process, 10, out actual)) throw new Win32Exception();
+            if (!OpenProcessToken(probe.process, 10, out actual)) throw new Win32Exception(Marshal.GetLastWin32Error(), "inspect actual permission-probe child token");
             try { AssertEffectiveToken(actual); } finally { CloseHandle(actual); }
-            if (ResumeThread(probe.thread) == uint.MaxValue) throw new Win32Exception();
+            if (ResumeThread(probe.thread) == uint.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "resume admitted permission-probe child");
             if (WaitForSingleObject(probe.process, 30000) != 0) throw new Exception("native permission probe exceeded its bound");
             uint code;
             if (!GetExitCodeProcess(probe.process, out code)) throw new Win32Exception();
@@ -349,7 +353,7 @@ public static class HarborUIProfile {
             PipeSecurity pipeSecurity=new PipeSecurity();
             pipeSecurity.SetSecurityDescriptorSddlForm("O:"+sid+"D:P(A;;GA;;;"+sid+")");
             string pipeName="harbor-ui-token-"+Guid.NewGuid().ToString("N");
-            if (!DuplicateTokenEx(token, 0xC, IntPtr.Zero, 2, 2, out impersonation)) throw new Win32Exception();
+            if (!DuplicateTokenEx(token, 0xC, IntPtr.Zero, 2, 2, out impersonation)) throw new Win32Exception(Marshal.GetLastWin32Error(), "derive exact-token impersonation probe");
             using (WindowsImpersonationContext context=WindowsIdentity.Impersonate(impersonation)) {
                 foreach (string path in ProtectedDirectories) foreach (uint right in new uint[] { 2, 4, 0x40, 0x10000, 0x40000, 0x80000 }) RequireDeniedFile(path, right, true);
                 foreach (string path in ProtectedFiles) foreach (uint right in new uint[] { 2, 4, 0x10000, 0x40000, 0x80000 }) RequireDeniedFile(path, right, false);
