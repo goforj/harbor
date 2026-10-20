@@ -157,7 +157,7 @@ func snapshotDeletion(installation *Installation) ([]deletionObject, error) {
 			continue
 		}
 		seen[strings.ToLower(file.Name())] = true
-		if information.IsDir() && !strings.EqualFold(file.Name(), filepath.Dir(installation.root)) && !strings.EqualFold(file.Name(), installation.root) && !strings.HasPrefix(strings.ToLower(file.Name()), strings.ToLower(installation.root+string(filepath.Separator))) {
+		if information.IsDir() && !strings.EqualFold(file.Name(), installation.root) && !strings.HasPrefix(strings.ToLower(file.Name()), strings.ToLower(installation.root+string(filepath.Separator))) {
 			continue
 		}
 		identity, err := identifyFile(windows.Handle(file.Fd()))

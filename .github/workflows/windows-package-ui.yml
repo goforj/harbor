@@ -236,13 +236,13 @@ jobs:
           $sentinelHash = (Get-FileHash $sentinel -Algorithm SHA256).Hash
           $signerThumbprint = [IO.File]::ReadAllText((Join-Path $env:HARBOR_INSTALL_ROOT 'harbor-helper-signing-thumbprint.txt')).Trim()
           $selection = Get-Content "$env:HARBOR_INSTALL_ROOT\installation.json" -Raw | ConvertFrom-Json
-          $baseline = @(Get-ChildItem "$env:WINDIR\Temp" -Directory -Filter 'HarborUninstall-*' | ForEach-Object FullName)
+          $baseline = @(Get-ChildItem "$env:ProgramFiles\GoForj" -Directory -Filter 'HarborUninstall-*' | ForEach-Object FullName)
           $process = Start-Process "$env:HARBOR_INSTALL_ROOT\Uninstall.exe" -ArgumentList '--silent' -Wait -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\harbor-installed-ui-evidence\uninstall-bootstrap-stdout.txt" -RedirectStandardError "$env:RUNNER_TEMP\harbor-installed-ui-evidence\uninstall-bootstrap-stderr.txt"
           if ($process.ExitCode -ne 0) { throw "uninstall bootstrap exit $($process.ExitCode)" }
           $deadline = (Get-Date).AddMinutes(3)
           $receipt = $null
           do {
-            $stages = @(Get-ChildItem "$env:WINDIR\Temp" -Directory -Filter 'HarborUninstall-*' | Where-Object FullName -notin $baseline)
+            $stages = @(Get-ChildItem "$env:ProgramFiles\GoForj" -Directory -Filter 'HarborUninstall-*' | Where-Object FullName -notin $baseline)
             if ($stages.Count -gt 1) { throw 'unexpected uninstall continuation stages' }
             if ($stages.Count -eq 1) {
               $resultPath = Join-Path $stages[0].FullName 'result.json'

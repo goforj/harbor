@@ -155,13 +155,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $sentinel = Join-Path $env:HARBOR_INSTALL_ROOT 'foreign-package-sentinel.txt'
           [IO.File]::WriteAllText($sentinel, 'preserve foreign package state')
-          $baseline = @(Get-ChildItem "$env:WINDIR\Temp" -Directory -Filter 'HarborUninstall-*' | ForEach-Object FullName)
+          $baseline = @(Get-ChildItem "$env:ProgramFiles\GoForj" -Directory -Filter 'HarborUninstall-*' | ForEach-Object FullName)
           $process = Start-Process "$env:HARBOR_INSTALL_ROOT\Uninstall.exe" -ArgumentList '--silent' -Wait -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\harbor-package-evidence\uninstall-bootstrap-stdout.txt" -RedirectStandardError "$env:RUNNER_TEMP\harbor-package-evidence\uninstall-bootstrap-stderr.txt"
           if ($process.ExitCode -ne 0) { throw "uninstall bootstrap failed: $($process.ExitCode)" }
           $deadline = (Get-Date).AddMinutes(3)
           $receiptPath = $null
           do {
-            $stages = @(Get-ChildItem "$env:WINDIR\Temp" -Directory -Filter 'HarborUninstall-*' | Where-Object FullName -notin $baseline)
+            $stages = @(Get-ChildItem "$env:ProgramFiles\GoForj" -Directory -Filter 'HarborUninstall-*' | Where-Object FullName -notin $baseline)
             if ($stages.Count -gt 1) { throw 'unexpected uninstall continuation stages' }
             if ($stages.Count -eq 1) { $receiptPath = Join-Path $stages[0].FullName 'result.json' }
             if ($receiptPath -and (Test-Path $receiptPath)) {
