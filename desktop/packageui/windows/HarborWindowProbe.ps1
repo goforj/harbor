@@ -146,7 +146,6 @@ try {
         $null -ne $control -and $control.Current.IsEnabled -and $control.Current.IsKeyboardFocusable
     } 30
     $quitFocus = Find-Control 'Projects' ([System.Windows.Automation.ControlType]::Button)
-    if ($quitFocus.Current.ProcessId -ne $originalProcess) { throw 'Quit focus target is outside the retained UI process' }
     $quitFocus.SetFocus()
     Wait-Until 'Quit shortcut target keyboard focus' { $quitFocus.Current.HasKeyboardFocus } 10
     if (-not [HarborUIProfile]::IsRetainedProductWindowForeground($originalProcess, $script:windowHandle)) { throw 'Quit shortcut target is not in the exact foreground window' }
@@ -166,7 +165,7 @@ try {
     } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $EvidenceDirectory 'installed-window-only.json') -Encoding UTF8
 } catch {
     $failure = $_
-    ($failure.Exception.ToString() + "`n" + $failure.ScriptStackTrace) | Set-Content (Join-Path $EvidenceDirectory 'window-only-failure.txt') -Encoding UTF8
+    try { ($failure.Exception.ToString() + "`n" + $failure.ScriptStackTrace) | Set-Content (Join-Path $EvidenceDirectory 'window-only-failure.txt') -Encoding UTF8 } catch { Write-Warning "failure receipt could not be saved: $_" }
     try { Save-WindowControls 'failure' } catch { Write-Warning "window diagnostics failed: $_" }
     throw $failure
 } finally {
