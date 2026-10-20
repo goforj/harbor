@@ -1,0 +1,64 @@
+"""Recover only the disposable installed fixture after retaining GUI failure diagnostics."""
+
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import time
+
+
+def run(*arguments):
+    return subprocess.check_output(arguments, text=True, timeout=90).strip()
+
+
+def snapshot():
+    return json.loads(run('/usr/bin/harbor', 'daemon', 'snapshot'))
+
+
+def main():
+    evidence = Path('harbor-package-ui-evidence')
+    report = {'original_gui_result': 'failed', 'cleanup': 'incomplete'}
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                data = snapshot()
+                break
+            except subprocess.SubprocessError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.2)
+        files = [Path.home() / '.local/share/goforj/harbor/harbor.db']
+        for project in data.get('projects', []):
+            root = Path(project['path']).resolve()
+            if not root.is_relative_to('/tmp') or not root.parent.name.startswith('harbor-package-ui-'):
+                raise RuntimeError('refusing cleanup of non-fixture project')
+            for name in ['.goforj.yml', 'go.mod']:
+                path = root / name
+                if path.is_file() and not path.is_symlink():
+                    files.append(path)
+            if project['state'] != 'stopped':
+                run('/usr/bin/harbor', 'stop', project['id'])
+        run('/usr/bin/harbor', 'daemon', 'release')
+        run('/usr/bin/harbor', 'daemon', 'stop')
+        deadline = time.monotonic() + 30
+        while run('systemctl', '--user', 'show', 'harbord.service', '--property=MainPID', '--value') != '0':
+            if time.monotonic() >= deadline:
+                raise RuntimeError('daemon did not stop')
+            time.sleep(.2)
+        hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
+        run('sudo', '-n', 'dpkg', '--purge', 'goforj-harbor')
+        for path in ['/usr/lib/goforj-harbor/harbor-desktop', '/usr/lib/systemd/user/harbord.service', '/usr/libexec/harbor-helper', '/var/lib/goforj/harbor', '/etc/systemd/resolved.conf.d/90-goforj-harbor.conf', '/usr/local/share/ca-certificates/goforj-harbor.crt']:
+            if Path(path).exists() or Path(path).is_symlink():
+                raise RuntimeError('retained installed state: ' + path)
+        run('systemctl', '--user', 'daemon-reload')
+        assert run('systemctl', '--user', 'show', 'harbord.service', '--property=LoadState', '--value') == 'not-found'
+        for name, digest in hashes.items():
+            assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest, name
+        report.update(cleanup='released and uninstalled', retained_files=hashes)
+    finally:
+        (evidence / 'failure-cleanup.json').write_text(json.dumps(report, indent=2) + '\n')
+
+
+if __name__ == '__main__':
+    main()

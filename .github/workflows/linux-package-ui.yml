@@ -123,6 +123,7 @@ jobs:
           printf 'ImageOS=%s\nImageVersion=%s\n' "$ImageOS" "$ImageVersion" >> harbor-package-ui-evidence/runtime-versions.txt
 
       - name: Install verified retained DEB and admit packaged helper
+        id: install
         env:
           VERIFIED_DEB: ${{ steps.package.outputs.linux_package }}
         run: |
@@ -207,6 +208,14 @@ jobs:
           mkdir -p harbor-package-ui-evidence
           /usr/bin/harbor daemon snapshot > harbor-package-ui-evidence/final-snapshot.json 2>&1 || true
           journalctl --user -u harbord.service --no-pager > harbor-package-ui-evidence/daemon-journal.txt 2>&1 || true
+
+      - name: Recover owned resources after failed GUI check
+        if: failure() && steps.install.outcome == 'success'
+        run: |
+          set -euo pipefail
+          if test ! -x /usr/bin/harbor; then exit 0; fi
+          systemctl --user start harbord.service
+          python3 scripts/packageui/linux/recover.py
 
       - name: Remove disposable-worker authorization
         if: always()
