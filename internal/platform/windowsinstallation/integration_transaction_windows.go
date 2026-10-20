@@ -109,7 +109,7 @@ func (installation *Installation) ValidateMachineIntegration(ctx context.Context
 	}
 	owned, err := installation.admitMachineIntegration(false)
 	if err != nil {
-		return err
+		return fmt.Errorf("validate selected machine integration: %w", err)
 	}
 	return owned.Close()
 }
@@ -121,7 +121,7 @@ func (installation *Installation) RemoveMachineIntegration(ctx context.Context, 
 	}
 	owned, err := installation.admitMachineIntegration(true)
 	if err != nil {
-		return err
+		return fmt.Errorf("admit machine integration for removal: %w", err)
 	}
 	defer func() { result = errors.Join(result, owned.Close()) }()
 	guarded := func() error {
@@ -134,25 +134,28 @@ func (installation *Installation) RemoveMachineIntegration(ctx context.Context, 
 		return err
 	}
 	if err := owned.Registry.retire(); err != nil {
-		return err
+		return fmt.Errorf("retire selected uninstall registry projection: %w", err)
 	}
 	if err := owned.Shortcut.retireChecked(guarded); err != nil {
-		return err
+		return fmt.Errorf("retire selected Start Menu projection: %w", err)
 	}
 	if err := owned.State.retireChecked(guarded); err != nil {
-		return err
+		return fmt.Errorf("retire selected privileged state: %w", err)
 	}
 	if err := owned.State.Close(); err != nil {
-		return err
+		return fmt.Errorf("close retired privileged state: %w", err)
 	}
 	owned.State = nil
 	if err := owned.Spool.retireChecked(guarded); err != nil {
-		return err
+		return fmt.Errorf("retire selected privileged spool: %w", err)
 	}
 	if err := guarded(); err != nil {
 		return err
 	}
-	return retireIntegrationFile(owned.Receipt)
+	if err := retireIntegrationFile(owned.Receipt); err != nil {
+		return fmt.Errorf("retire machine integration receipt %q: %w", owned.Receipt.Name(), err)
+	}
+	return nil
 }
 
 // requireIntegrationAuthority refuses use after admission closes or outside the selected same-user elevated installer session.
@@ -184,50 +187,51 @@ func (installation *Installation) admitMachineIntegration(removal bool) (_ *mach
 			result = errors.Join(result, owned.Close())
 		}
 	}()
-	file, err := openIntegrationStateFile(filepath.Join(installation.root, integrationReceiptName), integrationReceiptSDDL, windows.FILE_SHARE_READ)
+	receiptPath := filepath.Join(installation.root, integrationReceiptName)
+	file, err := openIntegrationStateFile(receiptPath, integrationReceiptSDDL, windows.FILE_SHARE_READ)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open machine integration receipt %q: %w", receiptPath, err)
 	}
 	owned.Receipt = file
 	data, err := readIntegrationState(file, MetadataLimit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read machine integration receipt %q: %w", receiptPath, err)
 	}
 	var receipt integrationReceipt
 	if err := Decode(bytes.NewReader(data), &receipt); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode machine integration receipt %q: %w", receiptPath, err)
 	}
 	if receipt.SchemaVersion != 1 || receipt.InstallationID != installation.selection.InstallationID || receipt.UserSID != installation.selection.UserSID || receipt.BundleDigest != installation.selection.BundleDigest {
 		return nil, errors.New("machine integration receipt differs from selected installation")
 	}
 	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve ProgramData for integration admission: %w", err)
 	}
 	owned.Spool, err = admitPrivilegedSpool(programData, receipt.UserSID, receipt.Spool)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("admit privileged spool beneath %q: %w", programData, err)
 	}
 	spec, err := integrationShortcutPlan(installation)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve selected Start Menu projection: %w", err)
 	}
 	owned.Shortcut, err = integrationAdmitShortcut(spec, receipt.Shortcut)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("admit selected Start Menu projection: %w", err)
 	}
 	values, err := integrationRegistryValues(installation)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve selected uninstall registry values: %w", err)
 	}
 	owned.Registry, err = integrationAdmitRegistry(values)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("admit selected uninstall registry projection: %w", err)
 	}
 	if removal {
 		owned.State, err = admitIntegrationState(owned.Spool, receipt.UserSID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("admit selected privileged state for removal: %w", err)
 		}
 	}
 	return owned, nil
@@ -253,10 +257,10 @@ func (spool *privilegedSpool) retireChecked(check func() error) error {
 			continue
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("retire privileged spool directory %q: %w", directory.Object.Path, err)
 		}
 		if err := directory.File.Close(); err != nil {
-			return err
+			return fmt.Errorf("close retired spool directory %q: %w", directory.Object.Path, err)
 		}
 		directory.File = nil
 	}
