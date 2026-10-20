@@ -6,6 +6,7 @@ final class HarborPackageUITests: XCTestCase {
     private let installedApplication = URL(fileURLWithPath: "/Applications/Harbor.app")
     private let projectName = "Harbor Installed UI"
     private var application: XCUIApplication!
+    private var launchCommands: [[String]] = []
 
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -80,6 +81,11 @@ final class HarborPackageUITests: XCTestCase {
             !self.application.windows.firstMatch.isHittable
         }
         try assertProject(identifier, state: "ready")
+        try launchInstalledApplication("window-reopen", newInstance: false)
+        try awaitWindow()
+        XCTAssertEqual(try installedProcess(), originalProcess, "ordinary macOS reopen must restore the existing window")
+        try assertProject(identifier, state: "ready")
+        attach("window-reopened-original-process")
         try launchInstalledApplication("second-launch")
         try awaitWindow()
         try waitUntil("single-instance handoff completes") {
@@ -88,6 +94,7 @@ final class HarborPackageUITests: XCTestCase {
         }
         XCTAssertEqual(try installedProcess(), originalProcess, "second launch must restore the existing window")
         try assertProject(identifier, state: "ready")
+        attach("visible-second-launch-original-process")
 
         application.typeKey("q", modifierFlags: .command)
         XCTAssertTrue(application.wait(for: .notRunning, timeout: 20))
@@ -117,7 +124,9 @@ final class HarborPackageUITests: XCTestCase {
             "creation": "production graphical wizard",
             "start": "ready with system-trusted HTTPS 200",
             "window_close": "project remains ready",
-            "second_launch": "original process restored",
+            "window_reopen": "ordinary macOS open restores the original process and visible window",
+            "second_launch": "forced new instance while visible exits and retains original foreground process",
+            "launch_commands": launchCommands,
             "ui_quit": "daemon and project remain ready",
             "ui_reopen": "registration retained and HTTPS 200",
             "final_project_state": "stopped",
@@ -131,12 +140,14 @@ final class HarborPackageUITests: XCTestCase {
     }
 
     // launchInstalledApplication retains native stderr even if startup exits before a window appears.
-    private func launchInstalledApplication(_ stage: String) throws {
+    private func launchInstalledApplication(_ stage: String, newInstance: Bool = true) throws {
         let evidence = URL(fileURLWithPath: "/tmp/harbor-package-ui-native-logs", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
-        _ = try command("/usr/bin/open", ["-n", "--stdout", evidence.appendingPathComponent(stage + "-stdout.log").path,
-                                         "--stderr", evidence.appendingPathComponent(stage + "-stderr.log").path,
-                                         installedApplication.path])
+        let arguments = (newInstance ? ["-n"] : []) + ["--stdout", evidence.appendingPathComponent(stage + "-stdout.log").path,
+                                                       "--stderr", evidence.appendingPathComponent(stage + "-stderr.log").path,
+                                                       installedApplication.path]
+        launchCommands.append(["/usr/bin/open"] + arguments)
+        _ = try command("/usr/bin/open", arguments)
         try waitUntil("single installed application process", timeout: 20) {
             NSRunningApplication.runningApplications(withBundleIdentifier: "com.goforj.harbor").count == 1
         }
@@ -144,7 +155,7 @@ final class HarborPackageUITests: XCTestCase {
         let process = try installedProcess()
         application.activate()
         XCTAssertEqual(try installedProcess(), process, "activation must not replace an application that exited")
-        XCTAssertTrue(application.wait(for: .runningForeground, timeout: 20))
+        try waitUntil(stage + " foreground activation", timeout: 20) { self.application.state == .runningForeground }
     }
 
     private func installedProcess() throws -> pid_t {
@@ -290,8 +301,8 @@ final class HarborPackageUITests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.goforj.harbor")
-        let processes = running.map { "pid=\($0.processIdentifier) bundle=\($0.bundleURL?.path ?? "unknown")" }
-        let state = XCTAttachment(string: "application_state=\(application.state.rawValue)\n" + processes.joined(separator: "\n"))
+        let processes = running.map { "pid=\($0.processIdentifier) active=\($0.isActive) hidden=\($0.isHidden) terminated=\($0.isTerminated) bundle=\($0.bundleURL?.path ?? "unknown")" }
+        let state = XCTAttachment(string: "application_state=\(application.state.rawValue)\n" + processes.joined(separator: "\n") + "\nwindows:\n" + application.windows.debugDescription)
         state.name = name + "-native-state"
         state.lifetime = .keepAlways
         add(state)
