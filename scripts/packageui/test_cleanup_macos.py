@@ -334,5 +334,26 @@ class CleanupDiagnosticsTests(unittest.TestCase):
         self.assertEqual(len(cleanup_macos.bounded_text("x" * 70000)), 65536)
 
 
+    def test_normal_release_records_success_and_timeout_with_same_bound(self):
+        for timed_out in (False, True):
+            with self.subTest(timed_out=timed_out), tempfile.TemporaryDirectory() as directory:
+                evidence = Path(directory)
+                command = [cleanup_macos.CLI, "daemon", "release"]
+                result = subprocess.TimeoutExpired(command, 180, output=b"partial", stderr=b"reason") if timed_out else subprocess.CompletedProcess(command, 0, "Network release complete.\n", "")
+                with patch.object(cleanup_macos.subprocess, "run", side_effect=[result]) as run, \
+                        patch.object(cleanup_macos, "collect_release_diagnostics") as diagnostics:
+                    if timed_out:
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            cleanup_macos.release_network(evidence)
+                        diagnostics.assert_called_once_with(evidence)
+                    else:
+                        cleanup_macos.release_network(evidence)
+                        diagnostics.assert_not_called()
+                self.assertEqual(run.call_args.kwargs["timeout"], 180)
+                receipt = json.loads((evidence / "network-release-command.json").read_text())
+                self.assertEqual(receipt["completed"], not timed_out)
+                self.assertEqual(receipt["commands"][0]["arguments"], command)
+
+
 if __name__ == "__main__":
     unittest.main()
