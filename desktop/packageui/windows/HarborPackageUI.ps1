@@ -373,7 +373,10 @@ try {
         Wait-Until 'retained project link' {
             $links = $script:window.FindAll([System.Windows.Automation.TreeScope]::Descendants,
                 [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Hyperlink))
-            $matches = @($links | Where-Object { ([string]$_.Current.Name).StartsWith('Harbor Installed Windows UI', [StringComparison]::Ordinal) })
+            $matches = @(for ($index=0; $index -lt $links.Count; $index++) {
+                $link = $links.Item($index)
+                if (([string]$link.Current.Name).StartsWith('Harbor Installed Windows UI', [StringComparison]::Ordinal)) { $link }
+            })
             if ($matches.Count -gt 1) { throw 'multiple project links match the exact created project' }
             if ($matches.Count -eq 1) { $script:projectLink = $matches[0]; return $true }
             return $false
