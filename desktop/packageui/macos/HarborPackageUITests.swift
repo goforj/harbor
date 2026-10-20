@@ -60,7 +60,9 @@ final class HarborPackageUITests: XCTestCase {
         attach("project-ready")
 
         let originalProcess = try installedProcess()
-        application.typeKey("w", modifierFlags: .command)
+        let close = application.windows.firstMatch.buttons["_XCUI:CloseWindow"]
+        XCTAssertTrue(close.exists)
+        close.click()
         try waitUntil("window hides without stopping the project") {
             !self.application.windows.firstMatch.isHittable
         }
@@ -146,9 +148,12 @@ final class HarborPackageUITests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 20), "missing select: \(label)\n\(application.debugDescription)")
         try focus(field)
         field.click()
-        let choice = application.menuItems[option]
-        XCTAssertTrue(choice.waitForExistence(timeout: 10), "missing choice: \(option)\n\(application.debugDescription)")
-        choice.click()
+        for character in option.lowercased() {
+            application.typeKey(String(character), modifierFlags: [])
+        }
+        application.typeKey("\r", modifierFlags: [])
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        try waitUntil("select \(option) in \(label)") { field.value as? String == option }
     }
 
     private func setCheckbox(_ label: String, selected: Bool) throws {
@@ -158,7 +163,9 @@ final class HarborPackageUITests: XCTestCase {
             try focus(checkbox)
             checkbox.typeKey(" ", modifierFlags: [])
         }
-        XCTAssertEqual(try checkboxIsSelected(checkbox), selected, label)
+        try waitUntil("checkbox \(label) reflects its selection", timeout: 10) {
+            try self.checkboxIsSelected(checkbox) == selected
+        }
     }
 
     private func checkboxIsSelected(_ checkbox: XCUIElement) throws -> Bool {
