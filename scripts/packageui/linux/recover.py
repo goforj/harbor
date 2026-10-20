@@ -61,6 +61,8 @@ def main():
                 raise RuntimeError('retained installed state: ' + path)
         run('systemctl', '--user', 'daemon-reload')
         assert run('systemctl', '--user', 'show', 'harbord.service', '--property=LoadState', '--value') == 'not-found'
+        assert run('systemctl', '--user', 'show', 'harbord.service', '--property=MainPID', '--value') == '0'
+        assert run('systemctl', '--user', 'show', 'harbord.service', '--property=ActiveState', '--value') == 'inactive'
         for name, digest in hashes.items():
             assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest, name
         report.update(cleanup='released and uninstalled', retained_files=hashes)

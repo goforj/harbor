@@ -196,6 +196,8 @@ jobs:
           test ! -e /usr/local/share/ca-certificates/goforj-harbor.crt
           systemctl --user daemon-reload
           test "$(systemctl --user show harbord.service --property=LoadState --value)" = not-found
+          test "$(systemctl --user show harbord.service --property=MainPID --value)" = 0
+          test "$(systemctl --user show harbord.service --property=ActiveState --value)" = inactive
           python3 - <<'PY'
           import hashlib, json
           from pathlib import Path

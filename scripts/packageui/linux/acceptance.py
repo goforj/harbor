@@ -233,3 +233,24 @@ except BaseException:
     except (subprocess.SubprocessError, OSError):
         pass
     raise
+finally:
+    # The fixture must retire its direct, unreaped child before stopping the daemon,
+    # because a live desktop reconnect can reactivate the installed user service.
+    if process is not None and process.poll() is None:
+        result = {'pid': process.pid, 'method': 'native Ctrl+Q'}
+        try:
+            activate()
+            key('ctrl+q')
+            process.wait(timeout=15)
+        except (subprocess.SubprocessError, RuntimeError):
+            # Popen retains this exact direct child until wait reaps it. A failed
+            # native quit stays a failed GUI check even when recovery retires it.
+            result['method'] = 'fixture direct-child termination after failed native quit'
+            process.terminate()
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=15)
+        result['returncode'] = process.returncode
+        (EVIDENCE / 'failure-ui-retirement.json').write_text(json.dumps(result, indent=2) + '\n')
