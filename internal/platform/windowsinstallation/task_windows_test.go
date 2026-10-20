@@ -72,7 +72,9 @@ $definition = New-OwnedTaskDefinition $service 'C:\HarborNativeFixture' $sid 'Ha
 $copy = $service.NewTask(0)
 $copy.XmlText = $definition.XmlText
 if ((Convert-TaskXML $copy.XmlText) -cne (Convert-TaskXML $definition.XmlText)) { throw 'COM XML roundtrip drift' }
-if ($definition.Principal.LogonType -ne 3 -or $definition.Principal.RunLevel -ne 0 -or $definition.Principal.UserId -cne $sid) { throw 'unsafe principal' }
+${principalSID} = $definition.Principal.UserId
+if ($principalSID -notmatch '^S-1-') { $principalSID = ([Security.Principal.NTAccount]::new($principalSID)).Translate([Security.Principal.SecurityIdentifier]).Value }
+if ($definition.Principal.LogonType -ne 3 -or $definition.Principal.RunLevel -ne 0 -or $principalSID -cne $sid) { throw 'unsafe principal' }
 if ($definition.Actions.Count -ne 1 -or $definition.Actions.Item(1).Arguments -ne '' -or $definition.Actions.Item(1).Path -cne 'C:\HarborNativeFixture\daemon-launcher.exe') { throw 'unsafe action' }
 if ($definition.Triggers.Count -ne 1 -or ([Security.Principal.NTAccount]::new($definition.Triggers.Item(1).UserId)).Translate([Security.Principal.SecurityIdentifier]).Value -cne $sid) { throw 'unsafe trigger' }
 $before = Convert-TaskXML $copy.XmlText
