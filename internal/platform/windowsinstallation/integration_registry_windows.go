@@ -256,11 +256,22 @@ func integrationRegistryAdmitParent(descriptor *windows.SECURITY_DESCRIPTOR) err
 	if owner == nil || (owner.String() != administratorsSID && owner.String() != systemSID && owner.String() != "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464") {
 		return errors.New("Windows uninstall parent has foreign ownership")
 	}
-	grants, err := integrationACEs(descriptor)
+	dacl, _, err := descriptor.DACL()
 	if err != nil {
 		return err
 	}
-	for grant := range grants {
+	if dacl == nil {
+		return errors.New("Windows uninstall parent has a null DACL")
+	}
+	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, index, &ace); err != nil {
+			return err
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			return errors.New("Windows uninstall parent has an unsupported ACL entry")
+		}
+		grant := integrationACE{SID: (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String(), Mask: uint32(ace.Mask), Flags: ace.Header.AceFlags}
 		if grant.Flags&windows.INHERIT_ONLY_ACE != 0 {
 			continue
 		}

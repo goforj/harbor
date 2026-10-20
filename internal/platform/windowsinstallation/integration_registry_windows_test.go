@@ -3,6 +3,7 @@
 package windowsinstallation
 
 import (
+	"golang.org/x/sys/windows"
 	"path/filepath"
 	"testing"
 
@@ -69,4 +70,27 @@ func TestNativeIntegrationRegistryPreservesForeignEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	child.Close()
+}
+
+// TestIntegrationRegistryParentAllowsRedundantReadGrants keeps owned-object strictness separate from OS ancestor admission.
+func TestIntegrationRegistryParentAllowsRedundantReadGrants(t *testing.T) {
+	for _, test := range []struct {
+		name, sddl string
+		valid      bool
+	}{
+		{"redundant readers", "O:BAD:(A;;KA;;;BA)(A;;KA;;;SY)(A;;KR;;;BU)(A;;KR;;;BU)", true},
+		{"reader mutation", "O:BAD:(A;;KA;;;BA)(A;;KA;;;SY)(A;;KR;;;BU)(A;;KW;;;BU)", false},
+		{"foreign owner", "O:BUD:(A;;KA;;;BA)(A;;KA;;;SY)(A;;KR;;;BU)", false},
+		{"trusted inherited", "O:BAD:(A;ID;KA;;;BA)(A;ID;KA;;;SY)(A;ID;KR;;;BU)", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			descriptor, err := windows.SecurityDescriptorFromString(test.sddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := integrationRegistryAdmitParent(descriptor); (err == nil) != test.valid {
+				t.Fatalf("ancestor admission = %v, want %v", err, test.valid)
+			}
+		})
+	}
 }
