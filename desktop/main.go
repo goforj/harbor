@@ -60,12 +60,20 @@ func newApplicationOptions(client *App, appAssets fs.FS) application.Options {
 		Name: "GoForj Harbor", Icon: nativeApplicationIcon(runtime.GOOS),
 		Assets:         application.AssetOptions{Handler: application.AssetFileServerFS(appAssets)},
 		Services:       []application.Service{application.NewService(client)},
-		SingleInstance: &application.SingleInstanceOptions{UniqueID: desktopSingleInstanceID, OnSecondInstanceLaunch: client.onSecondInstanceLaunch},
+		SingleInstance: &application.SingleInstanceOptions{UniqueID: nativeSingleInstanceID(runtime.GOOS), OnSecondInstanceLaunch: client.onSecondInstanceLaunch},
 		OnShutdown:     func() { client.shutdown(context.Background()) },
 		Mac:            application.MacOptions{ApplicationShouldTerminateAfterLastWindowClosed: false},
 		Windows:        application.WindowsOptions{DisableQuitOnLastWindowClosed: true},
 		Linux:          application.LinuxOptions{DisableQuitOnLastWindowClosed: true, ProgramName: "goforj-harbor", ApplicationID: "com.goforj.harbor"},
 	}
+}
+
+// nativeSingleInstanceID preserves established locks while using a valid Linux D-Bus name.
+func nativeSingleInstanceID(platform string) string {
+	if platform == "linux" {
+		return "com.goforj.harbor"
+	}
+	return desktopSingleInstanceID
 }
 
 // nativeApplicationIcon leaves the macOS Dock icon to the compiled bundle catalog instead of overriding it with a square bitmap.
