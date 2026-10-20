@@ -12,7 +12,7 @@ import recover
 
 
 class RecoveryTests(unittest.TestCase):
-    def exercise(self, states, *, foreign=False, active=False, expired=False, configured=True):
+    def exercise(self, states, *, foreign=False, active=False, expired=False, configured=True, removal_fails=False):
         with tempfile.TemporaryDirectory(prefix='harbor-package-ui-', dir='/tmp') as temporary:
             root = Path(temporary).resolve()
             project = root / 'project'
@@ -51,6 +51,11 @@ class RecoveryTests(unittest.TestCase):
                     stack.enter_context(mock.patch.object(recover, 'snapshot', side_effect=snapshot))
                     stack.enter_context(mock.patch.object(Path, 'home', return_value=home))
                     stack.enter_context(mock.patch.object(recover.time, 'sleep'))
+                    def remove(*args):
+                        events.append('fixture unregister')
+                        if removal_fails:
+                            raise RuntimeError('fixture unregister incomplete')
+                    stack.enter_context(mock.patch.object(recover.remove_fixtures, 'remove_projects', side_effect=remove))
                     if expired:
                         stack.enter_context(mock.patch.object(recover.time, 'monotonic', side_effect=[0, 0, 121]))
                     try:
@@ -67,7 +72,15 @@ class RecoveryTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertLess(events.index('snapshot:stopped'), events.index('/usr/bin/harbor daemon release'))
         self.assertEqual(report['cleanup'], 'released and uninstalled')
+        self.assertLess(events.index('fixture unregister'), events.index('/usr/bin/harbor daemon release'))
         self.assertEqual(len(report['retained_files']), 3)
+
+    def test_incomplete_unregister_prevents_release_and_purge(self):
+        events, report, error = self.exercise(['stopped'], removal_fails=True)
+        self.assertIn('unregister incomplete', str(error))
+        self.assertNotIn('/usr/bin/harbor daemon release', events)
+        self.assertNotIn('sudo -n dpkg --purge goforj-harbor', events)
+        self.assertEqual(report['cleanup'], 'incomplete')
 
     def test_stop_timeout_prevents_global_release_and_purge(self):
         events, report, error = self.exercise(['starting', 'stopping'], expired=True)

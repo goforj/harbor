@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import time
 
+import remove_fixtures
+
 
 def run(*arguments):
     return subprocess.check_output(arguments, text=True, timeout=90).strip()
@@ -47,6 +49,7 @@ def main():
                     if time.monotonic() >= deadline:
                         raise RuntimeError('fixture project did not stop before release: ' + project['id'])
                     time.sleep(.25)
+        remove_fixtures.remove_projects(snapshot().get('projects', []), evidence / 'failure-fixture-removal.json')
         if data.get('network_setup', {}).get('configured'):
             (evidence / 'failure-before-release-snapshot.json').write_text(json.dumps(snapshot(), indent=2) + '\n')
             try:
@@ -76,7 +79,7 @@ def main():
         assert run('systemctl', '--user', 'show', 'harbord.service', '--property=ActiveState', '--value') == 'inactive'
         for name, digest in hashes.items():
             assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest, name
-        report.update(cleanup='released and uninstalled', retained_files=hashes)
+        report.update(cleanup='released and uninstalled', preservation_boundary='post-unregister database and project files', retained_files=hashes)
     finally:
         (evidence / 'failure-cleanup.json').write_text(json.dumps(report, indent=2) + '\n')
 
