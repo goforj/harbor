@@ -30,6 +30,18 @@ func (installation *Installation) Task(ctx context.Context, action string) error
 	if !strings.EqualFold(root, installation.root) {
 		return errors.New("task policy requires the fixed admitted machine installation")
 	}
+	token := windows.GetCurrentProcessToken()
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return err
+	}
+	var session uint32
+	if err := tokenInteger(token, windows.TokenSessionId, &session); err != nil {
+		return err
+	}
+	if err := admitTaskUser(installation.selection.UserSID, user.User.Sid.String(), session); err != nil {
+		return err
+	}
 	if action == "register" || action == "remove" {
 		installer, err := installation.Path("installer")
 		if err != nil {
@@ -90,4 +102,12 @@ func taskEnvironment(environment []string) []string {
 		result = append(result, entry)
 	}
 	return append(result, "PSModulePath=", "PSModuleAutoLoadingPreference=None")
+}
+
+// admitTaskUser binds scheduler actions to the selected account before starting the signed interactive-session proof.
+func admitTaskUser(selected, current string, session uint32) error {
+	if !validUserSID(selected) || selected != current || current == systemSID || session == 0 {
+		return errors.New("task operation requires the installation's intended interactive user")
+	}
+	return nil
 }

@@ -29,6 +29,28 @@ func TestTaskActionAdmission(t *testing.T) {
 	}
 }
 
+// TestTaskUserAdmission rejects cross-user, service, and noninteractive scheduler activation.
+func TestTaskUserAdmission(t *testing.T) {
+	user := "S-1-5-21-1-2-3-1001"
+	if err := admitTaskUser(user, user, 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []struct {
+		selected, current string
+		session           uint32
+	}{
+		{user, "S-1-5-21-1-2-3-1002", 1},
+		{user, user, 0},
+		{"", user, 1},
+		{systemSID, systemSID, 1},
+		{"S-1-5-32-544", "S-1-5-32-544", 1},
+	} {
+		if err := admitTaskUser(fixture.selected, fixture.current, fixture.session); err == nil {
+			t.Fatalf("admitted task user fixture %+v", fixture)
+		}
+	}
+}
+
 // TestTaskEnvironment removes mixed-case module overrides without changing unrelated user environment.
 func TestTaskEnvironment(t *testing.T) {
 	source := []string{"Path=C:\\ordinary", "psmodulepath=C:\\foreign", "PSMODULEAUTOLOADINGPREFERENCE=All", "LOCALAPPDATA=C:\\profile"}
