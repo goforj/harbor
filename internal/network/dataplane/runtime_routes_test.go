@@ -231,7 +231,8 @@ func TestRuntimeActivateHTTPIngressConcurrentCloseJoinsUnpublishedListeners(t *t
 // TestRuntimeActivateHTTPIngressRejectsInvalidLifecycleAndTopology keeps failed admission side-effect free.
 func TestRuntimeActivateHTTPIngressRejectsInvalidLifecycleAndTopology(t *testing.T) {
 	dns := reserveDNSPort(t)
-	shared := reserveTCPPorts(t, 3)
+	shared := reserveDistinctTCPPorts(t, 3, dns)
+	upstreams := reserveDistinctTCPPorts(t, 2, append([]netip.AddrPort{dns}, shared...)...)
 	resolver := mustDesiredState(t, ListenerPlan{DNS: dns}, nil, nil)
 	fullListeners := ListenerPlan{DNS: dns, HTTP: shared[0], HTTPS: shared[1]}
 	full := mustDesiredState(t, fullListeners, nil, nil)
@@ -276,13 +277,13 @@ func TestRuntimeActivateHTTPIngressRejectsInvalidLifecycleAndTopology(t *testing
 	withRoute := mustDesiredState(t, fullListeners, []HTTPRoute{{
 		ID:       "orders:app-http",
 		Host:     "orders.test",
-		Upstream: testEndpoint("127.0.0.1:41006"),
+		Upstream: upstreams[0],
 	}}, nil)
 	withNative := mustDesiredState(t, fullListeners, nil, []NativeRoute{{
 		ID:       "orders:mysql",
 		Host:     "mysql.orders.test",
 		Listen:   shared[2],
-		Upstream: testEndpoint("127.0.0.1:41007"),
+		Upstream: upstreams[1],
 	}})
 	tests := []struct {
 		name string
@@ -316,7 +317,7 @@ func TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays(t *testing
 	listeners := ListenerPlan{
 		DNS: reserveDNSPort(t),
 	}
-	shared := reserveTCPPorts(t, 2)
+	shared := reserveDistinctTCPPorts(t, 3, listeners.DNS)
 	listeners.HTTP = shared[0]
 	listeners.HTTPS = shared[1]
 	excluded := append([]netip.AddrPort{listeners.DNS}, shared...)
@@ -334,12 +335,9 @@ func TestRuntimeReplaceNativeRoutesPublishesAndWithdrawsManagedRelays(t *testing
 	route := NativeRoute{
 		ID:       "orders:service:mysql",
 		Host:     "mysql.orders.test",
-		Listen:   shared[0],
+		Listen:   shared[2],
 		Upstream: upstreams[1],
 	}
-	// Use a separate exact listener because the shared HTTP listener must remain untouched by native admission.
-	conflict := reserveTCPPorts(t, 1)[0]
-	route.Listen = conflict
 	if err := runtime.ReplaceNativeRoutes(context.Background(), []NativeRoute{route}); err != nil {
 		t.Fatalf("ReplaceNativeRoutes() error = %v", err)
 	}

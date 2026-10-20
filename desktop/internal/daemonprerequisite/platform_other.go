@@ -1,8 +1,8 @@
-//go:build !darwin || !release
+//go:build (!darwin && !linux) || !release
 
 package daemonprerequisite
 
-// newPlatformEnsurer keeps daemon activation exclusive to packaged macOS builds.
+// newPlatformEnsurer preserves source-development ownership and unsupported installed platforms.
 func newPlatformEnsurer() Ensurer {
 	return unavailableEnsurer{}
 }

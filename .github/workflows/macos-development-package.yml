@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  HARBOR_PACKAGED_FORJ_COMMIT: v0.34.0
+  HARBOR_PACKAGED_FORJ_COMMIT: v0.34.1
 
 jobs:
   package:
@@ -376,7 +376,7 @@ jobs:
         env:
           HARBOR_TRUSTED_HTTPS_ACCEPTANCE: "1"
           HARBOR_TRUSTED_HTTPS_FORJ_BINARY: ${{ runner.temp }}/harbor-packaged-acceptance-bin/forj
-          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.34.0"
+          HARBOR_TRUSTED_HTTPS_FORJ_VERSION: "0.34.1"
           HARBOR_PHASE1_CLI_BINARY: /usr/local/bin/harbor
           HARBOR_PHASE1_DAEMON_BINARY: /Library/Application Support/GoForj/Harbor/daemon-launcher
           HARBOR_PHASE1_EVIDENCE_DIRECTORY: ${{ github.workspace }}/harbor-packaged-macos-evidence
@@ -445,8 +445,26 @@ jobs:
             "$authorization_normalized_restored" \
             "$authorization_directory"
 
+      - name: Prove installed desktop daemon activation and reopen
+        working-directory: desktop
+        env:
+          HARBOR_INSTALLED_DAEMON_ACCEPTANCE: "1"
+          HARBOR_INSTALLED_PROJECT_DIRECTORY: ${{ runner.temp }}/harbor-installed-project
+          HARBOR_INSTALLED_DAEMON_EVIDENCE: ${{ github.workspace }}/harbor-packaged-macos-evidence/installed-desktop-daemon.json
+        run: |
+          set -euo pipefail
+          go test -tags=release -count=1 -timeout=3m -run '^Test(Darwin|InstalledDaemon)' -v ./internal/daemonprerequisite
+          shasum -a 256 "$HOME/Library/Application Support/GoForj/Harbor/harbor.db" > "${RUNNER_TEMP}/harbor-retained-user-data.sha256"
+          shasum -a 256 "${RUNNER_TEMP}/harbor-installed-project/.goforj.yml" "${RUNNER_TEMP}/harbor-installed-project/project-data.txt" >> "${RUNNER_TEMP}/harbor-retained-user-data.sha256"
+
+      - name: Verify installer service ownership regressions
+        run: go test -count=1 ./cmd/installer ./cmd/daemonlauncher
+
       - name: Exercise ownership-aware package uninstall
         run: |
+          set -euo pipefail
+          launchctl print "gui/$(id -u)/com.goforj.harbor.daemon" |
+            sed -n '/state = /p; /path = /p; /type = /p; /program = /p; /working directory = /p'
           installed_helper="/Library/PrivilegedHelperTools/com.goforj.harbor.helper"
           immutable_helper="/Library/Application Support/GoForj/Harbor/current/libexec/com.goforj.harbor.helper"
           printf '%s\n' "foreign helper ${GITHUB_RUN_ID}" |
@@ -509,9 +527,16 @@ jobs:
             exit 1
           fi
           test "$(sudo -n cat "$foreign_sentinel")" = "foreign package state ${GITHUB_RUN_ID}"
+          test ! -e "$HOME/Library/LaunchAgents/com.goforj.harbor.daemon.plist"
+          if launchctl print "gui/$(id -u)/com.goforj.harbor.daemon" >/dev/null 2>&1; then
+            echo "retained Harbor per-user daemon registration" >&2
+            exit 1
+          fi
+          shasum -a 256 -c "${RUNNER_TEMP}/harbor-retained-user-data.sha256"
+          test "$(cat "$HOME/Library/Application Support/GoForj/Harbor/package-preservation.txt")" = "preserved user data"
           sudo -n security verify-cert -c "$HARBOR_PACKAGED_FOREIGN_CERTIFICATE" -p ssl
 
-          evidence="${HARBOR_PHASE1_EVIDENCE_DIRECTORY}/package-uninstall.txt"
+          evidence="${GITHUB_WORKSPACE}/harbor-packaged-macos-evidence/package-uninstall.txt"
           {
             printf 'package_sha256=%s\n' "$(shasum -a 256 "$HARBOR_PACKAGE_PATH" | awk '{print $1}')"
             printf 'package_receipt=absent\n'
@@ -520,7 +545,9 @@ jobs:
             printf 'mismatched_fixed_helper=preserved\n'
             printf 'foreign_package_sentinel=preserved\n'
             printf 'foreign_administrator_trust=preserved\n'
-          } > "$evidence"
+            printf 'user_database_and_project_files=preserved\n'
+            printf 'installed_user_service=absent\n'
+          } > "$evidence" || exit 1
 
           sudo -n rm -f "$foreign_sentinel"
           sudo -n rmdir "$foreign_parent"
@@ -543,5 +570,6 @@ jobs:
           path: |
             harbor-packaged-macos-evidence/summary.json
             harbor-packaged-macos-evidence/package-uninstall.txt
+            harbor-packaged-macos-evidence/installed-desktop-daemon.json
           if-no-files-found: error
           retention-days: 14

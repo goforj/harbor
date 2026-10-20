@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/goforj/harbor/internal/platform/daemonservice"
 	"github.com/goforj/harbor/internal/platform/installpaths"
 )
 
@@ -80,7 +81,7 @@ func (ensurer *darwinEnsurer) Ensure(ctx context.Context) error {
 		return fmt.Errorf("Harbor user home %q is not absolute and canonical", home)
 	}
 	agentPath := filepath.Join(home, "Library", "LaunchAgents", installpaths.DaemonLaunchAgentLabel+".plist")
-	agent := daemonLaunchAgent(launcher)
+	agent := daemonservice.DarwinDefinition()
 	current, readErr := ensurer.dependencies.readFile(agentPath)
 	switch {
 	case readErr == nil && string(current) != string(agent):
@@ -107,44 +108,14 @@ func (ensurer *darwinEnsurer) Ensure(ctx context.Context) error {
 	return nil
 }
 
-// daemonLaunchAgent renders the fixed user-service contract without caller-selected XML.
-func daemonLaunchAgent(launcher string) []byte {
-	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>` + installpaths.DaemonLaunchAgentLabel + `</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>` + launcher + `</string>
-  </array>
-  <key>WorkingDirectory</key>
-  <string>/Library/Application Support/GoForj/Harbor/current</string>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>ProcessType</key>
-  <string>Background</string>
-  <key>ThrottleInterval</key>
-  <integer>5</integer>
-</dict>
-</plist>
-`)
-}
-
 // inspectDaemonLauncher admits only the package-owned fixed regular executable.
 func inspectDaemonLauncher(path string) error {
 	information, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("inspect installed Harbor daemon launcher: %w", err)
 	}
-	if !information.Mode().IsRegular() || information.Mode().Perm()&0o111 == 0 {
-		return errors.New("installed Harbor daemon launcher is not a regular executable")
+	if err := daemonservice.AdmitExecutable(information); err != nil {
+		return err
 	}
 	return nil
 }

@@ -1,12 +1,36 @@
 # Current Implementation State
 
+## GoForj CLI maintenance (2026-10-19)
+
+CI, hosted lifecycle jobs, native package acceptance, and generated-project acceptance now select released GoForj v0.34.1. That patch centralizes local database readiness and recognizes standard historical database hooks once per service while preserving custom hook ordering. This changes the external CLI selected for Harbor acceptance, not Harbor's framework module dependencies, generated-project configuration metadata, or the intentional relative desktop module replacement.
+
+GoForj PR #252 merged at `1566ce542af416cdf643bc07e35986ff8de760ad`; its 51 PR checks passed. The published CLI is installed locally, and Test4 restarted through Harbor with its original configuration unchanged, one database preparation, no historical wait-script execution, preserved frontend hook order, and system-trusted HTTPS 200. Native Harbor package evidence below predates this CLI pin until a new rehearsal is recorded.
+
+## Installed daemon lifecycle (2026-10-19)
+
+The `fix/installed-daemon-lifecycle` implementation adds a package-owned `harbord.service` and a release-only Linux desktop adapter. The adapter verifies direct root-owned package files, rejects user-shadowed units and drop-ins, then starts the systemd user service. It does not enable linger or create a daemon child tied to the window. Source development and Windows activation remain unchanged.
+
+The installed Unix launchers now select foreground mode and run the selected release's embedded migrations for no-argument service startup. Preparation holds the daemon's existing owner-private singleton lock, so a running source or installed daemon is preserved without concurrent migrations. The lock is released before the daemon acquires it for runtime authority. Explicit maintenance arguments retain their previous behavior. First launch therefore does not depend on a source-development graph having prepared the user's database.
+
+macOS uninstall shares the desktop's canonical LaunchAgent definition. It resolves the selected account through the OS, retains no-follow parent descriptors, verifies the saved file and loaded service, unloads only the exact GUI-domain job, and confirms absence before deleting its admitted file. Atomic retirement and a fresh inode/byte check preserve replacements, foreign files, symlinks, hardlinks, and neighboring definitions. User data and checkouts are outside removal authority.
+
+Focused local macOS installer/launcher, singleton-guard, package-admission, and release-adapter tests pass. [Build-only run 39343779111](https://github.com/goforj/harbor/actions/runs/39343779111) passed on product source `86e2121941facd864e0dab819ec5275c7f33ce26` with the singleton guard. Both native package workflows exercised the actual installed daemon adapter with an absent user database, client close/reopen, daemon restart, retained registration, and post-uninstall user database/project-file hashes. Both retained complete uninstall receipts proving the installed user service absent and user files preserved. Assembly passed; publication was skipped. This gate exercises the desktop's daemon adapter, not real window/tray interactions, reboot, or Docker-volume preservation.
+
+PR #12's Linux root test exposed an ephemeral-port collision in the managed-relay fixture: a later listener allocation could reuse a released upstream endpoint. The fixture now allocates all public TCP listeners together before selecting distinct upstreams. Production loop detection is unchanged. The affected test passes 100 repetitions and the complete data-plane package passes locally; fresh PR CI remains required.
+
+## Native package rehearsal (2026-10-19)
+
+The [build-only package rehearsal](https://github.com/goforj/harbor/actions/runs/39339451091) passed on merged main `03e6c52759f65178cdcfb0bc103ac5e6cedb2a7a`. Both macOS Apple-silicon PKG and Ubuntu 24.04 amd64 DEB passed native installation, packaged daemon/CLI setup, three generated projects over system-trusted HTTPS, ownership-aware cleanup, and package removal. Exact tested packages, checksums, and provenance were retained; publication was skipped and no Harbor tag or release was created.
+
+Artifact inspection exposed a missing macOS uninstall receipt caused by a step-scoped environment variable. The installed daemon work above corrects this and closes the audited Linux activation and macOS LaunchAgent-removal gaps, with both native receipts retained in run `39343779111`. The earlier merged-main rehearsal predates those changes. See [the release evidence and remaining gates](./releases.md#latest-package-rehearsal-2026-10-19). Full installed GUI onboarding, reboot, signed updates, and real Docker-volume preservation across package repair/uninstall remain separate work.
+
 ## Released CLI and native creation lifecycle (2026-10-19)
 
 GoForj PR #251 is merged as `4553ef30446b798a896ab2bb91bb1927caa428a1`, published as v0.34.0, and installed locally from that published module. CI, hosted lifecycle jobs, development package checks, and generated-project acceptance now select that CLI release. Existing project config metadata and Harbor's framework module dependencies are independent of this tool pin.
 
 A real macOS Wails window used the production SPA and bindings against the running daemon to create a minimal Vue/web API project through the wizard with the released CLI. Start reached Ready and normal system trust accepted HTTPS with status 200. After Stop and native desktop process exit, a fresh process found the same stopped registration, started it again through the UI, reached Ready, and served trusted HTTPS 200 before stopping. The temporary proof extended the opt-in native creation harness in an isolated checkout; no fixture bridge or fake daemon was used. The normal project registration cleanup preserves the generated checkout beneath `/tmp`. This is desktop close/reopen evidence with the existing daemon, not an OS reboot or fresh installer proof.
 
-The CI fixes preserve the helper's forbidden authority imports while reviewing the pure pool-policy package, and use native temporary paths for Windows creation fixtures. Local focused checks pass. A deterministic regression and focused race checks also cover a runtime session ending between a service-change notification and its fresh observation; only typed runtime-not-running ends the watcher silently, while genuine observation failures remain visible. CI for these final integration fixes is tracked on Harbor PR #11.
+The CI fixes preserve the helper's forbidden authority imports while reviewing the pure pool-policy package, and use native temporary paths for Windows creation fixtures. Local focused checks pass. A deterministic regression and focused race checks also cover a runtime session ending between a service-change notification and its fresh observation; only typed runtime-not-running ends the watcher silently, while genuine observation failures remain visible. Harbor PR #11 merged as `03e6c52759f65178cdcfb0bc103ac5e6cedb2a7a` after 41 successful checks. Push CI, CodeQL, the platform-network API gate, and hosted Linux, macOS, and Windows trusted-HTTPS workflows also passed for that exact main commit.
 
 ## Hosted capacity gate (2026-10-19)
 

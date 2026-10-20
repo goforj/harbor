@@ -475,6 +475,12 @@ func TestServiceLogRetryPreservesCursorWithoutReplayingTail(t *testing.T) {
 		t.Fatalf("runtime open count = %d, want retry", runtime.openCount())
 	}
 	replacement.write(t, "[orders-db-1 stdout] after\n")
+	// Pipe writes finish when read, before the follower necessarily publishes those bytes.
+	waitContext, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	if _, err := supervisor.WaitServiceLogs(waitContext, "project-logs", "session-logs", "db", uint64(len("[orders-db-1 stdout] before\n"))); err != nil {
+		t.Fatalf("WaitServiceLogs() after retry error = %v", err)
+	}
 	selection, err := supervisor.ReadServiceLogs(t.Context(), "project-logs", "session-logs", "db", 0)
 	if err != nil {
 		t.Fatalf("ReadServiceLogs() error = %v", err)
