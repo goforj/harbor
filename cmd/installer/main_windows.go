@@ -496,11 +496,16 @@ func admitMaintenanceStage(file *os.File) error {
 	if err != nil {
 		return err
 	}
-	return admitMaintenanceDescriptor(descriptor)
+	var information windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &information); err != nil {
+		return err
+	}
+	return admitMaintenanceDescriptor(descriptor, information.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0)
 }
 
 // admitMaintenanceDescriptor accepts only the explicit protected machine ACL and high mandatory label used for this staging protocol.
-func admitMaintenanceDescriptor(descriptor *windows.SECURITY_DESCRIPTOR) error {
+// Windows preserves label propagation on directories and removes it from regular files.
+func admitMaintenanceDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, directory bool) error {
 	owner, _, err := descriptor.Owner()
 	if err != nil {
 		return err
@@ -542,7 +547,11 @@ func admitMaintenanceDescriptor(descriptor *windows.SECURITY_DESCRIPTOR) error {
 	if err := windows.GetAce(sacl, 0, &label); err != nil {
 		return err
 	}
-	if label.Header.AceType != 0x11 || label.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || label.Mask != 1 || (*windows.SID)(unsafe.Pointer(&label.SidStart)).String() != "S-1-16-12288" {
+	expectedFlags := byte(0)
+	if directory {
+		expectedFlags = windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE
+	}
+	if label.Header.AceType != 0x11 || label.Header.AceFlags != expectedFlags || label.Mask != 1 || (*windows.SID)(unsafe.Pointer(&label.SidStart)).String() != "S-1-16-12288" {
 		return fmt.Errorf("uninstall staging high mandatory label differs: type=%#x flags=%#x mask=%#x sid=%s descriptor=%s", label.Header.AceType, label.Header.AceFlags, label.Mask, (*windows.SID)(unsafe.Pointer(&label.SidStart)).String(), descriptor.String())
 	}
 	return nil

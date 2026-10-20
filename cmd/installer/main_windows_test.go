@@ -105,9 +105,23 @@ func TestWindowsMaintenanceStageSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := admitMaintenanceDescriptor(exact); err != nil {
+	if err := admitMaintenanceDescriptor(exact, true); err != nil {
 		t.Fatal(err)
 	}
+	fileDescriptor, err := windows.SecurityDescriptorFromString(strings.Replace(maintenanceStageSDDL, "(ML;OICI;", "(ML;;", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admitMaintenanceDescriptor(fileDescriptor, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := admitMaintenanceDescriptor(fileDescriptor, true); err == nil {
+		t.Fatal("nonpropagating directory label admitted")
+	}
+	if err := admitMaintenanceDescriptor(exact, false); err == nil {
+		t.Fatal("propagating regular-file label admitted")
+	}
+
 	for _, descriptor := range []string{
 		strings.Replace(maintenanceStageSDDL, "O:BA", "O:SY", 1),
 		strings.Replace(maintenanceStageSDDL, "D:P", "D:", 1),
@@ -125,7 +139,7 @@ func TestWindowsMaintenanceStageSecurity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fixture descriptor %q: %v", descriptor, err)
 		}
-		if err := admitMaintenanceDescriptor(native); err == nil {
+		if err := admitMaintenanceDescriptor(native, true); err == nil {
 			t.Fatalf("admitted descriptor %q", descriptor)
 		}
 	}

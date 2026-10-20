@@ -45,9 +45,23 @@ func TestUninstallGuardStageDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := admitUninstallGuardStageDescriptor(exact); err != nil {
+	if err := admitUninstallGuardStageDescriptor(exact, true); err != nil {
 		t.Fatal(err)
 	}
+	fileDescriptor, err := windows.SecurityDescriptorFromString(strings.Replace(uninstallGuardStageSDDL, "(ML;OICI;", "(ML;;", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admitUninstallGuardStageDescriptor(fileDescriptor, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := admitUninstallGuardStageDescriptor(fileDescriptor, true); err == nil {
+		t.Fatal("nonpropagating directory label admitted")
+	}
+	if err := admitUninstallGuardStageDescriptor(exact, false); err == nil {
+		t.Fatal("propagating regular-file label admitted")
+	}
+
 	for _, text := range []string{
 		strings.Replace(uninstallGuardStageSDDL, "O:BA", "O:SY", 1),
 		strings.Replace(uninstallGuardStageSDDL, "D:P", "D:", 1),
@@ -65,7 +79,7 @@ func TestUninstallGuardStageDescriptor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("descriptor fixture %q: %v", text, err)
 		}
-		if err := admitUninstallGuardStageDescriptor(descriptor); err == nil {
+		if err := admitUninstallGuardStageDescriptor(descriptor, true); err == nil {
 			t.Fatalf("admitted guard descriptor %q", text)
 		}
 	}
@@ -334,7 +348,7 @@ func labelNativeGuardStage(t *testing.T, path string, directory bool) {
 	if directory {
 		flags |= windows.FILE_FLAG_BACKUP_SEMANTICS
 	}
-	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.WRITE_OWNER, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.WRITE_OWNER|windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
 	if err != nil {
 		t.Fatalf("open native guard label target %q (directory=%t): %v", path, directory, err)
 	}

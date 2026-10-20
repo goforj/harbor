@@ -350,7 +350,7 @@ func (installation *Installation) retainUninstallGuardStage(staged *os.File) (fi
 			if err != nil {
 				return files, err
 			}
-			if err := admitUninstallGuardStageDescriptor(descriptor); err != nil {
+			if err := admitUninstallGuardStageDescriptor(descriptor, directory); err != nil {
 				return files, err
 			}
 		}
@@ -407,7 +407,8 @@ func openUninstallGuardObject(path string, directory bool) (*os.File, error) {
 }
 
 // admitUninstallGuardStageDescriptor admits only the protected machine grants and inherited high mandatory label used by maintenance staging.
-func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR) error {
+// Windows preserves label propagation on directories and removes it from regular files.
+func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, directory bool) error {
 	owner, _, err := descriptor.Owner()
 	if err != nil {
 		return err
@@ -449,7 +450,11 @@ func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR)
 	if err := windows.GetAce(sacl, 0, &label); err != nil {
 		return err
 	}
-	if label.Header.AceType != 0x11 || label.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || label.Mask != 1 || (*windows.SID)(unsafe.Pointer(&label.SidStart)).String() != "S-1-16-12288" {
+	expectedFlags := byte(0)
+	if directory {
+		expectedFlags = windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE
+	}
+	if label.Header.AceType != 0x11 || label.Header.AceFlags != expectedFlags || label.Mask != 1 || (*windows.SID)(unsafe.Pointer(&label.SidStart)).String() != "S-1-16-12288" {
 		return fmt.Errorf("uninstall guard stage high mandatory label differs: type=%#x flags=%#x mask=%#x sid=%s descriptor=%s", label.Header.AceType, label.Header.AceFlags, label.Mask, (*windows.SID)(unsafe.Pointer(&label.SidStart)).String(), descriptor.String())
 	}
 	return nil
