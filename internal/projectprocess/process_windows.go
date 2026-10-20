@@ -15,9 +15,10 @@ import (
 
 // platformProcess owns the Windows Job Object and query handle for one launched command tree.
 type platformProcess struct {
-	mu      sync.Mutex
-	job     windows.Handle
-	process windows.Handle
+	mu            sync.Mutex
+	job           windows.Handle
+	process       windows.Handle
+	retainedScope bool
 }
 
 // jobObjectBasicAccountingInformation matches the stable Win32 layout needed to observe active descendants.

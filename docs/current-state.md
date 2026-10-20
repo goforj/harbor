@@ -1,5 +1,9 @@
 # Current Implementation State
 
+## In progress: transparent daemon restart
+
+The user authorized this milestone after PR #17 merged. The unmerged `feat/transparent-daemon-recovery` branch retains Ready process scopes across daemon shutdown and reconnects them through independently authenticated output brokers and exact native ownership. Unix same-process continuity, fresh log delivery, duplicate-launch fencing, and adopted Stop pass locally, including race checks. Windows retained Job Object ownership and coordinator recovery are under development; native and fresh installed-package acceptance remain pending. Earlier package receipts below prove settlement and retry, not uninterrupted adoption. No new release or local installation change has occurred.
+
 ## Installed crash-recovery acceptance (2026-10-20, hosted profiles passed)
 
 The complete installed GUI recovery scenario passes on macOS, Ubuntu, and Windows at product source `2f3ace995aafbced8cca3568e4a00a4a75686223`. [PR #17](https://github.com/goforj/harbor/pull/17) is merged into `main` at `cbbfd14b674e63a320d3fd0098e2849db044c1d6`; the merge tree matches the independently reviewed PR head. Subsequent documentation-only commits do not change that product source. The three existing platform workflows share `scripts/packageui/crashrecovery`; no new workflow was added.

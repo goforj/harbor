@@ -31,6 +31,14 @@ The integration consists of two versioned contracts:
 1. a static, secret-free project descriptor;
 2. a live managed-development session.
 
+## Restart continuity boundary
+
+The approved implementation slice keeps restart continuity in Harbor's runtime adapter. A Ready session can be adopted only after its exact persisted process birth and complete native session/job scope are proved, and its surviving output broker is independently authenticated against the private manifest, credential digest, executable image, arguments, and native birth. Output authentication alone grants no process-stop authority. Clean daemon shutdown relinquishes local handles for supported Ready sessions; explicit project Stop retains full settlement semantics. Interrupted starts are settled before retry.
+
+Unix uses the existing dedicated native session. Windows uses a separate, named kill-on-last-close Job Object retained by a query-only broker handle while inherited output pipes remain open. Recovery reopens that exact lifecycle-derived job and requires root membership and birth before granting termination authority. Ambiguous or changed ownership quarantines only the affected project without signaling an unproved scope. Older unsupported sessions retain their previous bounded recovery behavior. This slice is under development; current proof is tracked in [Current implementation state](./current-state.md).
+
+GoForj removed its earlier managed integration in `467616187df5ab8a19cf3b4c7237be49cf29bd3d`. Restart continuity does not reinstate that client or require a GoForj change. The versioned managed contract below remains target design for richer coordination, not a description of the released CLI.
+
 ## Optional startup diagnostics
 
 The production launcher now offers a separate startup event destination through `FORJ_DEV_EVENTS_FILE` and `FORJ_DEV_EVENTS_SESSION`. This is observation only and does not activate the dormant managed-session transport below. The argv remains exactly `forj dev`, preserving native process receipts and repair matching. No additional descriptor invocation blocks launch. Older GoForj versions ignore the selectors and continue with raw output; supporting CLIs advertise `dev-startup-progress.v1` for other consumers.

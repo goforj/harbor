@@ -326,7 +326,7 @@ func buildOutputBrokerTestBinary(t *testing.T) string {
 	path := filepath.Join(t.TempDir(), name)
 	command := exec.Command("go", "build", "-o", path, "./cmd/outputbroker")
 	command.Dir = root
-	command.Env = append(os.Environ(), "GOCACHE=/tmp/gocache", "GOMODCACHE=/tmp/gomodcache")
+	command.Env = os.Environ()
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build output broker: %v\n%s", err, strings.TrimSpace(string(output)))

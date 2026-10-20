@@ -141,6 +141,13 @@ func init() {
 		runSeparateGroupOrphanParentHelper()
 	case "wait", "ignore":
 		waitForTerminationSignal()
+	case "stream-wait":
+		go func() {
+			for tick := range time.Tick(100 * time.Millisecond) {
+				fmt.Fprintf(os.Stdout, "stream=%d\n", tick.UnixNano())
+			}
+		}()
+		waitForTerminationSignal()
 	default:
 		os.Exit(92)
 	}

@@ -619,7 +619,7 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	}
 	command.Stdout = stdoutChild
 	command.Stderr = stderrChild
-	platform, err := preparePlatformProcess(command)
+	platform, err := prepareSessionPlatformProcess(command, request.ProjectID, request.SessionID, supervisor.outputSpoolDirectory, brokerLauncher != nil)
 	if err != nil {
 		_ = stdout.Close()
 		_ = stdoutChild.Close()
@@ -681,11 +681,12 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 	}
 	if brokerLauncher != nil {
 		brokerAttachment, err = brokerLauncher.Launch(ctx, OutputBrokerLaunchSpec{
-			ProjectID:       request.ProjectID,
-			SessionID:       request.SessionID,
-			OutputDirectory: supervisor.outputSpoolDirectory,
-			Stdout:          stdout,
-			Stderr:          stderr,
+			ProjectID:          request.ProjectID,
+			SessionID:          request.SessionID,
+			OutputDirectory:    supervisor.outputSpoolDirectory,
+			Stdout:             stdout,
+			Stderr:             stderr,
+			RetainProcessScope: platform.retainsProcessScope(),
 		})
 		if err != nil {
 			fallbackBrokerToDirect()
@@ -791,6 +792,8 @@ func (supervisor *Supervisor) Start(ctx context.Context, request StartRequest) (
 		done: make(chan struct{}),
 	}
 	process := &managedProcess{
+		detachDone:        make(chan struct{}),
+		brokerAttachment:  brokerAttachment,
 		command:           command,
 		platform:          platform,
 		relay:             relay,
@@ -1290,19 +1293,40 @@ func (supervisor *Supervisor) Close(ctx context.Context) error {
 // wait reaps one child, drains its pipes, releases platform handles, and publishes one immutable result.
 func (supervisor *Supervisor) wait(process *managedProcess) {
 	err := process.command.Wait()
+	if process.detached.Load() {
+		process.platform.close()
+		return
+	}
+	exitCode := 0
+	if process.command.ProcessState != nil {
+		exitCode = process.command.ProcessState.ExitCode()
+	}
+	supervisor.finishProcess(process, err, exitCode)
+}
+
+// finishProcess retires observation only after the entire owned scope and output have settled.
+func (supervisor *Supervisor) finishProcess(process *managedProcess, err error, exitCode int) {
 	supervisor.mu.Lock()
+	if process.detached.Load() {
+		supervisor.mu.Unlock()
+		return
+	}
 	process.acceptingStop = false
 	stopRequested := process.stopRequested.Load()
 	supervisor.mu.Unlock()
-	treeSettlementErr := process.settleTree(stopRequested)
+	var treeSettlementErr error
+	if process.adopted && err != nil {
+		process.closeSignals()
+		treeSettlementErr = err
+	} else {
+		treeSettlementErr = process.settleTree(stopRequested)
+	}
 	cleanupErr := treeSettlementErr
 	if cleanupErr != nil {
-		_ = process.stdout.Close()
-		_ = process.stderr.Close()
+		process.closeOutputReaders()
 	}
 	process.pipeReaders.Wait()
-	_ = process.stdout.Close()
-	_ = process.stderr.Close()
+	process.closeOutputReaders()
 	process.relay.finish()
 	process.platform.close()
 
@@ -1341,10 +1365,6 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 	}
 	supervisor.mu.Unlock()
 
-	exitCode := 0
-	if process.command.ProcessState != nil {
-		exitCode = process.command.ProcessState.ExitCode()
-	}
 	process.handle.complete(Exit{
 		ProjectID:          info.ProjectID,
 		SessionID:          info.SessionID,
@@ -1361,6 +1381,10 @@ func (supervisor *Supervisor) wait(process *managedProcess) {
 
 // managedProcess retains the private handles needed to stop and reap one process tree.
 type managedProcess struct {
+	adopted           bool
+	detached          atomic.Bool
+	detachDone        chan struct{}
+	brokerAttachment  OutputBrokerAttachment
 	command           *exec.Cmd
 	platform          *platformProcess
 	relay             *outputRelay
@@ -1490,7 +1514,7 @@ func (process *managedProcess) forceStop() error {
 		process.signalMu.Lock()
 		if !process.signalsClosed && !process.treeSettled {
 			process.forceErr = process.platform.force(process.command.Process.Pid)
-			if process.forceErr != nil {
+			if process.forceErr != nil && !process.adopted {
 				rootErr := process.command.Process.Kill()
 				if errors.Is(rootErr, os.ErrProcessDone) {
 					rootErr = nil

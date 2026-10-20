@@ -31,6 +31,8 @@ type OutputBrokerLaunchConfig struct {
 	EndpointReference string `json:"endpoint_reference"`
 	// AttachmentTicket is the opaque credential required for Harbor attachment.
 	AttachmentTicket string `json:"attachment_ticket"`
+	// RetainProcessScope retains only the deterministic native job belonging to these exact session identities.
+	RetainProcessScope bool `json:"retain_process_scope,omitempty"`
 }
 
 // Validate reports whether a launch manifest is complete without containing process authority.
@@ -118,6 +120,8 @@ type OutputBrokerRuntimeConfig struct {
 	Stdout io.Reader
 	// Stderr is the inherited child standard-error pipe.
 	Stderr io.Reader
+	// RetainProcessScope keeps the already-admitted native job alive until output reaches EOF.
+	RetainProcessScope bool
 }
 
 // RunOutputBroker owns inherited output pipes, appends them durably, and serves replay/live clients until both pipes end.
@@ -128,6 +132,11 @@ func RunOutputBroker(ctx context.Context, config OutputBrokerRuntimeConfig) erro
 	if err := validateOutputBrokerRuntimeConfig(config); err != nil {
 		return err
 	}
+	releaseScope, err := retainOutputBrokerProcessScope(config)
+	if err != nil {
+		return fmt.Errorf("retain native process scope: %w", err)
+	}
+	defer releaseScope()
 	currentProcess, err := CaptureCurrentProcessEvidence()
 	if err != nil {
 		return fmt.Errorf("capture output broker process evidence: %w", err)

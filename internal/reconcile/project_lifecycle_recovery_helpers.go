@@ -372,7 +372,14 @@ func (coordinator *ProjectLifecycleCoordinator) recoverProcessBackedProjectBefor
 	if err := boundary.Validate(); err != nil {
 		return fmt.Errorf("validate project %q process-backed recovery boundary before start: %w", projectID, err)
 	}
-	if _, err := coordinator.settleRecoveredProjectProcess(ctx, fmt.Sprintf("project %q replacement start", projectID), boundary.Process); err != nil {
+	session, sessionErr := coordinator.state.ActiveProjectSession(ctx, projectID)
+	if sessionErr != nil {
+		return sessionErr
+	}
+	if session.ID != boundary.SessionID || session.Generation != boundary.SessionGeneration || session.Process == nil || *session.Process != boundary.Process {
+		return fmt.Errorf("project %q recovery session changed before complete-scope settlement", projectID)
+	}
+	if _, err := coordinator.settleRecoveredProjectSession(ctx, fmt.Sprintf("project %q replacement start", projectID), session); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return err
 		}
@@ -382,7 +389,7 @@ func (coordinator *ProjectLifecycleCoordinator) recoverProcessBackedProjectBefor
 		if repairErr := coordinator.repairProjectOwnedPrimaryListener(ctx, boundary); repairErr != nil {
 			return errors.Join(err, repairErr)
 		}
-		if _, settleErr := coordinator.settleRecoveredProjectProcess(ctx, fmt.Sprintf("project %q replacement start after listener repair", projectID), boundary.Process); settleErr != nil {
+		if _, settleErr := coordinator.settleRecoveredProjectSession(ctx, fmt.Sprintf("project %q replacement start after listener repair", projectID), session); settleErr != nil {
 			return errors.Join(err, settleErr)
 		}
 	}
@@ -468,10 +475,10 @@ func (coordinator *ProjectLifecycleCoordinator) recoverQueuedProjectStop(
 	if session.Process == nil {
 		return priorProcessOwnershipError(record, session)
 	}
-	if _, err := coordinator.settleRecoveredProjectProcess(
+	if _, err := coordinator.settleRecoveredProjectSession(
 		ctx,
 		fmt.Sprintf("queued project stop operation %q", record.Operation.ID),
-		*session.Process,
+		session,
 	); err != nil {
 		project, projectErr := coordinator.state.Project(ctx, record.Operation.ProjectID)
 		if projectErr != nil {
@@ -531,10 +538,10 @@ func (coordinator *ProjectLifecycleCoordinator) recoverRunningProjectStop(
 	if session.State != domain.SessionStopping || session.Process == nil {
 		return priorProcessOwnershipError(record, session)
 	}
-	if _, err := coordinator.settleRecoveredProjectProcess(
+	if _, err := coordinator.settleRecoveredProjectSession(
 		ctx,
 		fmt.Sprintf("running project stop operation %q", record.Operation.ID),
-		*session.Process,
+		session,
 	); err != nil {
 		return coordinator.quarantineProjectProcessScope(ctx, record, session, processScopeRecoveryProblem())
 	}
