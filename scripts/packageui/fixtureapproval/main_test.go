@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -15,10 +14,11 @@ import (
 // fixtureDirectory creates an admitted checkout independently of the host's default temporary directory.
 func fixtureDirectory(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture approval supports only the Unix installed package UI profiles")
+	temporary, err := fixtureTemporaryRoot()
+	if err != nil {
+		t.Fatal(err)
 	}
-	root, err := os.MkdirTemp("/tmp", "harbor-package-ui-")
+	root, err := os.MkdirTemp(temporary, "harbor-package-ui-")
 	if err != nil {
 		t.Fatal(err)
 	}
