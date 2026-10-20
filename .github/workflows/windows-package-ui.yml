@@ -185,6 +185,18 @@ jobs:
           $selection = Get-Content "$installRoot\installation.json" -Raw | ConvertFrom-Json
           if ($selection.signer_thumbprint -cne $thumbprint) { throw 'installed selected publisher differs from admitted package signer' }
           "HARBOR_INSTALL_ROOT=$installRoot" | Out-File $env:GITHUB_ENV -Append
+      - name: Build the preauthorized exact-operation networking fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $thumbprint = [IO.File]::ReadAllText("$env:RUNNER_TEMP\harbor-ui-publisher.txt").Trim()
+          if ($thumbprint -cnotmatch '^[A-F0-9]{40}$') { throw 'fixture publisher identity is invalid' }
+          go test ./scripts/packageui/windowsapproval -count=1
+          if ($LASTEXITCODE -ne 0) { throw 'networking fixture selection tests failed' }
+          $path = "$env:RUNNER_TEMP\harbor-ui-tools\harbor-windows-approval.exe"
+          go build -trimpath -ldflags "-X github.com/goforj/harbor/internal/platform/windowsinstallation.PublisherThumbprint=$thumbprint" -o $path ./scripts/packageui/windowsapproval
+          if ($LASTEXITCODE -ne 0) { throw 'networking fixture client build failed' }
+          "HARBOR_PACKAGE_UI_WINDOWS_APPROVAL_TOOL=$path" | Out-File $env:GITHUB_ENV -Append
       - name: Release hosted runner canonical ingress sockets
         shell: pwsh
         run: |
@@ -211,6 +223,45 @@ jobs:
             -InstallRoot $env:HARBOR_INSTALL_ROOT `
             -EvidenceDirectory "$env:RUNNER_TEMP\harbor-installed-ui-evidence" `
             -ToolsPath $env:HARBOR_UI_TOOLS
+      - name: Observe native approval boundary after graphical failure
+        if: failure() && env.HARBOR_INSTALL_ROOT != ''
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try {
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class HarborConsentDiagnostic {
+              [DllImport("user32.dll", SetLastError=true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+              [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder value, uint size, out uint needed);
+              [DllImport("user32.dll", SetLastError=true)] static extern bool CloseDesktop(IntPtr handle);
+              public static string InputDesktop() {
+                  IntPtr desktop=OpenInputDesktop(0, false, 1);
+                  if (desktop == IntPtr.Zero) return "open-error:"+Marshal.GetLastWin32Error();
+                  try {
+                      StringBuilder name=new StringBuilder(256);
+                      uint needed;
+                      if (!GetUserObjectInformation(desktop, 2, name, 512, out needed)) return "name-error:"+Marshal.GetLastWin32Error();
+                      return "name:"+name.ToString();
+                  } finally { CloseDesktop(desktop); }
+              }
+          }
+          '@
+            $policy = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction Stop
+            $processes = @(Get-Process -Name consent, harbor-helper -ErrorAction SilentlyContinue | ForEach-Object {
+              $item = [ordered]@{ name=$_.ProcessName; pid=$_.Id; session=$_.SessionId }
+              try { $item.image=$_.Path; $item.native_birth=$_.StartTime.ToFileTimeUtc().ToString(); $item.started_utc=$_.StartTime.ToUniversalTime().ToString('o') } catch { $item.observation_error=$_.Exception.Message }
+              $item
+            })
+            [ordered]@{
+              input_desktop=[HarborConsentDiagnostic]::InputDesktop()
+              processes=$processes
+              policy=[ordered]@{ EnableLUA=$policy.EnableLUA; ConsentPromptBehaviorAdmin=$policy.ConsentPromptBehaviorAdmin; PromptOnSecureDesktop=$policy.PromptOnSecureDesktop; FilterAdministratorToken=$policy.FilterAdministratorToken }
+              observation_only=$true
+            } | ConvertTo-Json -Depth 6 | Set-Content "$env:RUNNER_TEMP\harbor-installed-ui-evidence\approval-boundary.json" -Encoding UTF8
+          } catch { Write-Warning "approval boundary observation failed: $_" }
       - name: Require complete ownership-aware cleanup
         if: always() && env.HARBOR_INSTALL_ROOT != ''
         id: cleanup
@@ -220,6 +271,7 @@ jobs:
           $path = "$env:RUNNER_TEMP\harbor-installed-ui-evidence\cleanup.json"
           if (-not (Test-Path $path -PathType Leaf)) { throw 'installed UI cleanup receipt is missing' }
           $cleanup = Get-Content $path -Raw | ConvertFrom-Json
+          if ($cleanup.approval_indeterminate -ne $false) { throw 'unproved elevated helper settlement prevents further machine cleanup or uninstall' }
           foreach ($fact in @('gui_quiescent','fixtures_stopped','fixture_unregistered','network_released','daemon_absent')) {
             if ($cleanup.$fact -ne $true) { throw "partial installed cleanup: $fact was not verified" }
           }
