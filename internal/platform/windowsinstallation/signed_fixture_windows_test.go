@@ -158,12 +158,39 @@ func setFixtureSecurity(t *testing.T, path, sddl string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.WRITE_OWNER|windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.READ_CONTROL|windows.WRITE_OWNER|windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		t.Fatalf("open fixture security %q: %v", path, err)
 	}
 	err = windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, owner, nil, dacl, nil)
 	if err := errors.Join(err, windows.CloseHandle(handle)); err != nil {
 		t.Fatalf("set fixture security %q: %v", path, err)
+	}
+}
+
+// TestNativeSignaturePinsVerifiedPublisher exercises both SIP providers after a successful trust verification.
+func TestNativeSignaturePinsVerifiedPublisher(t *testing.T) {
+	publisher := os.Getenv("HARBOR_ADMISSION_PUBLISHER")
+	if publisher == "" {
+		t.Skip("disposable signed native fixture was not configured")
+	}
+	for _, variable := range []string{"HARBOR_ADMISSION_SIGNED_PE", "HARBOR_ADMISSION_SIGNED_SCRIPT"} {
+		t.Run(variable, func(t *testing.T) {
+			file, err := os.Open(os.Getenv(variable))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			if err := verifySignature(file, publisher); err != nil {
+				t.Fatalf("trusted fixture publisher: %v", err)
+			}
+			wrong := strings.Repeat("A", 40)
+			if wrong == publisher {
+				wrong = strings.Repeat("B", 40)
+			}
+			if err := verifySignature(file, wrong); err == nil {
+				t.Fatal("trusted signature accepted under a different pinned publisher")
+			}
+		})
 	}
 }

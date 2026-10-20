@@ -66,6 +66,7 @@ jobs:
           & "$env:RUNNER_TEMP\harbor-installation-admission\admission.test.exe" '-test.v' '-test.timeout=5m' 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-installation-admission.log"
           if ($LASTEXITCODE -ne 0) { throw "native installation admission failed" }
       - name: Prove native migration singleton and unsafe runtime refusal
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           go test ./internal/platform/daemonservice -run '^TestWindowsPreparation' -count=1 -timeout=3m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-migration-preparation.log"
