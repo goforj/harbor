@@ -219,6 +219,7 @@ func TestNativeUninstallGuardLoader(t *testing.T) {
 		}
 		payloads[extension] = data
 	}
+	logNativeDesktopAccess(t)
 	logNativeGuardPE(t, "admission control", payloads[".exe"])
 	maintenance, err := os.ReadFile(os.Getenv("HARBOR_ADMISSION_MAINTENANCE_AGENT"))
 	if err != nil {

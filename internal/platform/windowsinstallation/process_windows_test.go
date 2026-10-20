@@ -77,6 +77,7 @@ func TestNativeInstalledChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("running installed child: %+v", facts)
+	logNativeDesktopAccess(t)
 	for _, access := range []uint32{windows.TOKEN_QUERY, windows.TOKEN_DUPLICATE, windows.TOKEN_ADJUST_DEFAULT, windows.TOKEN_ALL_ACCESS} {
 		var own windows.Token
 		err := windows.OpenProcessToken(windows.CurrentProcess(), access, &own)
