@@ -4,7 +4,6 @@ package windowsinstallation
 
 import (
 	"testing"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -39,24 +38,18 @@ func TestNativeRestrictedTokenRemovesAuthority(t *testing.T) {
 	t.Logf("restricted token facts: %+v", facts)
 }
 
-// TestNativeRuntimeTokenRejectsMandatoryPolicyDrift keeps observed token policy stricter than elevation metadata.
-func TestNativeRuntimeTokenRejectsMandatoryPolicyDrift(t *testing.T) {
-	var source windows.Token
-	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_ALL_ACCESS, &source); err != nil {
+// TestRuntimeFactsRejectAuthorityDrift covers scalar policy failures that Windows does not let an ordinary caller author.
+func TestRuntimeFactsRejectAuthorityDrift(t *testing.T) {
+	valid := TokenFacts{UserSID: "S-1-5-21-1-2-3-1000", OwnerSID: "S-1-5-21-1-2-3-1000", Session: 1, Integrity: 8192, MandatoryPolicy: 3}
+	if err := admitRuntimeFacts(valid); err != nil {
 		t.Fatal(err)
 	}
-	defer source.Close()
-	token, err := restrictedRuntimeToken(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer token.Close()
-	policy := uint32(0)
-	if err := windows.SetTokenInformation(token, windows.TokenMandatoryPolicy, (*byte)(unsafe.Pointer(&policy)), 4); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := inspectRuntimeToken(token); err == nil {
-		t.Fatal("token without no-write-up admitted")
+	for _, mutate := range []func(*TokenFacts){func(f *TokenFacts) { f.OwnerSID = administratorsSID }, func(f *TokenFacts) { f.UserSID = "" }, func(f *TokenFacts) { f.UserSID = systemSID; f.OwnerSID = systemSID }, func(f *TokenFacts) { f.Session = 0 }, func(f *TokenFacts) { f.Integrity = 12288 }, func(f *TokenFacts) { f.MandatoryPolicy = 2 }, func(f *TokenFacts) { f.UIAccess = 1 }} {
+		changed := valid
+		mutate(&changed)
+		if admitRuntimeFacts(changed) == nil {
+			t.Fatalf("authority drift admitted: %+v", changed)
+		}
 	}
 }
 

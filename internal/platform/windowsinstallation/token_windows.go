@@ -17,6 +17,8 @@ var createRestrictedToken = windows.NewLazySystemDLL("advapi32.dll").NewProc("Cr
 type TokenFacts struct {
 	// UserSID binds every installed child to the intended interactive user.
 	UserSID string `json:"user_sid"`
+	// OwnerSID must match TokenUser even when the source token defaulted to Administrators.
+	OwnerSID string `json:"owner_sid"`
 	// Session binds the process to the same interactive logon session.
 	Session uint32 `json:"session"`
 	// Integrity is the native mandatory integrity RID.
@@ -42,6 +44,16 @@ func inspectRuntimeToken(token windows.Token) (TokenFacts, error) {
 		return facts, err
 	}
 	facts.UserSID = user.User.Sid.String()
+	ownerInformation, err := tokenInformation(token, windows.TokenOwner)
+	if err != nil {
+		return facts, err
+	}
+	owner := (*struct{ Owner *windows.SID })(unsafe.Pointer(&ownerInformation[0])).Owner
+	if owner == nil || !owner.IsValid() {
+		return facts, errors.New("Windows token default owner is invalid")
+	}
+	facts.OwnerSID = owner.String()
+	runtime.KeepAlive(ownerInformation)
 	if facts.UserSID == "S-1-5-18" {
 		return facts, errors.New("Harbor installed roles cannot run as LocalSystem")
 	}
@@ -62,8 +74,11 @@ func inspectRuntimeToken(token windows.Token) (TokenFacts, error) {
 		return facts, errors.New("Windows token integrity SID is not canonical")
 	}
 	facts.Integrity = label.Label.Sid.SubAuthority(0)
-	if label.Label.Sid.String() != "S-1-16-8192" || facts.MandatoryPolicy&1 == 0 || facts.UIAccess != 0 || facts.Session == 0 {
-		return facts, errors.New("Harbor installed role requires interactive medium integrity, no-write-up and no UIAccess")
+	if label.Label.Sid.String() != "S-1-16-8192" {
+		return facts, errors.New("Windows token mandatory authority is not medium integrity")
+	}
+	if err := admitRuntimeFacts(facts); err != nil {
+		return facts, err
 	}
 	groups, err := token.GetTokenGroups()
 	if err != nil {
@@ -150,15 +165,11 @@ func configureRuntimeToken(token windows.Token, owner *windows.SID) error {
 	}
 	label := windows.Tokenmandatorylabel{Label: windows.SIDAndAttributes{Sid: medium, Attributes: windows.SE_GROUP_INTEGRITY}}
 	if err := windows.SetTokenInformation(token, windows.TokenIntegrityLevel, (*byte)(unsafe.Pointer(&label)), label.Size()); err != nil {
-		return err
-	}
-	policy := uint32(1)
-	if err := windows.SetTokenInformation(token, windows.TokenMandatoryPolicy, (*byte)(unsafe.Pointer(&policy)), 4); err != nil {
-		return err
+		return fmt.Errorf("set Windows medium integrity: %w", err)
 	}
 	ownerInformation := struct{ Owner *windows.SID }{owner}
 	if err := windows.SetTokenInformation(token, windows.TokenOwner, (*byte)(unsafe.Pointer(&ownerInformation)), uint32(unsafe.Sizeof(ownerInformation))); err != nil {
-		return err
+		return fmt.Errorf("set Windows current-user default owner: %w", err)
 	}
 	_, err = inspectRuntimeToken(token)
 	runtime.KeepAlive(medium)
@@ -190,4 +201,15 @@ func tokenInformation(token windows.Token, class uint32) ([]byte, error) {
 		return nil, err
 	}
 	return buffer[:length], nil
+}
+
+// admitRuntimeFacts separates native observation from scalar policy rejection so every invariant has a direct test.
+func admitRuntimeFacts(facts TokenFacts) error {
+	if facts.UserSID == "" || facts.UserSID == "S-1-5-18" || facts.OwnerSID != facts.UserSID {
+		return errors.New("Windows token default owner differs from its interactive user SID")
+	}
+	if facts.Session == 0 || facts.Integrity != 8192 || facts.MandatoryPolicy&1 == 0 || facts.UIAccess != 0 {
+		return errors.New("Harbor installed role requires interactive medium integrity, no-write-up and no UIAccess")
+	}
+	return nil
 }

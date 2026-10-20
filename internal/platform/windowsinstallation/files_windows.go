@@ -30,12 +30,10 @@ var PublisherThumbprint string
 
 // Installation retains every admitted filesystem object until task activation or process creation has completed.
 type Installation struct {
-	// Selection is the immutable machine-owned release selection.
-	Selection Selection
-	// Manifest is the complete admitted signed payload.
-	Manifest Manifest
-	root     string
-	handles  []*os.File
+	selection Selection
+	manifest  Manifest
+	root      string
+	handles   []*os.File
 }
 
 // MachineRoot obtains Program Files from Windows instead of an environment-controlled override.
@@ -74,30 +72,30 @@ func admitAt(root, publisher string) (_ *Installation, result error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := Decode(selectionFile, &installation.Selection); err != nil {
+	if err := Decode(selectionFile, &installation.selection); err != nil {
 		return nil, err
 	}
-	if err := ValidateSelection(installation.Selection); err != nil {
+	if err := ValidateSelection(installation.selection); err != nil {
 		return nil, err
 	}
-	if installation.Selection.SignerThumbprint != publisher {
+	if installation.selection.SignerThumbprint != publisher {
 		return nil, errors.New("Windows installation publisher differs from compiled launcher publisher")
 	}
-	release := filepath.Join(root, "releases", strconv.FormatUint(installation.Selection.ReleaseSequence, 10))
+	release := filepath.Join(root, "releases", strconv.FormatUint(installation.selection.ReleaseSequence, 10))
 	if err := installation.retainDirectoryChain(release); err != nil {
 		return nil, err
 	}
-	manifestFile, err := installation.retain(filepath.Join("releases", strconv.FormatUint(installation.Selection.ReleaseSequence, 10), "release-manifest.json"), false)
+	manifestFile, err := installation.retain(filepath.Join("releases", strconv.FormatUint(installation.selection.ReleaseSequence, 10), "release-manifest.json"), false)
 	if err != nil {
 		return nil, err
 	}
-	if err := Decode(manifestFile, &installation.Manifest); err != nil {
+	if err := Decode(manifestFile, &installation.manifest); err != nil {
 		return nil, err
 	}
-	if err := ValidateManifest(installation.Manifest, installation.Selection); err != nil {
+	if err := ValidateManifest(installation.manifest, installation.selection); err != nil {
 		return nil, err
 	}
-	for _, component := range installation.Manifest.Components {
+	for _, component := range installation.manifest.Components {
 		file, err := installation.retain(filepath.FromSlash(component.Path), false)
 		if err != nil {
 			return nil, err
@@ -127,11 +125,26 @@ func admitAt(root, publisher string) (_ *Installation, result error) {
 
 // Path resolves only a previously admitted role beneath the retained protected root.
 func (installation *Installation) Path(role string) (string, error) {
-	relative, err := ComponentPath(installation.Manifest, role)
+	if len(installation.handles) == 0 {
+		return "", errors.New("Windows installation admission has been closed")
+	}
+	relative, err := ComponentPath(installation.manifest, role)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(installation.root, filepath.FromSlash(relative)), nil
+}
+
+// Selection returns a copy of the immutable admitted machine identity.
+func (installation *Installation) Selection() Selection {
+	return installation.selection
+}
+
+// Manifest returns a detached copy so callers cannot change admitted path authority.
+func (installation *Installation) Manifest() Manifest {
+	manifest := installation.manifest
+	manifest.Components = append([]Component(nil), manifest.Components...)
+	return manifest
 }
 
 // Close releases retained objects in reverse order after their admitted operation has settled.
