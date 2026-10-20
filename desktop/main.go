@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"github.com/goforj/harbor/internal/platform/windowsinstallation"
 	"io/fs"
 	"log"
 	"runtime"
@@ -32,6 +33,10 @@ var trayTemplateIcon []byte
 
 // main runs the replaceable desktop client while harbord retains durable authority.
 func main() {
+	if err := windowsinstallation.CheckRuntimeRole("desktop"); err != nil {
+		log.Printf("Harbor desktop admission failed: %v", err)
+		return
+	}
 	client := NewApp()
 	native := application.New(newApplicationOptions(client, assets))
 	window := newDesktopWindow(native)
@@ -46,7 +51,7 @@ func main() {
 
 // newDesktopWindow keeps close-to-hide identical in production and native smoke verification.
 func newDesktopWindow(native *application.App) *application.WebviewWindow {
-	window := native.Window.NewWithOptions(newWindowOptions())
+	window := native.Window.NewWithOptions(newWindowOptions(runtime.GOOS))
 	window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		window.Hide()
 		event.Cancel()
@@ -60,12 +65,20 @@ func newApplicationOptions(client *App, appAssets fs.FS) application.Options {
 		Name: "GoForj Harbor", Icon: nativeApplicationIcon(runtime.GOOS),
 		Assets:         application.AssetOptions{Handler: application.AssetFileServerFS(appAssets)},
 		Services:       []application.Service{application.NewService(client)},
-		SingleInstance: &application.SingleInstanceOptions{UniqueID: desktopSingleInstanceID, OnSecondInstanceLaunch: client.onSecondInstanceLaunch},
+		SingleInstance: &application.SingleInstanceOptions{UniqueID: nativeSingleInstanceID(runtime.GOOS), OnSecondInstanceLaunch: client.onSecondInstanceLaunch},
 		OnShutdown:     func() { client.shutdown(context.Background()) },
 		Mac:            application.MacOptions{ApplicationShouldTerminateAfterLastWindowClosed: false},
 		Windows:        application.WindowsOptions{DisableQuitOnLastWindowClosed: true},
 		Linux:          application.LinuxOptions{DisableQuitOnLastWindowClosed: true, ProgramName: "goforj-harbor", ApplicationID: "com.goforj.harbor"},
 	}
+}
+
+// nativeSingleInstanceID preserves established locks while using a valid Linux D-Bus name.
+func nativeSingleInstanceID(platform string) string {
+	if platform == "linux" {
+		return "com.goforj.harbor"
+	}
+	return desktopSingleInstanceID
 }
 
 // nativeApplicationIcon leaves the macOS Dock icon to the compiled bundle catalog instead of overriding it with a square bitmap.
@@ -76,11 +89,12 @@ func nativeApplicationIcon(platform string) []byte {
 	return applicationIcon
 }
 
-// newWindowOptions preserves the existing desktop geometry and rendering policy.
-func newWindowOptions() application.WebviewWindowOptions {
+// newWindowOptions attaches Windows menu accelerators while preserving other native presentation policies.
+func newWindowOptions(platform string) application.WebviewWindowOptions {
 	return application.WebviewWindowOptions{
 		Name: desktopWindowName, Title: "GoForj Harbor",
-		Width: 1280, Height: 820, MinWidth: 420, MinHeight: 520,
+		UseApplicationMenu: platform == "windows",
+		Width:              1280, Height: 820, MinWidth: 420, MinHeight: 520,
 		BackgroundColour: application.RGBA{Red: 13, Green: 13, Blue: 13, Alpha: 255},
 		Linux:            application.LinuxWindow{WebviewGpuPolicy: application.WebviewGpuPolicyNever},
 	}
@@ -122,11 +136,7 @@ func configureTray(native *application.App, client *App) {
 	tray.OnClick(client.presentation.activate)
 	menu := newTrayMenu(client.presentation)
 	tray.SetMenu(menu)
-	native.Event.On(desktopwire.ConnectionEventName, func(event *application.CustomEvent) {
-		connection := event.Data.(desktopwire.ConnectionEvent)
-		menu.ItemAt(0).SetLabel("Harbor: " + string(connection.State))
-		menu.Update()
-	})
+	native.Event.On(desktopwire.ConnectionEventName, newTrayConnectionHandler(native.Context(), application.InvokeAsync, menu.ItemAt(0)))
 }
 
 // nativeWindow resolves the mandatory named window for all presentation callbacks.

@@ -1,0 +1,305 @@
+name: Installed macOS GUI workflows
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/macos-package-ui.yml
+      - desktop/packageui/macos/**
+      - scripts/packageui/*.py
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: Successful Prerelease artifacts run whose exact tested PKG will be installed
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: installed-macos-ui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installed-ui:
+    name: Real installed macOS window
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Test package and source admission rules
+        run: python3 -m unittest discover -s scripts/packageui -v
+
+      - name: Admit disposable GUI worker
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" = 26
+          test "$(id -u)" != 0
+          launchctl print "gui/$(id -u)" >/dev/null
+          automationmodetool | grep -F 'DOES NOT REQUIRE'
+          test ! -e /Applications/Harbor.app
+          test ! -e "$HOME/Library/Application Support/GoForj/Harbor/harbor.db"
+          test ! -e /tmp/harbor-package-ui-evidence.json
+          test ! -e /tmp/harbor-package-ui-native-logs
+
+      - name: Download exact native-tested packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PACKAGE_RUN_ID" ]]; then
+            PACKAGE_RUN_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].id // empty')"
+          fi
+          [[ "$PACKAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          printf 'Selected package rehearsal: %s\n' "$PACKAGE_RUN_ID"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID" > package-run.json
+          gh run download "$PACKAGE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name Harbor-prerelease-publication --dir package-assets
+
+      - name: Verify package digests and source provenance
+        id: package
+        run: python3 scripts/packageui/verify.py assets
+
+      - name: Verify test harness targets identical product code
+        env:
+          PACKAGE_SOURCE: ${{ steps.package.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$PACKAGE_SOURCE"
+          python3 scripts/packageui/verify.py source "$PACKAGE_SOURCE"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install released project creation prerequisites
+        run: |
+          set -euo pipefail
+          binary_directory="$RUNNER_TEMP/harbor-ui-tools"
+          mkdir -p "$binary_directory"
+          GOWORK=off GOBIN="$binary_directory" go install github.com/goforj/goforj/cmd/forj@v0.35.1
+          GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
+          test "$("$binary_directory/forj" --version)" = v0.35.1
+          GOWORK=off go build -o "$binary_directory/harbor-fixture-approval" ./scripts/packageui/fixtureapproval
+          printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
+          printf 'HARBOR_PACKAGE_UI_APPROVAL_TOOL=%s/harbor-fixture-approval\n' "$binary_directory" >> "$GITHUB_ENV"
+
+      - name: Expose prerequisite toolchain to the graphical user session
+        run: |
+          set -euo pipefail
+          launchctl getenv PATH > "$RUNNER_TEMP/harbor-ui-launchd-path.original" || test ! -s "$RUNNER_TEMP/harbor-ui-launchd-path.original"
+          launchctl setenv PATH "$PATH"
+
+      - name: Enable keyboard navigation on the disposable desktop
+        run: |
+          set -euo pipefail
+          defaults read NSGlobalDomain AppleKeyboardUIMode > "$RUNNER_TEMP/harbor-ui-keyboard.original" 2>/dev/null || test ! -s "$RUNNER_TEMP/harbor-ui-keyboard.original"
+          defaults write NSGlobalDomain AppleKeyboardUIMode -int 3
+
+      - name: Install verified native package
+        id: install
+        env:
+          VERIFIED_PACKAGE: ${{ steps.package.outputs.package }}
+        run: |
+          set -euo pipefail
+          sudo -n installer -pkg "package-assets/$VERIFIED_PACKAGE" -target /
+          test -x /Applications/Harbor.app/Contents/MacOS/harbor-desktop
+          test -x /usr/local/bin/harbor
+          shasum -a 256 /Applications/Harbor.app/Contents/MacOS/harbor-desktop > "$RUNNER_TEMP/harbor-ui-installed-app.sha256"
+          /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Harbor.app
+
+      - name: Capture disposable-worker authorization policy
+        run: |
+          set -euo pipefail
+          directory=/var/root/harbor-package-ui-authorization
+          sudo -n test ! -e "$directory"
+          sudo -n install -d -m 0700 -o root -g wheel "$directory"
+          sudo -n /bin/sh -ceu '
+            umask 077
+            security authorizationdb read system.privilege.admin > "$1/original.plist"
+            plutil -lint "$1/original.plist" >/dev/null
+            test -s "$1/original.plist"
+            shasum -a 256 "$1/original.plist" > "$1/original.sha256"
+            touch "$1/capture-complete"
+          ' harbor-ui-authorization "$directory"
+          sudo -n security authorizationdb write system.privilege.admin allow
+
+      - name: Seed explicit foreign administrator trust baseline
+        run: python3 scripts/packageui/foreign_trust_macos.py seed
+
+      - name: Drive installed creation, HTTPS, hide, quit, and reopen
+        run: |
+          set -euo pipefail
+          python3 scripts/packageui/capture_macos.py xcodebuild -project desktop/packageui/macos/HarborPackageUI.xcodeproj \
+            -scheme HarborPackageUITests -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/harbor-package-ui-build" \
+            -resultBundlePath "$RUNNER_TEMP/harbor-package-ui.xcresult" \
+            -parallel-testing-enabled NO test CODE_SIGN_IDENTITY=- ONLY_ACTIVE_ARCH=YES
+          shasum -a 256 -c "$RUNNER_TEMP/harbor-ui-installed-app.sha256"
+          mkdir -p harbor-package-ui-evidence
+          cp /tmp/harbor-package-ui-evidence.json harbor-package-ui-evidence/installed-ui.json
+
+      - name: Retain failed project startup diagnostics
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p harbor-package-ui-evidence
+          if ! /usr/local/bin/harbor daemon snapshot > harbor-package-ui-evidence/failure-snapshot.json; then exit 0; fi
+          python3 - <<'PY'
+          import json, shutil
+          from pathlib import Path
+          directory = Path('harbor-package-ui-evidence')
+          snapshot = json.loads((directory / 'failure-snapshot.json').read_text())
+          for project in snapshot.get('projects', []):
+              root = Path(project['path']).resolve()
+              if not str(root).startswith('/private/tmp/harbor-package-ui-'):
+                  raise RuntimeError('unexpected project outside disposable GUI fixture')
+              trace = root / '_data/harbor/forj-dev.log'
+              if trace.is_file() and not trace.is_symlink():
+                  shutil.copyfile(trace, directory / (project['id'] + '-launch.log'))
+          PY
+
+      - name: Release owned networking and record retained user files
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, subprocess, sys, time
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/packageui')
+          from cleanup_macos import unregister_fixture
+          evidence = Path('harbor-package-ui-evidence')
+          fixture = json.loads((evidence / 'installed-ui.json').read_text())
+          identifier = fixture['project_id']
+          unregister_fixture({'id': identifier, 'path': fixture['project_directory']},
+                             lambda arguments: subprocess.run(arguments, check=True, text=True, capture_output=True, timeout=180))
+          deadline = time.monotonic() + 120
+          while True:
+              snapshot = json.loads(subprocess.check_output(['/usr/local/bin/harbor', 'daemon', 'snapshot'], text=True, timeout=30))
+              if not any(project['id'] == identifier for project in snapshot.get('projects', [])):
+                  break
+              if time.monotonic() >= deadline:
+                  raise RuntimeError('fixture unregister did not finish before network release')
+              time.sleep(.25)
+          (evidence / 'fixture-unregister.json').write_text(json.dumps({'project_id': identifier, 'removed_before_network_release': True}) + '\n')
+          PY
+          python3 scripts/packageui/cleanup_macos.py release
+          python3 scripts/packageui/foreign_trust_macos.py after-release
+          /usr/local/bin/harbor daemon stop
+          python3 - <<'PY'
+          import os, re, subprocess, time
+          service = f'gui/{os.getuid()}/com.goforj.harbor.daemon'
+          deadline = time.monotonic() + 30
+          while time.monotonic() < deadline:
+              state = subprocess.run(['launchctl', 'print', service], text=True, capture_output=True, check=True).stdout
+              if not re.search(r'^\s*pid = [0-9]+$', state, re.M):
+                  break
+              time.sleep(0.1)
+          else:
+              raise RuntimeError('installed daemon did not exit after shutdown acknowledgement')
+          PY
+          shasum -a 256 "$HOME/Library/Application Support/GoForj/Harbor/harbor.db" > "$RUNNER_TEMP/harbor-ui-retained.sha256"
+          python3 - <<'PY'
+          import json, subprocess, os
+          from pathlib import Path
+          data = json.loads(Path('harbor-package-ui-evidence/installed-ui.json').read_text())
+          project = Path(data['project_directory'])
+          assert str(project).startswith('/tmp/harbor-package-ui-')
+          with open(os.environ['RUNNER_TEMP'] + '/harbor-ui-retained.sha256', 'a') as output:
+              subprocess.run(['shasum', '-a', '256', str(project / '.goforj.yml'), str(project / 'go.mod')], stdout=output, check=True)
+          PY
+
+      - name: Uninstall package and verify user data survives
+        id: uninstall
+        run: |
+          set -euo pipefail
+          sudo -n "/Library/Application Support/GoForj/Harbor/current/bin/harbor-installer" \
+            uninstall --user-id "$(id -u)" --group-id "$(id -g)"
+          test ! -e /Applications/Harbor.app
+          test ! -e "$HOME/Library/LaunchAgents/com.goforj.harbor.daemon.plist"
+          python3 scripts/packageui/cleanup_macos.py absence
+          shasum -a 256 -c "$RUNNER_TEMP/harbor-ui-retained.sha256" > harbor-package-ui-evidence/uninstall-preservation.txt
+          cp "$RUNNER_TEMP/harbor-ui-retained.sha256" harbor-package-ui-evidence/retained-user-files.sha256
+          python3 scripts/packageui/foreign_trust_macos.py after-uninstall
+
+      - name: Recover installed fixture after a failed GUI assertion
+        if: failure() && steps.install.outcome == 'success' && steps.uninstall.outcome != 'success'
+        run: python3 scripts/packageui/cleanup_macos.py
+
+      - name: Attempt bounded removal of the disposable foreign trust fixture
+        if: always()
+        run: python3 scripts/packageui/foreign_trust_macos.py cleanup
+
+      - name: Restore disposable-worker authorization policy
+        if: always()
+        run: |
+          set -euo pipefail
+          directory=/var/root/harbor-package-ui-authorization
+          if ! sudo -n test -f "$directory/capture-complete"; then exit 0; fi
+          sudo -n /bin/sh -ceu '
+            shasum -a 256 -c "$1/original.sha256"
+            security authorizationdb write system.privilege.admin < "$1/original.plist"
+            security authorizationdb read system.privilege.admin > "$1/restored.plist"
+            for name in original restored; do
+              cp "$1/$name.plist" "$1/$name.normalized.plist"
+              for key in created modified; do
+                if plutil -type "$key" "$1/$name.normalized.plist" >/dev/null 2>&1; then
+                  plutil -remove "$key" "$1/$name.normalized.plist"
+                fi
+              done
+              plutil -convert json -r "$1/$name.normalized.plist"
+            done
+            cmp -s "$1/original.normalized.plist" "$1/restored.normalized.plist"
+            rm "$1/original.plist" "$1/original.sha256" "$1/capture-complete" "$1/restored.plist" "$1/original.normalized.plist" "$1/restored.normalized.plist"
+            rmdir "$1"
+          ' harbor-ui-authorization-restore "$directory"
+
+      - name: Retain native UI results and package provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Harbor-installed-macos-ui-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/harbor-package-ui.xcresult
+            harbor-package-ui-evidence/
+            /tmp/harbor-package-ui-native-logs/
+            package-assets/provenance.json
+            package-assets/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Restore graphical user session toolchain environment
+        if: always()
+        run: |
+          set -euo pipefail
+          original="$RUNNER_TEMP/harbor-ui-launchd-path.original"
+          if [[ ! -f "$original" ]]; then exit 0; fi
+          if [[ -s "$original" ]]; then
+            launchctl setenv PATH "$(cat "$original")"
+          else
+            launchctl unsetenv PATH
+          fi
+
+      - name: Restore disposable desktop keyboard preference
+        if: always()
+        run: |
+          set -euo pipefail
+          original="$RUNNER_TEMP/harbor-ui-keyboard.original"
+          if [[ ! -f "$original" ]]; then exit 0; fi
+          if [[ -s "$original" ]]; then
+            defaults write NSGlobalDomain AppleKeyboardUIMode -int "$(cat "$original")"
+          else
+            defaults delete NSGlobalDomain AppleKeyboardUIMode
+          fi

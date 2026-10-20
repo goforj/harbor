@@ -1,0 +1,401 @@
+name: Installed Windows GUI workflows
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows-package-ui.yml
+      - desktop/packageui/windows/**
+      - scripts/packageui/windows/**
+      - scripts/packageui/verify.py
+      - scripts/packageui/test_verify.py
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: Successful Windows packaged-product gate run whose exact tested sealed native installer will be installed
+        required: false
+        type: string
+      window_only:
+        description: Prove only installed native window hide, reopen and normal Quit without setup or project actions
+        required: false
+        type: boolean
+        default: false
+      profile_only:
+        description: Validate only the actual restricted child token and protected access fixture
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: installed-windows-ui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  worker-profile:
+    name: Actual restricted Windows child permissions
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify independent actual-child effective access
+        shell: powershell
+        run: |
+          & .\desktop\packageui\windows\TestWorkerProfile.ps1 -EvidenceDirectory "$env:RUNNER_TEMP\harbor-worker-profile"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-restricted-worker-profile
+          path: ${{ runner.temp }}/harbor-worker-profile
+          retention-days: 14
+  installed-ui:
+    name: Real installed Windows window
+    if: (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && inputs.profile_only != true
+    needs: worker-profile
+    runs-on: windows-2025
+    timeout-minutes: 35
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Verify package admission rules
+        run: python -m unittest discover -s scripts/packageui/windows -v
+      - name: Validate native UIAutomation harness syntax
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem desktop/packageui/windows/*.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -ne 0) { throw ($errors | Out-String) }
+          }
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+      - name: Admit real desktop for restricted-token product launch
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\harbor-installed-ui-evidence" | Out-Null
+          . .\desktop\packageui\windows\WorkerProfile.ps1
+          $session = (Get-Process -Id $PID).SessionId
+          $shells = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session })
+          @{ session_id=$session; user_interactive=[Environment]::UserInteractive; token_context=[HarborUIProfile]::CurrentTokenFacts(); uac=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA; explorer=@($shells | ForEach-Object { @{ pid=$_.Id; integrity=[HarborUIProfile]::Integrity($_.Id) } }) } |
+            ConvertTo-Json -Depth 4 | Set-Content "$env:RUNNER_TEMP\harbor-installed-ui-evidence\worker-profile.json"
+          Assert-InteractiveWorker
+          if (Test-Path "$env:ProgramFiles\GoForj\Harbor") { throw 'Harbor is already installed' }
+          if (Test-Path "$env:LOCALAPPDATA\GoForj\Harbor") { throw 'preexisting Harbor user state' }
+      - name: Download exact native-tested installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $selected = $env:PACKAGE_RUN_ID
+          if (-not $selected) {
+            $selected = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/windows-development-package.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].id // empty'
+          }
+          if ($selected -cnotmatch '^[1-9][0-9]*$') { throw 'invalid package run ID' }
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$selected" | Set-Content package-run.json -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'package workflow lookup failed' }
+          $artifacts = (gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$selected/artifacts?per_page=100" | ConvertFrom-Json).artifacts
+          $packageArtifacts = @($artifacts | Where-Object { $_.name -cmatch '^GoForj-Harbor-windows-amd64-[0-9]+\.[0-9]+\.[0-9]+-(dev|rc)\.[0-9]+-tested$' -and -not $_.expired })
+          if ($packageArtifacts.Count -ne 1) { throw 'exactly one tested Windows package artifact is required' }
+          gh run download $selected --repo $env:GITHUB_REPOSITORY --name $packageArtifacts[0].name --dir package-assets
+          if ($LASTEXITCODE -ne 0) { throw 'package artifact download failed' }
+      - name: Verify exact tested Windows package provenance
+        id: package
+        run: python scripts/packageui/windows/verify_windows.py
+      - name: Require identical product source
+        env:
+          PACKAGE_SOURCE: ${{ steps.package.outputs.source_commit }}
+        shell: pwsh
+        run: |
+          git fetch --no-tags origin $env:PACKAGE_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw 'immutable package source fetch failed' }
+          python scripts/packageui/verify.py source $env:PACKAGE_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw 'packaged product source differs from this GUI harness' }
+      - uses: actions/setup-go@v7
+        if: inputs.window_only != true
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@v6
+        if: inputs.window_only != true
+        with:
+          node-version: '22'
+      - name: Install released creation prerequisites
+        if: inputs.window_only != true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:GOCACHE = "$env:RUNNER_TEMP\harbor-ui-gocache"
+          $env:GOMODCACHE = "$env:RUNNER_TEMP\harbor-ui-gomodcache"
+          $env:GOBIN = "$env:RUNNER_TEMP\harbor-ui-tools"
+          New-Item -ItemType Directory -Path $env:GOBIN | Out-Null
+          go install github.com/goforj/goforj/cmd/forj@v0.35.1
+          if ($LASTEXITCODE -ne 0) { throw 'released GoForj installation failed' }
+          go install github.com/goforj/wire/cmd/wire@v1.2.0
+          if ($LASTEXITCODE -ne 0) { throw 'Wire installation failed' }
+          go build -o "$env:GOBIN\harbor-fixture-approval.exe" ./scripts/packageui/fixtureapproval
+          if ($LASTEXITCODE -ne 0) { throw 'fixture cleanup approval client build failed' }
+          "HARBOR_PACKAGE_UI_APPROVAL_TOOL=$env:GOBIN\harbor-fixture-approval.exe" | Out-File $env:GITHUB_ENV -Append
+          "GOCACHE=$env:GOCACHE" | Out-File $env:GITHUB_ENV -Append
+          "GOMODCACHE=$env:GOMODCACHE" | Out-File $env:GITHUB_ENV -Append
+          "HARBOR_UI_TOOLS=$env:GOBIN;$env:PATH" | Out-File $env:GITHUB_ENV -Append
+      - name: Register disposable user toolchain environment
+        if: inputs.window_only != true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+          $values = @{ Path=$env:HARBOR_UI_TOOLS; GOCACHE=$env:GOCACHE; GOMODCACHE=$env:GOMODCACHE }
+          $receipt = @()
+          foreach ($name in $values.Keys) {
+            $exists = $name -in $key.GetValueNames()
+            $receipt += @{ name=$name; existed=$exists; kind=$(if ($exists) { $key.GetValueKind($name).ToString() } else { 'String' }); original=$key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); fixture=$values[$name] }
+          }
+          $receipt | ConvertTo-Json -Depth 4 | Set-Content "$env:RUNNER_TEMP\harbor-ui-user-environment.json" -Encoding utf8NoBOM
+          foreach ($name in $values.Keys) { $key.SetValue($name, $values[$name], [Microsoft.Win32.RegistryValueKind]::String) }
+          $key.Dispose()
+      - name: Preauthorize the admitted development package signer and install
+        env:
+          PACKAGE_NAME: ${{ steps.package.outputs.package }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Join-Path (Join-Path $env:GITHUB_WORKSPACE 'package-assets') $env:PACKAGE_NAME
+          $signature = Get-AuthenticodeSignature -LiteralPath $package
+          if ($null -eq $signature.SignerCertificate) { throw 'sealed development setup has no signer certificate' }
+          $thumbprint = $signature.SignerCertificate.Thumbprint
+          if ($thumbprint -cnotmatch '^[A-F0-9]{40}$') { throw 'invalid development signer identity' }
+          foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher')) {
+            if (Test-Path (Join-Path $store $thumbprint)) { throw 'development signer was already trusted before preauthorization' }
+          }
+          $thumbprint | Set-Content "$env:RUNNER_TEMP\harbor-ui-publisher.txt" -NoNewline
+          $certificatePath = "$env:RUNNER_TEMP\harbor-ui-publisher.cer"
+          Export-Certificate -Cert $signature.SignerCertificate -FilePath $certificatePath | Out-Null
+          foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher')) { Import-Certificate -FilePath $certificatePath -CertStoreLocation $store | Out-Null }
+          if ((Get-AuthenticodeSignature -LiteralPath $package).Status -ne 'Valid') { throw 'admitted development setup signature is not trusted after explicit CI authorization' }
+          $process = Start-Process -FilePath $package -ArgumentList '--silent' -Wait -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\harbor-installed-ui-evidence\setup-stdout.txt" -RedirectStandardError "$env:RUNNER_TEMP\harbor-installed-ui-evidence\setup-stderr.txt"
+          if ($process.ExitCode -ne 0) { throw "installer exit $($process.ExitCode)" }
+          $installRoot = Join-Path $env:ProgramFiles 'GoForj\Harbor'
+          $selection = Get-Content "$installRoot\installation.json" -Raw | ConvertFrom-Json
+          if ($selection.signer_thumbprint -cne $thumbprint) { throw 'installed selected publisher differs from admitted package signer' }
+          "HARBOR_INSTALL_ROOT=$installRoot" | Out-File $env:GITHUB_ENV -Append
+      - name: Build the preauthorized exact-operation networking fixture
+        if: inputs.window_only != true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $thumbprint = [IO.File]::ReadAllText("$env:RUNNER_TEMP\harbor-ui-publisher.txt").Trim()
+          if ($thumbprint -cnotmatch '^[A-F0-9]{40}$') { throw 'fixture publisher identity is invalid' }
+          go test ./scripts/packageui/windowsapproval -count=1
+          if ($LASTEXITCODE -ne 0) { throw 'networking fixture selection tests failed' }
+          $path = "$env:RUNNER_TEMP\harbor-ui-tools\harbor-windows-approval.exe"
+          go build -trimpath -ldflags "-X github.com/goforj/harbor/internal/platform/windowsinstallation.PublisherThumbprint=$thumbprint" -o $path ./scripts/packageui/windowsapproval
+          if ($LASTEXITCODE -ne 0) { throw 'networking fixture client build failed' }
+          "HARBOR_PACKAGE_UI_WINDOWS_APPROVAL_TOOL=$path" | Out-File $env:GITHUB_ENV -Append
+      - name: Release hosted runner canonical ingress sockets
+        if: inputs.window_only != true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $webService = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+          if ($null -ne $webService -and $webService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+            Stop-Service -Name W3SVC -Force
+          }
+          foreach ($port in @(80, 443)) {
+            $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
+            try {
+              $probe.Start()
+            } catch {
+              throw "canonical ingress socket 127.0.0.1:$port is unavailable"
+            } finally {
+              $probe.Stop()
+            }
+          }
+
+      - name: Drive installed graphical project lifecycle
+        if: inputs.window_only != true
+        shell: powershell
+        run: |
+          & .\desktop\packageui\windows\HarborPackageUI.ps1 `
+            -InstallRoot $env:HARBOR_INSTALL_ROOT `
+            -EvidenceDirectory "$env:RUNNER_TEMP\harbor-installed-ui-evidence" `
+            -ToolsPath $env:HARBOR_UI_TOOLS
+      - name: Probe installed native window only
+        if: inputs.window_only == true
+        shell: powershell
+        run: |
+          & .\desktop\packageui\windows\HarborWindowProbe.ps1 `
+            -InstallRoot $env:HARBOR_INSTALL_ROOT `
+            -EvidenceDirectory "$env:RUNNER_TEMP\harbor-installed-ui-evidence"
+      - name: Observe native approval boundary after graphical failure
+        if: failure() && env.HARBOR_INSTALL_ROOT != '' && inputs.window_only != true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try {
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class HarborConsentDiagnostic {
+              [DllImport("user32.dll", SetLastError=true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+              [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder value, uint size, out uint needed);
+              [DllImport("user32.dll", SetLastError=true)] static extern bool CloseDesktop(IntPtr handle);
+              public static string InputDesktop() {
+                  IntPtr desktop=OpenInputDesktop(0, false, 1);
+                  if (desktop == IntPtr.Zero) return "open-error:"+Marshal.GetLastWin32Error();
+                  try {
+                      StringBuilder name=new StringBuilder(256);
+                      uint needed;
+                      if (!GetUserObjectInformation(desktop, 2, name, 512, out needed)) return "name-error:"+Marshal.GetLastWin32Error();
+                      return "name:"+name.ToString();
+                  } finally { CloseDesktop(desktop); }
+              }
+          }
+          '@
+            $policy = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction Stop
+            $processes = @(Get-Process -Name consent, harbor-helper -ErrorAction SilentlyContinue | ForEach-Object {
+              $item = [ordered]@{ name=$_.ProcessName; pid=$_.Id; session=$_.SessionId }
+              try { $item.image=$_.Path; $item.native_birth=$_.StartTime.ToFileTimeUtc().ToString(); $item.started_utc=$_.StartTime.ToUniversalTime().ToString('o') } catch { $item.observation_error=$_.Exception.Message }
+              $item
+            })
+            [ordered]@{
+              input_desktop=[HarborConsentDiagnostic]::InputDesktop()
+              processes=$processes
+              policy=[ordered]@{ EnableLUA=$policy.EnableLUA; ConsentPromptBehaviorAdmin=$policy.ConsentPromptBehaviorAdmin; PromptOnSecureDesktop=$policy.PromptOnSecureDesktop; FilterAdministratorToken=$policy.FilterAdministratorToken }
+              observation_only=$true
+            } | ConvertTo-Json -Depth 6 | Set-Content "$env:RUNNER_TEMP\harbor-installed-ui-evidence\approval-boundary.json" -Encoding UTF8
+          } catch { Write-Warning "approval boundary observation failed: $_" }
+      - name: Require complete ownership-aware cleanup
+        if: always() && env.HARBOR_INSTALL_ROOT != ''
+        id: cleanup
+        env:
+          WINDOW_ONLY: ${{ inputs.window_only }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = "$env:RUNNER_TEMP\harbor-installed-ui-evidence\cleanup.json"
+          if (-not (Test-Path $path -PathType Leaf)) { throw 'installed UI cleanup receipt is missing' }
+          $cleanup = Get-Content $path -Raw | ConvertFrom-Json
+          if ($cleanup.approval_indeterminate -ne $false) { throw 'unproved elevated helper settlement prevents further machine cleanup or uninstall' }
+          if ($env:WINDOW_ONLY -ceq 'true') {
+            if ($cleanup.scope -cne 'installed-native-window-only' -or $cleanup.schema_version -ne 1) { throw 'window-only cleanup receipt has foreign scope' }
+            foreach ($fact in @('gui_quiescent','daemon_absent','authority_absent','untouched_snapshot_verified')) {
+              if ($cleanup.$fact -ne $true) { throw "partial window-only cleanup: $fact was not verified" }
+            }
+            $database = Join-Path $env:LOCALAPPDATA 'GoForj\Harbor\harbor.db'
+            if (@($cleanup.retained_files.PSObject.Properties).Count -ne 1 -or $cleanup.missing_files.Count -ne 0 -or
+                -not $cleanup.retained_files.PSObject.Properties[$database] -or
+                (Get-FileHash -LiteralPath $database -Algorithm SHA256).Hash -cne $cleanup.retained_files.$database) { throw 'window-only cleanup lacks the exact retained user database' }
+          } else {
+            foreach ($fact in @('gui_quiescent','fixtures_stopped','fixture_unregistered','network_released','daemon_absent')) {
+              if ($cleanup.$fact -ne $true) { throw "partial installed cleanup: $fact was not verified" }
+            }
+          }
+          if ($cleanup.error) { throw "partial installed cleanup: $($cleanup.error)" }
+          if ((Test-Path "$env:RUNNER_TEMP\harbor-installed-ui-evidence\installed-ui.json") -and (@($cleanup.retained_files.PSObject.Properties).Count -ne 3 -or $cleanup.missing_files.Count -ne 0)) { throw 'successful UI lifecycle lacks all three retained user files' }
+          'ready=true' | Out-File $env:GITHUB_OUTPUT -Append
+      - name: Uninstall exact admitted package
+        if: always() && steps.cleanup.outputs.ready == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sentinel = Join-Path $env:HARBOR_INSTALL_ROOT 'harbor-ui-foreign-sentinel.txt'
+          [IO.File]::WriteAllText($sentinel, "foreign package state $env:GITHUB_RUN_ID")
+          $sentinelHash = (Get-FileHash $sentinel -Algorithm SHA256).Hash
+          $signerThumbprint = [IO.File]::ReadAllText((Join-Path $env:HARBOR_INSTALL_ROOT 'harbor-helper-signing-thumbprint.txt')).Trim()
+          $selection = Get-Content "$env:HARBOR_INSTALL_ROOT\installation.json" -Raw | ConvertFrom-Json
+          $baseline = @(Get-ChildItem "$env:ProgramFiles\GoForj" -Directory -Filter 'HarborUninstall-*' | ForEach-Object FullName)
+          $process = Start-Process "$env:HARBOR_INSTALL_ROOT\Uninstall.exe" -ArgumentList '--silent' -Wait -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\harbor-installed-ui-evidence\uninstall-bootstrap-stdout.txt" -RedirectStandardError "$env:RUNNER_TEMP\harbor-installed-ui-evidence\uninstall-bootstrap-stderr.txt"
+          if ($process.ExitCode -ne 0) { throw "uninstall bootstrap exit $($process.ExitCode)" }
+          $deadline = (Get-Date).AddMinutes(3)
+          $receipt = $null
+          do {
+            $stages = @(Get-ChildItem "$env:ProgramFiles\GoForj" -Directory -Filter 'HarborUninstall-*' | Where-Object FullName -notin $baseline)
+            if ($stages.Count -gt 1) { throw 'unexpected uninstall continuation stages' }
+            if ($stages.Count -eq 1) {
+              $resultPath = Join-Path $stages[0].FullName 'result.json'
+              if (Test-Path $resultPath) {
+                try { $receipt = Get-Content $resultPath -Raw | ConvertFrom-Json } catch { }
+                if ($receipt.schema_version -eq 1 -and $receipt.status -in @('complete','failed')) { break }
+              }
+            }
+            Start-Sleep -Milliseconds 200
+          } while ((Get-Date) -lt $deadline)
+          if (-not $receipt -or $receipt.status -cne 'complete' -or $receipt.installation_id -cne $selection.installation_id -or $receipt.bundle_digest -cne $selection.bundle_digest) { throw "uninstall continuation did not complete: $($receipt.error)" }
+          Copy-Item $resultPath "$env:RUNNER_TEMP\harbor-installed-ui-evidence\uninstall-result.json"
+          $evidence = "$env:RUNNER_TEMP\harbor-installed-ui-evidence"
+          $retained = (Get-Content "$evidence\cleanup.json" -Raw | ConvertFrom-Json -AsHashtable).retained_files
+          foreach ($path in $retained.Keys) {
+            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $retained[$path]) { throw "uninstall changed retained file $path" }
+          }
+          if (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor') { throw 'package receipt remains' }
+          if (Test-Path "$env:ProgramData\GoForj\Harbor") { throw 'Harbor machine state remains' }
+          if (@(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -like 'GoForj Harbor Resolver *' -or $_.Comment -like 'goforj.harbor.resolver *' }).Count -ne 0) { throw 'Harbor resolver projection remains' }
+          if (@(Get-ChildItem -LiteralPath $env:HARBOR_INSTALL_ROOT -Force).Count -ne 1) { throw 'owned installed files remain' }
+          if (Get-ScheduledTask -TaskName "GoForjHarborDaemon-$($selection.user_sid)" -ErrorAction SilentlyContinue) { throw 'owned daemon task remains' }
+          foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher')) {
+            if (-not (Test-Path (Join-Path $store $signerThumbprint))) { throw 'product removal changed explicitly preauthorized signer trust' }
+          }
+          if ((Get-FileHash $sentinel -Algorithm SHA256).Hash -cne $sentinelHash) { throw 'foreign package sentinel changed' }
+          @('observed_retained_user_files=preserved','foreign_package_sentinel=preserved','package_receipt=absent','installed_components=absent','harbor_machine_state=absent') | Set-Content "$evidence\uninstall.txt"
+          Remove-Item $sentinel
+          Remove-Item $env:HARBOR_INSTALL_ROOT
+      - name: Restore only disposable fixture authorization and user environment
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failures = @()
+          try {
+            $publisherPath = "$env:RUNNER_TEMP\harbor-ui-publisher.txt"
+            if (Test-Path $publisherPath) {
+              $thumbprint = (Get-Content $publisherPath -Raw).Trim()
+              if ($thumbprint -cnotmatch '^[A-F0-9]{40}$') { throw 'invalid disposable publisher receipt' }
+              foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher')) {
+                try {
+                  $path = Join-Path $store $thumbprint
+                  if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
+                } catch { $failures += "disposable signer cleanup: $_" }
+              }
+            }
+          } catch { $failures += "disposable signer receipt: $_" }
+          try {
+            $receiptPath = "$env:RUNNER_TEMP\harbor-ui-user-environment.json"
+            if (Test-Path $receiptPath) {
+              $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+              try {
+                foreach ($entry in (Get-Content $receiptPath -Raw | ConvertFrom-Json)) {
+                  try {
+                    if ($entry.name -notin @('Path','GOCACHE','GOMODCACHE')) { throw 'unrecognized user environment receipt entry' }
+                    $current = $key.GetValue($entry.name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                    if ($current -cne $entry.fixture) { throw "preserve changed user environment entry: $($entry.name)" }
+                    if ($entry.existed) { $key.SetValue($entry.name, $entry.original, [Microsoft.Win32.RegistryValueKind]([Enum]::Parse([Microsoft.Win32.RegistryValueKind], $entry.kind))) } else { $key.DeleteValue($entry.name, $false) }
+                  } catch { $failures += "user environment restoration: $_" }
+                }
+              } finally { $key.Dispose() }
+            }
+          } catch { $failures += "user environment receipt: $_" }
+          if ($failures.Count -ne 0) { throw ($failures -join "`n") }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-installed-ui-evidence
+          path: ${{ runner.temp }}/harbor-installed-ui-evidence
+          if-no-files-found: warn
+          retention-days: 14

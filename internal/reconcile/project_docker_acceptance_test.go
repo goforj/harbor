@@ -101,6 +101,12 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		}
 	})
 
+	fixtureRoot, err := os.OpenRoot(workspace.Root)
+	if err != nil {
+		t.Fatalf("retain generated Compose fixture root: %v", err)
+	}
+	t.Cleanup(func() { _ = fixtureRoot.Close() })
+
 	t.Setenv("PATH", filepath.Dir(configuration.forj)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	projectEnvironment := projectprocess.CaptureEnvironment()
 	projects := []projectIdentityAcceptanceProject{
@@ -114,6 +120,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 
 	supervisor := projectprocess.New(projectprocess.Options{
 		GracePeriod:          3 * time.Second,
+		OutputSpoolDirectory: filepath.Join(t.TempDir(), "project-output"),
 		Environment:          projectEnvironment,
 		ContainerRuntime:     runtime,
 		ServiceLogIdlePeriod: time.Second,
@@ -124,6 +131,17 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		defer closeCancel()
 		if closeErr := coordinator.Close(closeContext); closeErr != nil && closeContext.Err() == nil {
 			t.Errorf("close generated Compose coordinator: %v", closeErr)
+		}
+	})
+
+	stopDiagnostics := startGeneratedComposeDiagnosticSampler(t.Context(), 250*time.Millisecond, func(captureContext context.Context) [3]generatedComposeDiagnosticSnapshot {
+		return captureGeneratedComposeDiagnostics(captureContext, fixtureRoot, store, journal, supervisor, projects)
+	})
+	// Cleanup is LIFO, so the sampler must stop before failure emission and fixture teardown.
+	t.Cleanup(func() {
+		history := stopDiagnostics()
+		if t.Failed() {
+			retainGeneratedComposeFailureDiagnostics(t, fixtureRoot, productEvidenceDirectory, store, journal, supervisor, projects, history)
 		}
 	})
 

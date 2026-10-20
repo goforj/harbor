@@ -742,14 +742,30 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 	handle projectruntime.Handle,
 	plan projectruntime.Plan,
 ) {
-	deadline := time.NewTimer(coordinator.startupTimeout)
-	defer deadline.Stop()
+	readinessContext, cancelReadiness := context.WithTimeout(coordinator.ctx, coordinator.startupTimeout)
+	defer cancelReadiness()
 	ticker := time.NewTicker(coordinator.readinessInterval)
 	defer ticker.Stop()
 	for {
-		probeCtx, cancel := context.WithTimeout(coordinator.ctx, defaultReadinessHTTPTimeout)
+		if err := readinessContext.Err(); err != nil {
+			if coordinator.ctx.Err() != nil {
+				coordinator.stopAndFailAttached(mutation, session, handle, "project.daemon.stopping", coordinator.ctx.Err())
+			} else {
+				coordinator.stopAndFailAttached(mutation, session, handle, "project.readiness.timeout", errors.New("project runtime did not become ready before the startup deadline"))
+			}
+			return
+		}
+		probeCtx, cancel := context.WithTimeout(readinessContext, defaultReadinessHTTPTimeout)
 		readinessState, err := plan.Readiness.Probe(probeCtx)
 		cancel()
+		// A ready response arriving after the total budget cannot admit another retry or publish routes.
+		if errors.Is(readinessContext.Err(), context.DeadlineExceeded) {
+			continue
+		}
+		// A probe can time out during startup while the total readiness budget still permits another attempt.
+		if errors.Is(err, context.DeadlineExceeded) && coordinator.ctx.Err() == nil {
+			readinessState, err = projectruntime.ReadinessPending, nil
+		}
 		if err != nil {
 			coordinator.stopAndFailAttached(mutation, session, handle, "project.readiness.invalid", err)
 			return
@@ -880,9 +896,7 @@ func (coordinator *ProjectLifecycleCoordinator) waitForReadiness(
 		case <-handle.Done():
 			coordinator.failExitedStart(mutation, session, handle, "project.process.exited", failedStartBeforeReadinessCause())
 			return
-		case <-deadline.C:
-			coordinator.stopAndFailAttached(mutation, session, handle, "project.readiness.timeout", errors.New("project runtime did not become ready before the startup deadline"))
-			return
+		case <-readinessContext.Done():
 		case <-ticker.C:
 		case <-coordinator.ctx.Done():
 			coordinator.stopAndFailAttached(mutation, session, handle, "project.daemon.stopping", coordinator.ctx.Err())

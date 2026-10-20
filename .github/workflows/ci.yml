@@ -203,6 +203,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
+      GOCACHE: /tmp/gocache
+      GOMODCACHE: /tmp/gomodcache
       # Harbor refuses remote Engine endpoints because checkout labels are local authority. Keep this proof on the
       # hosted runner's Unix socket even when the runner image exports a Docker-in-Docker TCP override.
       DOCKER_HOST: unix:///var/run/docker.sock
@@ -218,7 +220,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: goforj/goforj
-          ref: v0.34.1
+          # Released GoForj authenticates MySQL readiness and rejects its temporary initialization server.
+          ref: v0.35.1
           path: .ci/goforj
           persist-credentials: false
 
@@ -282,10 +285,10 @@ jobs:
       - name: Exercise generated Compose service observation
         env:
           HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11,127.77.254.12
-        run: GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go test -tags='projectidentityacceptance projectdockeracceptance' -count=1 -timeout=10m -run '^TestNativeGeneratedMySQLProjectsExposeComposeServices$' ./internal/reconcile
+        run: go test -tags='projectidentityacceptance projectdockeracceptance' -count=1 -timeout=10m -run '^TestNativeGeneratedMySQLProjectsExposeComposeServices$' ./internal/reconcile
 
       - name: Verify Docker product evidence
-        run: GOCACHE=/tmp/gocache GOMODCACHE=/tmp/gomodcache go run ./cmd/platformproof verify-docker-projects --root "${HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY}" --commit "${GITHUB_SHA}" --platforms linux --app-port 3000 --service-port 3306
+        run: go run ./cmd/platformproof verify-docker-projects --root "${HARBOR_DOCKER_PRODUCT_EVIDENCE_DIRECTORY}" --commit "${GITHUB_SHA}" --platforms linux --app-port 3000 --service-port 3306
 
       - name: Remove generated-project proof identities
         if: always()

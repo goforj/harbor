@@ -165,6 +165,7 @@ func reviewedRuntimeDependencies(target string) map[string]struct{} {
 			"golang.org/x/sys/unix",
 		},
 		"windows": {
+			"github.com/goforj/harbor/internal/platform/windowsmachine",
 			"github.com/goforj/harbor/internal/helper/resolverhandler",
 			"github.com/goforj/harbor/internal/platform/resolver",
 			"golang.org/x/sys/windows",

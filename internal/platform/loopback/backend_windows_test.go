@@ -5,6 +5,7 @@ package loopback
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"testing"
 
@@ -27,6 +28,13 @@ type fakeWindowsIPHelper struct {
 	interfaceIdxErr  error
 	addressResults   []windowsAddressResult
 	createErr        error
+	setErr           error
+	setCalls         int
+	setRow           windows.MibUnicastIpAddressRow
+	preflightResult  windowsAddressResult
+	tableResults     [][]windows.MibUnicastIpAddressRow
+	tableErrors      []error
+	tableCalls       int
 	initializeErr    error
 	deleteErrs       []error
 	addressCalls     int
@@ -46,6 +54,14 @@ func (helper *fakeWindowsIPHelper) interfaceRows() ([]windows.MibIfRow2, error) 
 
 // addressRows returns the injected IP Helper unicast table.
 func (helper *fakeWindowsIPHelper) addressRows() ([]windows.MibUnicastIpAddressRow, error) {
+	index := helper.tableCalls
+	helper.tableCalls++
+	if len(helper.tableErrors) > index && helper.tableErrors[index] != nil {
+		return nil, helper.tableErrors[index]
+	}
+	if len(helper.tableResults) > index {
+		return helper.tableResults[index], nil
+	}
 	return append([]windows.MibUnicastIpAddressRow(nil), helper.assignmentFacts...), nil
 }
 
@@ -69,6 +85,12 @@ func (helper *fakeWindowsIPHelper) initializeAddress(*windows.MibUnicastIpAddres
 
 // address returns the next observation and repeats the last one when reconciliation exhausts its bound.
 func (helper *fakeWindowsIPHelper) address(windows.MibUnicastIpAddressRow) (windows.MibUnicastIpAddressRow, error) {
+	if helper.createCalls == 0 && helper.deleteCalls == 0 {
+		if helper.preflightResult.row != (windows.MibUnicastIpAddressRow{}) || helper.preflightResult.err != nil {
+			return helper.preflightResult.row, helper.preflightResult.err
+		}
+		return windows.MibUnicastIpAddressRow{}, windows.ERROR_NOT_FOUND
+	}
 	helper.addressCalls++
 	if len(helper.addressResults) == 0 {
 		return windows.MibUnicastIpAddressRow{}, windows.ERROR_NOT_FOUND
@@ -78,6 +100,9 @@ func (helper *fakeWindowsIPHelper) address(windows.MibUnicastIpAddressRow) (wind
 		index = len(helper.addressResults) - 1
 	}
 	result := helper.addressResults[index]
+	if result.err == nil && helper.tableResults == nil && helper.tableErrors == nil {
+		helper.assignmentFacts = []windows.MibUnicastIpAddressRow{result.row}
+	}
 	return result.row, result.err
 }
 
@@ -85,7 +110,24 @@ func (helper *fakeWindowsIPHelper) address(windows.MibUnicastIpAddressRow) (wind
 func (helper *fakeWindowsIPHelper) createAddress(row *windows.MibUnicastIpAddressRow) error {
 	helper.createCalls++
 	helper.created = *row
+	var birth windows.Filetime
+	windows.GetSystemTimeAsFileTime(&birth)
+	for i := range helper.addressResults {
+		if helper.addressResults[i].row != (windows.MibUnicastIpAddressRow{}) && helper.addressResults[i].row.CreationTimeStamp == (windows.Filetime{}) {
+			helper.addressResults[i].row.CreationTimeStamp = birth
+		}
+	}
 	return helper.createErr
+}
+
+// setAddress records the complete reobserved row supplied to the guarded native update.
+func (helper *fakeWindowsIPHelper) setAddress(row *windows.MibUnicastIpAddressRow) error {
+	helper.setCalls++
+	helper.setRow = *row
+	if helper.setErr == nil {
+		helper.assignmentFacts = []windows.MibUnicastIpAddressRow{*row}
+	}
+	return helper.setErr
 }
 
 // deleteAddress records the exact row passed to DeleteUnicastIpAddressEntry.
@@ -240,10 +282,16 @@ func TestWindowsEnsureRollsBackUnreadyCreate(t *testing.T) {
 			if err := backend.ensure(context.Background(), interf, netip.PrefixFrom(testAddress, 32)); err == nil {
 				t.Fatal("ensure() error = nil")
 			}
-			if helper.createCalls != 1 || helper.deleteCalls != 1 {
+			wantDelete := 1
+			if test.name == "lookup failure" {
+				wantDelete = 0
+			}
+			if helper.createCalls != 1 || helper.deleteCalls != wantDelete {
 				t.Fatalf("ensure() calls = create %d, delete %d", helper.createCalls, helper.deleteCalls)
 			}
-			assertWindowsMutationIdentity(t, helper.deleted, interf)
+			if wantDelete != 0 {
+				assertWindowsMutationIdentity(t, helper.deleted, interf)
+			}
 		})
 	}
 }
@@ -258,7 +306,7 @@ func TestWindowsEnsureRefusesToDeleteChangedRollbackCandidate(t *testing.T) {
 		{name: "LUID", mutate: func(row *windows.MibUnicastIpAddressRow) { row.InterfaceLuid++ }},
 		{name: "index", mutate: func(row *windows.MibUnicastIpAddressRow) { row.InterfaceIndex++ }},
 		{name: "prefix", mutate: func(row *windows.MibUnicastIpAddressRow) { row.OnLinkPrefixLength = 31 }},
-		{name: "attributes", mutate: func(row *windows.MibUnicastIpAddressRow) { row.SkipAsSource = 0 }},
+		{name: "attributes", mutate: func(row *windows.MibUnicastIpAddressRow) { row.ValidLifetime = 1 }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -303,7 +351,7 @@ func TestWindowsEnsureNeverRollsBackRejectedCreate(t *testing.T) {
 	if err := backend.ensure(context.Background(), interf, netip.PrefixFrom(testAddress, 32)); !errors.Is(err, windows.ERROR_OBJECT_ALREADY_EXISTS) {
 		t.Fatalf("ensure() error = %v, want ERROR_OBJECT_ALREADY_EXISTS", err)
 	}
-	if helper.deleteCalls != 0 || helper.addressCalls != 0 {
+	if helper.deleteCalls != 0 || helper.setCalls != 0 || helper.addressCalls != 0 {
 		t.Fatalf("rejected create cleanup = delete %d, address %d", helper.deleteCalls, helper.addressCalls)
 	}
 }
@@ -313,13 +361,14 @@ func TestWindowsEnsureJoinsRollbackFailure(t *testing.T) {
 	interf := windowsTestInterface()
 	backend, helper := newWindowsTestBackend(interf)
 	helper.addressResults = []windowsAddressResult{
+		{row: windowsTestAddressResult(interf, windows.IpDadStateTentative)},
 		{err: windows.ERROR_ACCESS_DENIED},
 		{row: windowsTestAddressResult(interf, windows.IpDadStateTentative)},
 	}
 	helper.deleteErrs = []error{windows.ERROR_PRIVILEGE_NOT_HELD}
 	err := backend.ensure(context.Background(), interf, netip.PrefixFrom(testAddress, 32))
 	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) || !errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD) {
-		t.Fatalf("ensure() error = %v, want readiness and rollback causes", err)
+		t.Fatalf("ensure() error=%v, want both readiness and rollback errors", err)
 	}
 }
 
@@ -446,6 +495,9 @@ func TestWindowsProcedureResolutionFailurePreventsEffects(t *testing.T) {
 	}
 	if err := helper.createAddress(&row); !errors.Is(err, cause) {
 		t.Fatalf("createAddress() error = %v, want %v", err, cause)
+	}
+	if err := helper.setAddress(&row); !errors.Is(err, cause) {
+		t.Fatalf("setAddress() error = %v, want %v", err, cause)
 	}
 	if err := helper.deleteAddress(&row); !errors.Is(err, cause) {
 		t.Fatalf("deleteAddress() error = %v, want %v", err, cause)
@@ -574,5 +626,284 @@ func assertWindowsMutationIdentity(t *testing.T, row windows.MibUnicastIpAddress
 	address, ok := windowsIPv4Address(&row.Address)
 	if !ok || address != testAddress || row.InterfaceLuid != interf.WindowsLUID || row.InterfaceIndex != uint32(interf.Index) {
 		t.Fatalf("mutation identity = %s on %d/%d", address, row.InterfaceLuid, row.InterfaceIndex)
+	}
+}
+
+// windowsTransitionFixture supplies a deterministic fresh created row without host mutation.
+func windowsTransitionFixture(t *testing.T) (*platformBackend, *fakeWindowsIPHelper, windows.MibUnicastIpAddressRow, windowsAddressCreation) {
+	t.Helper()
+	backend, helper := newWindowsTestBackend(windowsTestInterface())
+	row := windowsTestAddressResult(windowsTestInterface(), windows.IpDadStatePreferred)
+	row.SkipAsSource = 0
+	row.CreationTimeStamp = windows.Filetime{LowDateTime: 15}
+	updated := row
+	updated.SkipAsSource = 1
+	helper.createCalls = 1
+	helper.assignmentFacts = []windows.MibUnicastIpAddressRow{row}
+	helper.addressResults = []windowsAddressResult{{row: row}, {row: updated}}
+	return backend, helper, row, windowsAddressCreation{before: windows.Filetime{LowDateTime: 10}, after: windows.Filetime{LowDateTime: 20}}
+}
+
+// TestWindowsCreatedTransitionUpdatesOnlySourceFlag proves the native setter receives the exact reobserved row.
+func TestWindowsCreatedTransitionUpdatesOnlySourceFlag(t *testing.T) {
+	backend, helper, row, creation := windowsTransitionFixture(t)
+	verified, err := backend.setCreatedSkipAsSource(row, row, &creation)
+	expected := row
+	expected.SkipAsSource = 1
+	if err != nil || verified != expected || helper.setRow != expected || helper.setCalls != 1 || creation.birth != row.CreationTimeStamp {
+		t.Fatalf("transition=%+v err=%v setter=%+v calls=%d birth=%+v", verified, err, helper.setRow, helper.setCalls, creation.birth)
+	}
+}
+
+// TestWindowsCreatedTransitionRejectsBirthAndAttributeDrift prevents source repair outside exact creation authority.
+func TestWindowsCreatedTransitionRejectsBirthAndAttributeDrift(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*windows.MibUnicastIpAddressRow, *windowsAddressCreation)
+	}{
+		{"zero birth", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) {
+			r.CreationTimeStamp = windows.Filetime{}
+		}},
+		{"stale birth", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) {
+			r.CreationTimeStamp.LowDateTime = 9
+		}},
+		{"future birth", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) {
+			r.CreationTimeStamp.LowDateTime = 21
+		}},
+		{"clock backwards", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { c.before.LowDateTime = 22 }},
+		{"captured replacement", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) {
+			c.birth = windows.Filetime{LowDateTime: 14}
+		}},
+		{"scope", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { r.ScopeId++ }},
+		{"address union", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { r.Address.Port++ }},
+		{"LUID", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { r.InterfaceLuid++ }},
+		{"index", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { r.InterfaceIndex++ }},
+		{"prefix", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { r.OnLinkPrefixLength-- }},
+		{"prefix origin", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { r.PrefixOrigin++ }},
+		{"suffix origin", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { r.SuffixOrigin++ }},
+		{"valid lifetime", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { r.ValidLifetime-- }},
+		{"preferred lifetime", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { r.PreferredLifetime-- }},
+		{"DAD", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) {
+			r.DadState = windows.IpDadStateTentative
+		}},
+		{"skip enum", func(r *windows.MibUnicastIpAddressRow, c *windowsAddressCreation) { r.SkipAsSource = 2 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend, helper, row, creation := windowsTransitionFixture(t)
+			changed := row
+			test.mutate(&changed, &creation)
+			if _, err := backend.setCreatedSkipAsSource(changed, row, &creation); err == nil || helper.setCalls != 0 || helper.deleteCalls != 0 {
+				t.Fatalf("admitted drift: err=%v set=%d delete=%d", err, helper.setCalls, helper.deleteCalls)
+			}
+		})
+	}
+}
+
+// TestWindowsCreatedTransitionNativeFailures preserves errors and rejects ambiguous or replaced native observations.
+func TestWindowsCreatedTransitionNativeFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(*fakeWindowsIPHelper, windows.MibUnicastIpAddressRow)
+		wantSet int
+	}{
+		{"interface failure", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) {
+			h.interfaceLUIDErr = windows.ERROR_ACCESS_DENIED
+		}, 0},
+		{"table failure", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) {
+			h.tableErrors = []error{windows.ERROR_ACCESS_DENIED}
+		}, 0},
+		{"missing table", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) { h.assignmentFacts = nil }, 0},
+		{"duplicate table", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) {
+			h.assignmentFacts = append(h.assignmentFacts, r)
+		}, 0},
+		{"different table", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) { h.assignmentFacts[0].SkipAsSource = 1 }, 0},
+		{"direct failure", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) {
+			h.addressResults[0].err = windows.ERROR_ACCESS_DENIED
+		}, 0},
+		{"replacement before Set", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) {
+			h.addressResults[0].row.CreationTimeStamp.LowDateTime++
+		}, 0},
+		{"table replaced before Set", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) {
+			changed := r
+			changed.CreationTimeStamp.LowDateTime++
+			h.tableResults = [][]windows.MibUnicastIpAddressRow{{r}, {changed}}
+		}, 0},
+		{"Set fails", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) { h.setErr = windows.ERROR_ACCESS_DENIED }, 1},
+		{"readback fails", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) {
+			h.addressResults[1].err = windows.ERROR_ACCESS_DENIED
+		}, 1},
+		{"replacement inside Set boundary", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) {
+			h.addressResults[1].row.CreationTimeStamp.LowDateTime++
+		}, 1},
+		{"Set ignored", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) {
+			h.addressResults[1].row.SkipAsSource = 0
+		}, 1},
+		{"post Set table fails", func(h *fakeWindowsIPHelper, r windows.MibUnicastIpAddressRow) {
+			h.tableErrors = []error{nil, nil, windows.ERROR_ACCESS_DENIED}
+		}, 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend, helper, row, creation := windowsTransitionFixture(t)
+			test.setup(helper, row)
+			if _, err := backend.setCreatedSkipAsSource(row, row, &creation); err == nil || helper.setCalls != test.wantSet {
+				t.Fatalf("err=%v setter calls=%d want=%d", err, helper.setCalls, test.wantSet)
+			}
+		})
+	}
+}
+
+// TestWindowsCreatedTransitionRollbackPreservesReplacement covers failure cleanup on both allowed source states.
+func TestWindowsCreatedTransitionRollbackPreservesReplacement(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(*fakeWindowsIPHelper, *windows.MibUnicastIpAddressRow)
+		wantDelete int
+		wantErr    bool
+	}{
+		{"old skip", func(h *fakeWindowsIPHelper, r *windows.MibUnicastIpAddressRow) {}, 1, false},
+		{"new skip", func(h *fakeWindowsIPHelper, r *windows.MibUnicastIpAddressRow) { r.SkipAsSource = 1 }, 1, false},
+		{"absent", func(h *fakeWindowsIPHelper, r *windows.MibUnicastIpAddressRow) {
+			h.addressResults = []windowsAddressResult{{err: windows.ERROR_NOT_FOUND}}
+		}, 0, false},
+		{"lookup failure", func(h *fakeWindowsIPHelper, r *windows.MibUnicastIpAddressRow) {
+			h.addressResults = []windowsAddressResult{{err: windows.ERROR_ACCESS_DENIED}}
+		}, 0, true},
+		{"replaced birth", func(h *fakeWindowsIPHelper, r *windows.MibUnicastIpAddressRow) { r.CreationTimeStamp.LowDateTime++ }, 0, true},
+		{"changed lifetime", func(h *fakeWindowsIPHelper, r *windows.MibUnicastIpAddressRow) { r.ValidLifetime-- }, 0, true},
+		{"table failure", func(h *fakeWindowsIPHelper, r *windows.MibUnicastIpAddressRow) {
+			h.tableErrors = []error{windows.ERROR_ACCESS_DENIED}
+		}, 0, true},
+		{"duplicate table", func(h *fakeWindowsIPHelper, r *windows.MibUnicastIpAddressRow) {
+			h.tableResults = [][]windows.MibUnicastIpAddressRow{{*r, *r}}
+		}, 0, true},
+		{"delete failure", func(h *fakeWindowsIPHelper, r *windows.MibUnicastIpAddressRow) {
+			h.deleteErrs = []error{windows.ERROR_ACCESS_DENIED}
+		}, 1, true},
+		{"absence verification failure", func(h *fakeWindowsIPHelper, r *windows.MibUnicastIpAddressRow) {
+			h.addressResults = []windowsAddressResult{{row: *r}, {err: windows.ERROR_ACCESS_DENIED}}
+		}, 1, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend, helper, row, creation := windowsTransitionFixture(t)
+			creation.birth = row.CreationTimeStamp
+			creation.observed = row
+			helper.addressResults = nil
+			test.setup(helper, &row)
+			if helper.addressResults == nil {
+				helper.addressResults = []windowsAddressResult{{row: row}, {err: windows.ERROR_NOT_FOUND}}
+			}
+			helper.assignmentFacts = []windows.MibUnicastIpAddressRow{row}
+			err := backend.rollbackCreatedAddress(row, &creation)
+			if (err != nil) != test.wantErr || helper.deleteCalls != test.wantDelete {
+				t.Fatalf("rollback err=%v deletes=%d wantError=%v wantDeletes=%d", err, helper.deleteCalls, test.wantErr, test.wantDelete)
+			}
+		})
+	}
+}
+
+// TestWindowsCreatePreflightRejectsExistingOrUnreadableRows proves absence is required independently of the caller.
+func TestWindowsCreatePreflightRejectsExistingOrUnreadableRows(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*fakeWindowsIPHelper)
+	}{
+		{"direct present", func(h *fakeWindowsIPHelper) {
+			h.preflightResult.row = windowsTestAddressResult(windowsTestInterface(), windows.IpDadStatePreferred)
+		}},
+		{"direct failure", func(h *fakeWindowsIPHelper) { h.preflightResult.err = windows.ERROR_ACCESS_DENIED }},
+		{"table present", func(h *fakeWindowsIPHelper) {
+			h.assignmentFacts = []windows.MibUnicastIpAddressRow{windowsTestAddressResult(windowsTestInterface(), windows.IpDadStatePreferred)}
+		}},
+		{"table failure", func(h *fakeWindowsIPHelper) { h.tableErrors = []error{windows.ERROR_ACCESS_DENIED} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend, helper := newWindowsTestBackend(windowsTestInterface())
+			test.setup(helper)
+			if err := backend.ensure(context.Background(), windowsTestInterface(), netip.PrefixFrom(testAddress, 32)); err == nil || helper.createCalls != 0 || helper.setCalls != 0 || helper.deleteCalls != 0 {
+				t.Fatalf("preflight err=%v create=%d set=%d delete=%d", err, helper.createCalls, helper.setCalls, helper.deleteCalls)
+			}
+		})
+	}
+}
+
+// TestWindowsOrdinaryReconciliationNeverRepairsSourceConflict keeps replay and ordinary ownership checks strict.
+func TestWindowsOrdinaryReconciliationNeverRepairsSourceConflict(t *testing.T) {
+	backend, helper, row, _ := windowsTransitionFixture(t)
+	if err := backend.reconcileAddress(context.Background(), row, true); err == nil || helper.setCalls != 0 || helper.deleteCalls != 0 {
+		t.Fatalf("ordinary reconciliation err=%v set=%d delete=%d", err, helper.setCalls, helper.deleteCalls)
+	}
+}
+
+// TestWindowsCreatedReconciliationFailureRollsBackOnlyCapturedBirth covers Set failure and changed-birth preservation together.
+func TestWindowsCreatedReconciliationFailureRollsBackOnlyCapturedBirth(t *testing.T) {
+	for _, replaced := range []bool{false, true} {
+		t.Run(fmt.Sprint(replaced), func(t *testing.T) {
+			backend, helper, row, creation := windowsTransitionFixture(t)
+			cleanup := row
+			if replaced {
+				cleanup.CreationTimeStamp.LowDateTime++
+			}
+			helper.setErr = windows.ERROR_ACCESS_DENIED
+			helper.addressResults = []windowsAddressResult{{row: row}, {row: row}, {row: cleanup}, {err: windows.ERROR_NOT_FOUND}}
+			err := backend.reconcileCreatedAddress(context.Background(), row, true, &creation)
+			if !errors.Is(err, windows.ERROR_ACCESS_DENIED) || helper.setCalls != 1 {
+				t.Fatalf("reconcile err=%v set=%d", err, helper.setCalls)
+			}
+			rollbackErr := backend.rollbackCreatedAddress(row, &creation)
+			if replaced {
+				if rollbackErr == nil || helper.deleteCalls != 0 {
+					t.Fatalf("replacement rollback err=%v deletes=%d", rollbackErr, helper.deleteCalls)
+				}
+			} else if rollbackErr != nil || helper.deleteCalls != 1 {
+				t.Fatalf("owned rollback err=%v deletes=%d", rollbackErr, helper.deleteCalls)
+			}
+		})
+	}
+}
+
+// TestWindowsInitialReadFailurePreservesSkipOneReplacement rejects rollback before any created birth was proved.
+func TestWindowsInitialReadFailurePreservesSkipOneReplacement(t *testing.T) {
+	backend, helper := newWindowsTestBackend(windowsTestInterface())
+	replacement := windowsTestAddressResult(windowsTestInterface(), windows.IpDadStatePreferred)
+	replacement.CreationTimeStamp = windows.Filetime{LowDateTime: 99}
+	helper.addressResults = []windowsAddressResult{{err: windows.ERROR_ACCESS_DENIED}, {row: replacement}}
+	err := backend.ensure(context.Background(), windowsTestInterface(), netip.PrefixFrom(testAddress, 32))
+	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) || helper.deleteCalls != 0 || helper.setCalls != 0 {
+		t.Fatalf("unproved replacement err=%v set=%d delete=%d", err, helper.setCalls, helper.deleteCalls)
+	}
+}
+
+// TestWindowsOrdinaryCreationRollbackRejectsChangedBirth protects SkipAsSource-one creations too.
+func TestWindowsOrdinaryCreationRollbackRejectsChangedBirth(t *testing.T) {
+	backend, helper, row, creation := windowsTransitionFixture(t)
+	row.SkipAsSource = 1
+	replacement := row
+	replacement.CreationTimeStamp.LowDateTime++
+	helper.addressResults = []windowsAddressResult{{row: row}, {err: windows.ERROR_ACCESS_DENIED}, {row: replacement}}
+	row.DadState = windows.IpDadStateTentative
+	helper.addressResults[0].row.DadState = row.DadState
+	err := backend.reconcileCreatedAddress(context.Background(), row, true, &creation)
+	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatal(err)
+	}
+	if err := backend.rollbackCreatedAddress(row, &creation); err == nil || helper.deleteCalls != 0 {
+		t.Fatalf("replaced birth err=%v delete=%d", err, helper.deleteCalls)
+	}
+}
+
+// TestWindowsCreatedSourceSelectionWaitsForPreferred preserves bounded DAD polling for exact fresh source-flag drift.
+func TestWindowsCreatedSourceSelectionWaitsForPreferred(t *testing.T) {
+	backend, helper, row, creation := windowsTransitionFixture(t)
+	tentative := row
+	tentative.DadState = windows.IpDadStateTentative
+	updated := row
+	updated.SkipAsSource = 1
+	helper.addressResults = []windowsAddressResult{{row: tentative}, {row: row}, {row: row}, {row: updated}}
+	if err := backend.reconcileCreatedAddress(context.Background(), row, true, &creation); err != nil || helper.setCalls != 1 || helper.addressCalls != 4 {
+		t.Fatalf("DAD reconciliation err=%v set=%d reads=%d", err, helper.setCalls, helper.addressCalls)
 	}
 }

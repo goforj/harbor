@@ -180,6 +180,7 @@ func TestProjectEnvironmentIncludesGeneratedMySQLInputs(t *testing.T) {
 		Module: "example.test/harbor/orders",
 	}))
 	for _, assignment := range []string{
+		"COMPOSE_PROFILES=mysql\n",
 		"DB_DRIVER=mysql\n",
 		"DB_HOST=mysql\n",
 		"DB_PORT=3306\n",
@@ -192,8 +193,11 @@ func TestProjectEnvironmentIncludesGeneratedMySQLInputs(t *testing.T) {
 			t.Fatalf("projectEnvironment() = %q, want assignment %q", environment, assignment)
 		}
 	}
-	if plain := string(projectEnvironment(Spec{Name: "Harbor Plain", Port: 3000})); strings.Contains(plain, "DB_") {
-		t.Fatalf("plain projectEnvironment() = %q, want no database assignments", plain)
+	plain := string(projectEnvironment(Spec{Name: "Harbor Plain", Port: 3000}))
+	for _, unwanted := range []string{"DB_", "COMPOSE_PROFILES="} {
+		if strings.Contains(plain, unwanted) {
+			t.Fatalf("plain projectEnvironment() = %q, want no database or Compose assignments", plain)
+		}
 	}
 }
 

@@ -15,7 +15,7 @@ env:
   HARBOR_PROOF_ADDRESSES: 127.77.254.10,127.77.254.11,127.77.254.12
   HARBOR_PROOF_PORT: "3306"
   HARBOR_ADAPTER_PROOF_ADDRESSES: 127.77.254.248,127.77.254.249,127.77.254.250,127.77.254.251,127.77.254.252,127.77.254.253,127.77.254.254,127.77.254.255
-  HARBOR_PROJECT_IDENTITY_FORJ_COMMIT: v0.34.1
+  HARBOR_PROJECT_IDENTITY_FORJ_COMMIT: v0.35.1
 
 jobs:
   project-identity:
@@ -121,7 +121,7 @@ jobs:
         run: |
           binary="${RUNNER_TEMP}/harbor-loopback-adapter-test"
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            "${binary}.exe" -test.run '^TestPlatformLoopbackCapacityLifecycle$' -test.timeout=10m -test.v
+            "${binary}.exe" -test.run '^TestPlatformLoopbackCapacityLifecycle$' -test.count=10 -test.timeout=10m -test.v
           else
             sudo env \
               HARBOR_CAPACITY_PROOF_POOL="${HARBOR_CAPACITY_PROOF_POOL}" \
