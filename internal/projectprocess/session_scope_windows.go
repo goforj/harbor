@@ -197,6 +197,14 @@ func adoptPlatformProcess(ctx context.Context, session domain.ProjectSession, di
 		return nil, nil, err
 	}
 	if !config.RetainProcessScope {
+		job, jobErr := openOwnedSessionJob(session.ProjectID, session.ID, directory, sessionJobQuery)
+		if jobErr == nil {
+			windows.CloseHandle(job)
+			return nil, nil, errors.New("retained native session job is missing its lifetime metadata")
+		}
+		if !errors.Is(jobErr, windows.ERROR_FILE_NOT_FOUND) {
+			return nil, nil, jobErr
+		}
 		return nil, nil, ErrSessionAdoptionUnsupported
 	}
 	if config.ProjectID != session.ProjectID || config.SessionID != session.ID || config.OutputDirectory != directory ||

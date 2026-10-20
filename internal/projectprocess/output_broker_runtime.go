@@ -60,19 +60,9 @@ func ReadOutputBrokerLaunchConfig(path string) (OutputBrokerLaunchConfig, error)
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return OutputBrokerLaunchConfig{}, errors.New("output broker launch config path must be a canonical absolute path")
 	}
-	info, err := os.Lstat(path)
+	body, err := readPrivateOutputBrokerManifest(path)
 	if err != nil {
-		return OutputBrokerLaunchConfig{}, fmt.Errorf("inspect output broker launch config: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return OutputBrokerLaunchConfig{}, errors.New("output broker launch config must be a direct regular file")
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return OutputBrokerLaunchConfig{}, errors.New("output broker launch config must not be readable by group or other users")
-	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return OutputBrokerLaunchConfig{}, fmt.Errorf("read output broker launch config: %w", err)
+		return OutputBrokerLaunchConfig{}, fmt.Errorf("read private output broker launch config: %w", err)
 	}
 	if len(body) == 0 || len(body) > maximumOutputBrokerLaunchConfigBytes {
 		return OutputBrokerLaunchConfig{}, fmt.Errorf("output broker launch config must contain 1..%d bytes", maximumOutputBrokerLaunchConfigBytes)

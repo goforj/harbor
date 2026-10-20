@@ -207,3 +207,38 @@ func TestRecoveredRuntimePlanRequiresExactPrimaryResource(t *testing.T) {
 		t.Fatal("resource acquired address authority without a lease")
 	}
 }
+
+// TestProjectSessionContinuityConcurrentResumeAndClose joins recovered watcher setup across shutdown admission.
+func TestProjectSessionContinuityConcurrentResumeAndClose(t *testing.T) {
+	for iteration := 0; iteration < 5; iteration++ {
+		store, journal := newProjectLifecycleIntegrationState(t)
+		seed, runtime := seedContinuitySession(t, store, journal, true)
+		coordinator := newProjectLifecycleAdmissionTestCoordinator(store, journal, store, runtime, netip.MustParseAddr("127.0.0.1"))
+		if err := coordinator.Recover(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		start, closed, resumed := make(chan struct{}), make(chan error, 1), make(chan struct{})
+		go func() { <-start; _ = coordinator.Resume(ctx); close(resumed) }()
+		go func() { <-start; closed <- coordinator.Close(ctx) }()
+		close(start)
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal("close did not join recovered watcher setup")
+		}
+		select {
+		case <-resumed:
+		case <-ctx.Done():
+			t.Fatal("resume outlived shutdown")
+		}
+		cancel()
+		current, err := store.ActiveProjectSession(t.Context(), seed.project.ID)
+		if err != nil || !reflect.DeepEqual(current, seed.session) {
+			t.Fatalf("concurrent shutdown retired the preserved session: %#v, %v", current, err)
+		}
+	}
+}

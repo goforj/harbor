@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +17,28 @@ import (
 
 	"github.com/goforj/harbor/internal/domain"
 )
+
+// sessionTestBrokerLauncher preserves a native handoff error rather than hiding the optional fallback in assertions.
+type sessionTestBrokerLauncher struct {
+	*OutputBrokerProcessLauncher
+	launchErr error
+}
+
+// newSessionTestBrokerLauncher retains production launch behavior and records only its diagnostic error.
+func newSessionTestBrokerLauncher(path string) (*sessionTestBrokerLauncher, error) {
+	launcher, err := NewOutputBrokerProcessLauncher(path)
+	if err != nil {
+		return nil, err
+	}
+	return &sessionTestBrokerLauncher{OutputBrokerProcessLauncher: launcher}, nil
+}
+
+// Launch records the handoff result without exposing ticket material.
+func (launcher *sessionTestBrokerLauncher) Launch(ctx context.Context, spec OutputBrokerLaunchSpec) (OutputBrokerAttachment, error) {
+	attachment, err := launcher.OutputBrokerProcessLauncher.Launch(ctx, spec)
+	launcher.launchErr = err
+	return attachment, err
+}
 
 // sessionForProcessHandle constructs the durable ownership facts returned by a real test-owned launch.
 func sessionForProcessHandle(handle *Handle) domain.ProjectSession {
@@ -41,7 +64,7 @@ func sessionForProcessHandle(handle *Handle) domain.ProjectSession {
 // TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption proves same-process output continuity and Stop after two replacements.
 func TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption(t *testing.T) {
 	installForjHelper(t, "stream-wait")
-	launcher, err := NewOutputBrokerProcessLauncher(buildOutputBrokerTestBinary(t))
+	launcher, err := newSessionTestBrokerLauncher(buildOutputBrokerTestBinary(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +92,7 @@ func TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption(t *testing.T) 
 		_ = owner.Close(ctx)
 	})
 	if session.OutputBroker == nil {
-		t.Fatal("launch fell back to pipes rather than establishing a real durable broker")
+		t.Fatalf("durable broker handoff failed: %v", launcher.launchErr)
 	}
 	waitForOutput(t, output, "stream=")
 	for replacement := 0; replacement < 2; replacement++ {
@@ -110,7 +133,7 @@ func TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption(t *testing.T) 
 // TestSessionAdoptionRejectsDriftWithoutStoppingTheOriginal preserves the process when broker or birth proof changes.
 func TestSessionAdoptionRejectsDriftWithoutStoppingTheOriginal(t *testing.T) {
 	installForjHelper(t, "wait")
-	launcher, err := NewOutputBrokerProcessLauncher(buildOutputBrokerTestBinary(t))
+	launcher, err := newSessionTestBrokerLauncher(buildOutputBrokerTestBinary(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,9 +147,13 @@ func TestSessionAdoptionRejectsDriftWithoutStoppingTheOriginal(t *testing.T) {
 	}
 	session := sessionForProcessHandle(handle)
 	if session.OutputBroker == nil {
-		t.Fatal("test requires its real broker")
+		t.Fatalf("durable broker handoff failed: %v", launcher.launchErr)
 	}
-	for _, drift := range []string{"root birth", "broker birth", "broker ticket", "missing broker", "broker arguments", "broker image", "wrong project", "wrong session", "noncanonical checkout", "file checkout", "cancelled", "closed"} {
+	drifts := []string{"root birth", "broker birth", "broker ticket", "missing broker", "broker arguments", "broker image", "wrong project", "wrong session", "noncanonical checkout", "file checkout", "cancelled", "closed"}
+	if runtime.GOOS == "windows" {
+		drifts = append(drifts, "legacy lifetime metadata", "foreign job member")
+	}
+	for _, drift := range drifts {
 		t.Run(drift, func(t *testing.T) {
 			candidate := session
 			process, broker := *session.Process, *session.OutputBroker
@@ -168,9 +195,42 @@ func TestSessionAdoptionRejectsDriftWithoutStoppingTheOriginal(t *testing.T) {
 				if err := replacement.Close(t.Context()); err != nil {
 					t.Fatal(err)
 				}
+			case "foreign job member":
+				current, err := CaptureCurrentProcessEvidence()
+				if err != nil {
+					t.Fatal(err)
+				}
+				*candidate.Process = current
+			case "legacy lifetime metadata":
+				original, err := os.ReadFile(broker.ManifestPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := os.WriteFile(broker.ManifestPath, original, 0600); err != nil {
+						t.Error(err)
+					}
+				}()
+				config, err := ReadOutputBrokerLaunchConfig(broker.ManifestPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				config.RetainProcessScope = false
+				data, err := json.Marshal(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(broker.ManifestPath, data, 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if _, err := replacement.AdoptSession(ctx, candidate, adoptionCheckout); err == nil {
 				t.Fatal("changed ownership proof was accepted")
+			}
+			if drift == "legacy lifetime metadata" {
+				if _, err := replacement.SettleSession(t.Context(), candidate); err == nil {
+					t.Fatal("missing retained-job metadata downgraded to parent-only settlement")
+				}
 			}
 			observation, err := owner.ObservePriorProcess(t.Context(), *session.Process)
 			if err != nil || observation.State != PriorProcessPresent {
@@ -185,7 +245,7 @@ func TestSessionOwnerSubprocess(t *testing.T) {
 	if os.Getenv("HARBOR_CONTINUITY_OWNER") != "1" {
 		return
 	}
-	launcher, err := NewOutputBrokerProcessLauncher(os.Getenv("HARBOR_CONTINUITY_BROKER"))
+	launcher, err := newSessionTestBrokerLauncher(os.Getenv("HARBOR_CONTINUITY_BROKER"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +258,7 @@ func TestSessionOwnerSubprocess(t *testing.T) {
 	}
 	session := sessionForProcessHandle(handle)
 	if session.OutputBroker == nil {
-		t.Fatal("owner did not establish a durable broker")
+		t.Fatalf("owner broker handoff failed: %v", launcher.launchErr)
 	}
 	data, err := json.Marshal(session)
 	if err != nil {
@@ -248,7 +308,7 @@ func TestSessionSurvivesHardSupervisorCrash(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	launcher, err := NewOutputBrokerProcessLauncher(broker)
+	launcher, err := newSessionTestBrokerLauncher(broker)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,5 +369,61 @@ func waitForFreshSessionOutput(t *testing.T, supervisor *Supervisor, session dom
 		if err := ctx.Err(); err != nil {
 			t.Fatal("reconnected output contains only history")
 		}
+	}
+}
+
+// TestSessionAdoptionSettlesDescendantsAfterUnexpectedLeaderExit proves cheap leader monitoring still retires the complete native scope.
+func TestSessionAdoptionSettlesDescendantsAfterUnexpectedLeaderExit(t *testing.T) {
+	installForjHelper(t, "tree")
+	childReceipt := filepath.Join(canonicalTestPath(t, t.TempDir()), "child.pid")
+	t.Setenv(helperPIDFileEnvironment, childReceipt)
+	launcher, err := newSessionTestBrokerLauncher(buildOutputBrokerTestBinary(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkout := canonicalTestPath(t, t.TempDir())
+	options := Options{OutputSpoolDirectory: canonicalTestPath(t, t.TempDir()), OutputBrokerLauncher: launcher, GracePeriod: 500 * time.Millisecond}
+	owner := newTestSupervisor(options)
+	handle, err := owner.Start(t.Context(), StartRequest{ProjectID: "project-unexpected-exit", SessionID: "session-unexpected-exit", CheckoutRoot: checkout, EnvironmentOverrides: projectProcessTestEnvironment()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := sessionForProcessHandle(handle)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = owner.Close(ctx)
+		_, _ = owner.SettleSession(ctx, session)
+	})
+	if session.OutputBroker == nil {
+		t.Fatalf("durable broker handoff failed: %v", launcher.launchErr)
+	}
+	if !waitForPublishedHelperPID(childReceipt) {
+		t.Fatal("owned descendant did not start")
+	}
+	owner.mu.Lock()
+	originalRoot := owner.projects[session.ProjectID].command.Process
+	owner.mu.Unlock()
+	if err := owner.DetachSession(t.Context(), session.ProjectID, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	replacement := newTestSupervisor(options)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = replacement.Close(ctx)
+	})
+	handle, err = replacement.AdoptSession(t.Context(), session, checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := originalRoot.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	result, err := handle.Wait(ctx)
+	if err != nil || result.StopRequested || result.ScopeSettlementErr != nil {
+		t.Fatalf("unexpected root exit did not settle its ignoring descendant: %#v, %v", result, err)
 	}
 }

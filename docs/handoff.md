@@ -20,6 +20,8 @@ Ready environments should survive clean daemon shutdown and hard daemon loss, th
 
 GoForj removed its earlier managed integration in `4676161`; the released CLI has no managed client. This implementation uses Harbor's authenticated surviving output broker and separately proven native session/job ownership. It does not restore that removed integration, rewrite project configuration, or require a new CLI release. Unix native continuity and race tests pass locally. Windows work adds a broker-held query handle to a separately owned named Job Object; Windows runtime proof is still pending. Cross-compilation is not acceptance.
 
+The second native CI run `39503589558` passes macOS continuity but Windows falls back from broker handoff. The manifest reader used Unix permissions on Windows; native private ACL creation/admission and Windows failure diagnostics are now added, with native proof pending. A Resume/Close watcher-setup race and retained-job metadata downgrade were corrected. Build-only producers `39503700892` and `39503704067` were cancelled before acceptance because those changes alter product source. No PR exists for this feature yet.
+
 Next: finish native Windows ownership and interrupted-operation settlement checks, verify coordinator recovery/close behavior, then run the existing native CI and fresh installed GUI recovery scenarios. Preserve strict package-source admission. The completed PR #17 receipts above remain evidence for the previous crash-and-retry behavior, not this new feature.
 
 ## Product invariants

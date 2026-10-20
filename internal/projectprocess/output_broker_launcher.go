@@ -222,7 +222,7 @@ func writeOutputBrokerLaunchConfig(directory string, config OutputBrokerLaunchCo
 		return "", fmt.Errorf("create output broker launch config name: %w", err)
 	}
 	path := filepath.Join(directory, "output-broker-"+token+".json")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := createPrivateOutputBrokerManifest(path)
 	if err != nil {
 		return "", fmt.Errorf("create output broker launch config: %w", err)
 	}

@@ -122,12 +122,9 @@ func (supervisor *Supervisor) waitAdoptedSession(process *managedProcess) {
 		case <-process.detachDone:
 			return
 		case <-ticker.C:
-			alive, err := process.observeTree()
-			rootAlive := false
-			if err == nil && alive {
-				rootAlive, err = process.platform.rootAlive(process.command.Process.Pid)
-			}
-			if err != nil || !alive || !rootAlive {
+			// Poll the exact leader cheaply; full host census remains mandatory when settling or signaling its scope.
+			rootAlive, err := process.platform.rootAlive(process.command.Process.Pid)
+			if err != nil || !rootAlive {
 				if err != nil {
 					process.closeOutputReaders()
 				}

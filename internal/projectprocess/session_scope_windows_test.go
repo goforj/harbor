@@ -65,3 +65,18 @@ func TestSessionScopeBreakawayPolicyDoesNotEscapeAnUnrelatedRestrictiveJob(t *te
 		}
 	}
 }
+
+// TestSessionScopeBrokerRetainsQueryOnlyJobHandle exercises the same native keeper open used by the standalone broker.
+func TestSessionScopeBrokerRetainsQueryOnlyJobHandle(t *testing.T) {
+	directory := canonicalTestPath(t, t.TempDir())
+	platform, err := prepareSessionPlatformProcess(exec.Command("unused"), "project-keeper", "session-keeper", directory, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer platform.close()
+	release, err := retainOutputBrokerProcessScope(OutputBrokerRuntimeConfig{ProjectID: "project-keeper", SessionID: "session-keeper", OutputDirectory: directory, RetainProcessScope: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+}

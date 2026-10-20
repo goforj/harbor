@@ -78,6 +78,15 @@ func (coordinator *ProjectLifecycleCoordinator) adoptRecoveredSession(ctx contex
 
 // resumeRecoveredSession resumes observation without launching processes or rewriting the existing session generation.
 func (coordinator *ProjectLifecycleCoordinator) resumeRecoveredSession(recovered recoveredProjectSession) {
+	coordinator.mutex.Lock()
+	if coordinator.closed {
+		coordinator.mutex.Unlock()
+		return
+	}
+	// Keep setup joined until both watchers are registered, even if shutdown begins between them.
+	coordinator.wait.Add(1)
+	coordinator.mutex.Unlock()
+	defer coordinator.wait.Done()
 	coordinator.wait.Add(1)
 	go func() {
 		defer coordinator.wait.Done()
