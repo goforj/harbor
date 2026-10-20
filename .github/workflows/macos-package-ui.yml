@@ -103,6 +103,7 @@ jobs:
           defaults write NSGlobalDomain AppleKeyboardUIMode -int 3
 
       - name: Install verified native package
+        id: install
         env:
           VERIFIED_PACKAGE: ${{ steps.package.outputs.package }}
         run: |
@@ -190,17 +191,19 @@ jobs:
           PY
 
       - name: Uninstall package and verify user data survives
+        id: uninstall
         run: |
           set -euo pipefail
           sudo -n "/Library/Application Support/GoForj/Harbor/current/bin/harbor-installer" \
             uninstall --user-id "$(id -u)" --group-id "$(id -g)"
           test ! -e /Applications/Harbor.app
           test ! -e "$HOME/Library/LaunchAgents/com.goforj.harbor.daemon.plist"
-          if launchctl print "gui/$(id -u)/com.goforj.harbor.daemon" >/dev/null 2>&1; then
-            echo 'installed user service survived uninstall' >&2
-            exit 1
-          fi
+          python3 scripts/packageui/cleanup_macos.py absence
           shasum -a 256 -c "$RUNNER_TEMP/harbor-ui-retained.sha256" > harbor-package-ui-evidence/uninstall-preservation.txt
+
+      - name: Recover installed fixture after a failed GUI assertion
+        if: failure() && steps.install.outcome == 'success' && steps.uninstall.outcome != 'success'
+        run: python3 scripts/packageui/cleanup_macos.py
 
       - name: Restore disposable-worker authorization policy
         if: always()
