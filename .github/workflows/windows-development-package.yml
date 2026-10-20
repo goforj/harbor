@@ -94,6 +94,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'native desktop build failed' }
           } finally { Pop-Location }
           Copy-Item desktop\build\bin\harbor-desktop.exe (Join-Path $env:HARBOR_COMPONENT_ROOT 'harbor-desktop.exe')
+          wails3 generate syso -arch amd64 -icon desktop/build/windows/icon.ico -info desktop/build/windows/info.json -manifest packaging/windows/maintenance.exe.manifest -out cmd/installer/harbor_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw 'maintenance asInvoker resource generation failed' }
           $roles = @{
             'harbor.exe'='./cmd/app'; 'harbord.exe'='./cmd/harbord'; 'harbor-helper.exe'='./cmd/helper'; 'outputbroker.exe'='./cmd/outputbroker'
             'desktop-launcher.exe'='./cmd/desktoplauncher'; 'daemon-launcher.exe'='./cmd/daemonlauncher'; 'cli-launcher.exe'='./cmd/clilauncher'; 'harbor-installer.exe'='./cmd/installer'
@@ -130,7 +132,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $installed = Start-Process -FilePath $env:HARBOR_PACKAGE_PATH -ArgumentList '--silent' -Wait -PassThru
+          $installed = Start-Process -FilePath $env:HARBOR_PACKAGE_PATH -ArgumentList '--silent' -Wait -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\harbor-package-evidence\setup-stdout.txt" -RedirectStandardError "$env:RUNNER_TEMP\harbor-package-evidence\setup-stderr.txt"
           if ($installed.ExitCode -ne 0) { throw "native setup failed: $($installed.ExitCode)" }
           $root = "$env:ProgramFiles\GoForj\Harbor"
           $selection = Get-Content -LiteralPath "$root\installation.json" -Raw | ConvertFrom-Json
@@ -154,7 +156,7 @@ jobs:
           $sentinel = Join-Path $env:HARBOR_INSTALL_ROOT 'foreign-package-sentinel.txt'
           [IO.File]::WriteAllText($sentinel, 'preserve foreign package state')
           $baseline = @(Get-ChildItem "$env:WINDIR\Temp" -Directory -Filter 'HarborUninstall-*' | ForEach-Object FullName)
-          $process = Start-Process "$env:HARBOR_INSTALL_ROOT\Uninstall.exe" -ArgumentList '--silent' -Wait -PassThru
+          $process = Start-Process "$env:HARBOR_INSTALL_ROOT\Uninstall.exe" -ArgumentList '--silent' -Wait -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\harbor-package-evidence\uninstall-bootstrap-stdout.txt" -RedirectStandardError "$env:RUNNER_TEMP\harbor-package-evidence\uninstall-bootstrap-stderr.txt"
           if ($process.ExitCode -ne 0) { throw "uninstall bootstrap failed: $($process.ExitCode)" }
           $deadline = (Get-Date).AddMinutes(3)
           $receiptPath = $null

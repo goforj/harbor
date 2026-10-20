@@ -18,3 +18,4 @@ __pycache__/
 /cmd/windowssetup/payload/*
 !/cmd/windowssetup/payload/README.txt
 /cmd/windowssetup/*.syso
+/cmd/installer/harbor_windows_*.syso
