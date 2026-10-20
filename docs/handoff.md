@@ -2,6 +2,14 @@
 
 Status: completing all installed platform gates; Linux GUI lifecycle passes, fresh macOS package and Windows foundation/native corrections are in progress
 
+## Native installer completion checkpoint (2026-10-20)
+
+The active user requirement is still complete installed graphical workflows on macOS, Ubuntu and Windows. Root work is `/tmp/harbor-package-ui-20261019`, branch `test/installed-package-ui`, PR #13 (draft). The Windows foundation at `accd0c0` is integrated as `7ef699f`; ongoing native fixes remain on `/tmp/harbor-windows-installed-foundation-20261019`, branch `fix/windows-installed-foundation`, draft PR #16. Root machine integration commits through `728b054`/`fb862de` and GUI selection/actual-child retention through `9b2a4b0` are included. Preserve the user's active checkouts. No public release/tag/merge is authorized here.
+
+The final Windows component and native setup/GUI runs are pending. First producer `39380677304` built/signed but failed setup on the older revision with only exit code 1; the corrected producer captures native setup/bootstrap stderr. Do not call the Windows installer accepted. macOS run `39378641629` passed native reopen/duplicate/Quit/relaunch/retained Ready/HTTPS and failed only the final project-link selector, now corrected from the actual accessibility title. Cleanup waits inside Apple's trust-settings removal XPC call. `39380241993` proved the proposed trust-right policy write is OS-denied before GUI work. The next approved GUI profile uses the existing package gate's foreign administrator-root baseline, verifies foreign retention, and explicitly excludes genuine interactive or last-root consent claims. Linux's full `39367877717` GUI proof remains valid for its prior package and XFCE/X11 profile; final integrated product source still needs fresh native packaging and matching GUI runs.
+
+Current implementation/evidence details live at the top of `docs/current-state.md`. Continue until native install, graphical create/Start/HTTPS, hide/reopen, UI Quit/relaunch with daemon retained, Stop, release, uninstall and retained-file receipts pass. Keep package-only, component-only and actual GUI claims separate.
+
 ## Completion continuation (2026-10-20)
 
 The user explicitly asked to continue until installed workflows function across all platforms, with sub-agents and separate CI. Do not stop at workflow creation, compilation, or a partial package pass. Root remains `/tmp/harbor-package-ui-20261019`, branch `test/installed-package-ui`, PR #13. Preserve the active user checkouts and installations. No release/tag/merge or signing purchase is authorized in this slice.
