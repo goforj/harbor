@@ -169,6 +169,16 @@ func (guard *UninstallGuard) Close() error {
 	if guard.closed {
 		return nil
 	}
+	var leaseErr error
+	if guard.context.Err() != nil {
+		leaseErr = context.Cause(guard.context)
+	}
+	if !guard.closing.Load() {
+		state, err := windows.WaitForSingleObject(guard.child.process, 0)
+		if err != nil || state != uint32(windows.WAIT_TIMEOUT) {
+			leaseErr = errors.Join(leaseErr, errors.New("uninstall guard settled before release"), err)
+		}
+	}
 	guard.closing.Store(true)
 	releaseErr := windows.SetEvent(guard.release)
 	if releaseErr != nil {
@@ -187,17 +197,17 @@ func (guard *UninstallGuard) Close() error {
 		case <-guard.settled:
 			releaseErr = errors.Join(releaseErr, timeout, abortErr)
 		case <-time.After(2 * time.Second):
-			return errors.Join(releaseErr, timeout, abortErr)
+			return errors.Join(leaseErr, releaseErr, timeout, abortErr)
 		}
 	}
 	if err := guard.child.Close(); err != nil {
-		return errors.Join(releaseErr, guard.outcome.err, err)
+		return errors.Join(leaseErr, releaseErr, guard.outcome.err, err)
 	}
 	var exitErr error
 	if guard.outcome.code != 0 {
 		exitErr = fmt.Errorf("uninstall guard exited with code %d", guard.outcome.code)
 	}
-	result := errors.Join(releaseErr, guard.outcome.err, exitErr, guard.closeObjects())
+	result := errors.Join(leaseErr, releaseErr, guard.outcome.err, exitErr, guard.closeObjects())
 	guard.closed = true
 	guard.cancel(context.Canceled)
 	return result

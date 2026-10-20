@@ -246,6 +246,22 @@ func TestNativeUninstallGuardWorker(t *testing.T) {
 	if err := next.Close(); err == nil {
 		t.Fatal("unexpected owned worker termination was reported successful")
 	}
+	spontaneous, err := installation.HoldUninstallGuard(ctx, staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spontaneous.Close()
+	if err := windows.SetEvent(spontaneous.release); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-spontaneous.Context().Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("unexpected zero-exit guard did not cancel cleanup")
+	}
+	if err := spontaneous.Close(); err == nil {
+		t.Fatal("unexpected zero-exit guard was reported successful")
+	}
 	final, err := installation.HoldUninstallGuard(ctx, staged)
 	if err != nil {
 		t.Fatal(err)
