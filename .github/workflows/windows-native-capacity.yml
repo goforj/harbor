@@ -1,0 +1,58 @@
+name: Windows native capacity diagnostics
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capacity:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2022
+    timeout-minutes: 15
+    env:
+      GOWORK: "off"
+      HARBOR_WINDOWS_DIAGNOSTIC_POOL: 127.77.252.0/24
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Isolate native test caches
+        shell: pwsh
+        run: |
+          "GOCACHE=$env:RUNNER_TEMP\harbor-windows-gocache" | Out-File $env:GITHUB_ENV -Append
+          "GOMODCACHE=$env:RUNNER_TEMP\harbor-windows-gomodcache" | Out-File $env:GITHUB_ENV -Append
+      - name: Validate native Windows ownership guards
+        shell: pwsh
+        run: go test ./internal/platform/loopback -run '^TestWindows' -count=1
+      - name: Capture repeated capacity readbacks and exact cleanup
+        shell: pwsh
+        run: |
+          go test -tags=platformmutation ./internal/platform/loopback -run '^TestWindowsNativeCapacityReadback$' -count=10 -timeout=10m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-native-capacity.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain native socket state
+        if: always()
+        shell: pwsh
+        run: |
+          Get-NetTCPConnection -ErrorAction SilentlyContinue |
+            Where-Object { $_.LocalPort -eq 3306 -or $_.RemotePort -eq 3306 } |
+            Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, State, OwningProcess |
+            ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\windows-native-sockets.json"
+          netsh interface ipv4 show excludedportrange protocol=tcp |
+            Set-Content "$env:RUNNER_TEMP\windows-native-excluded-ports.txt"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-native-capacity-readbacks
+          path: |
+            ${{ runner.temp }}/windows-native-capacity.log
+            ${{ runner.temp }}/windows-native-sockets.json
+            ${{ runner.temp }}/windows-native-excluded-ports.txt
+          if-no-files-found: error
+          retention-days: 14

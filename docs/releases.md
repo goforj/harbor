@@ -39,6 +39,8 @@ Changes to this harness also trigger a same-repository PR check against the late
 
 XCTest operates the installed Wails window through macOS accessibility, rather than injecting JavaScript or replacing the package executable. Its planned coverage is graphical creation of a minimal Vue/API project, Start, system-trusted HTTPS, close-to-hide, single-instance reopen, Quit Harbor UI without stopping the project, another launch, and Stop. The job then removes owned networking, uninstalls, and checks retained database and project-file hashes. Screenshots, the `.xcresult`, lifecycle evidence, and original package provenance are uploaded as `Harbor-installed-macos-ui-<run-number>`.
 
+A failed GUI assertion keeps the gate failed and attempts bounded recovery through the normal native quit, project Stop, networking release, daemon stop, and installer uninstall paths. It refuses registrations outside its disposable fixture and retains `failure-cleanup.json`, including partial failure. Recovery verifies exact service absence and user-file hashes; worker destruction alone is not recorded as successful cleanup.
+
 This is unattended GUI automation in a real graphical session. It installs the released GoForj CLI and Wire, and temporarily exposes that toolchain through the worker's graphical-session `PATH`. Administrator approval is preauthorized on the disposable worker and restored afterward. Genuine consent prompts, default desktop toolchain discovery, Docker-backed projects, tray menu interactions, reboot, signed updates, and installed Linux/Windows GUI workflows remain separate coverage. A hosted result is still pending for this harness.
 
 ## Latest package rehearsal (2026-10-19)
