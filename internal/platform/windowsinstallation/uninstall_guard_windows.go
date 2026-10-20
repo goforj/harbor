@@ -272,6 +272,17 @@ func holdUninstallGuardEvents(ready, release windows.Handle, prepare func(func()
 	})
 }
 
+// SignalUninstallParentReady retires onward inheritance before acknowledging the authenticated original uninstall process.
+func SignalUninstallParentReady(ready windows.Handle) error {
+	if err := admitUninstallGuardEvent(ready, windows.EVENT_MODIFY_STATE); err != nil {
+		return fmt.Errorf("admit uninstall parent acknowledgement: %w", err)
+	}
+	if err := windows.SetHandleInformation(ready, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
+		return err
+	}
+	return windows.SetEvent(ready)
+}
+
 // uninstallObjectTypeName matches the native UNICODE_STRING prefix returned by ObjectTypeInformation.
 type uninstallObjectTypeName struct {
 	Length, MaximumLength uint16
