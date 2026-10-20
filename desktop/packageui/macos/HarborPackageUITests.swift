@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import XCTest
 
 final class HarborPackageUITests: XCTestCase {
@@ -148,14 +149,33 @@ final class HarborPackageUITests: XCTestCase {
         try waitUntil("installed Harbor window", timeout: 60) { self.application.windows.firstMatch.isHittable }
     }
 
+    // canonicalRecoveryProjectDirectory uses kernel path spelling because Foundation preserves the /tmp alias.
+    private func canonicalRecoveryProjectDirectory(_ directory: URL, registeredPath: String) throws -> String {
+        guard let resolved = realpath(directory.path, nil) else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno),
+                          userInfo: [NSLocalizedDescriptionKey: "cannot resolve the existing graphical fixture"])
+        }
+        defer { free(resolved) }
+        let canonical = String(cString: resolved)
+        guard canonical == registeredPath else {
+            throw NSError(domain: "HarborPackageUI.Recovery", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "canonical graphical fixture differs from its registered path"])
+        }
+        return canonical
+    }
+
     // exerciseCrashRecovery uses the installed daemon while XCTest retains the original native UI process.
     private func exerciseCrashRecovery(_ identifier: String, projectDirectory: URL) throws {
         let environment = ProcessInfo.processInfo.environment
         let tool = try XCTUnwrap(environment["HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL"])
         XCTAssertTrue(tool.hasPrefix("/"), "recovery tool must be an absolute workflow-selected executable")
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: tool))
+        let registration = try XCTUnwrap(try project(at: projectDirectory.path))
+        XCTAssertEqual(registration["id"] as? String, identifier)
+        let registeredPath = try XCTUnwrap(registration["path"] as? String)
+        let canonical = try canonicalRecoveryProjectDirectory(projectDirectory, registeredPath: registeredPath)
         let evidence = "/tmp/harbor-package-ui-crash-recovery.json"
-        _ = try command(tool, ["--project-id", identifier, "--project-directory", projectDirectory.resolvingSymlinksInPath().path,
+        _ = try command(tool, ["--project-id", identifier, "--project-directory", canonical,
                                "--evidence", evidence])
         let data = try Data(contentsOf: URL(fileURLWithPath: evidence))
         let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])

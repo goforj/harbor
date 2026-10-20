@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"go/parser"
 	"go/token"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 )
 
@@ -259,5 +262,167 @@ func TestParseFailureWritesIncompleteReceipt(t *testing.T) {
 	}
 	if evidence.Complete || evidence.Error == "" {
 		t.Fatalf("failure receipt: %s", data)
+	}
+}
+
+// TestProcessBackedSessionDistinguishesSupervisionFromAuthenticatedAttachment accepts both persisted launch states.
+func TestProcessBackedSessionDistinguishesSupervisionFromAuthenticatedAttachment(t *testing.T) {
+	for _, state := range []domain.SessionState{domain.SessionAwaitingAttach, domain.SessionAttached} {
+		project := projectEvidence{SessionID: "session", Generation: 2, SessionState: state}
+		if !processBackedSession(project) {
+			t.Fatalf("rejected process-backed %s", state)
+		}
+	}
+	for _, project := range []projectEvidence{
+		{Generation: 2, SessionState: domain.SessionAwaitingAttach},
+		{SessionID: "session", SessionState: domain.SessionAwaitingAttach},
+		{SessionID: "session", Generation: 2, SessionState: domain.SessionPlanned},
+		{SessionID: "session", Generation: 2, SessionState: domain.SessionDisconnected},
+		{SessionID: "session", Generation: 2, SessionState: domain.SessionStopping},
+	} {
+		if processBackedSession(project) {
+			t.Fatalf("accepted unproven session: %#v", project)
+		}
+	}
+}
+
+// TestFreshSessionRequiresExplicitRetryContinuity checks identity stability while requiring a new session.
+func TestFreshSessionRequiresExplicitRetryContinuity(t *testing.T) {
+	before := projectEvidence{ID: "original", Path: "/fixture/project", Host: "original.test", Address: "127.0.0.2", SessionID: "old"}
+	after := before
+	after.SessionID = "new"
+	after.Generation = 2
+	after.SessionState = domain.SessionAwaitingAttach
+	after.State = domain.ProjectReady
+	after.HTTPS200 = true
+	if err := freshSession(before, after); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*projectEvidence){
+		func(e *projectEvidence) { e.ID = "other" }, func(e *projectEvidence) { e.Path = "/other" },
+		func(e *projectEvidence) { e.Host = "other.test" }, func(e *projectEvidence) { e.Address = "127.0.0.3" },
+		func(e *projectEvidence) { e.SessionID = before.SessionID }, func(e *projectEvidence) { e.SessionID = "" },
+		func(e *projectEvidence) { e.SessionState = domain.SessionPlanned }, func(e *projectEvidence) { e.State = domain.ProjectFailed },
+		func(e *projectEvidence) { e.HTTPS200 = false },
+	} {
+		changed := after
+		mutate(&changed)
+		if err := freshSession(before, changed); err == nil {
+			t.Fatal("unsafe retry admitted")
+		}
+	}
+}
+
+// TestSettledProjectRejectsQuarantineAndRetainedRuntime requires affirmative safe failure without runtime authority.
+func TestSettledProjectRejectsQuarantineAndRetainedRuntime(t *testing.T) {
+	project := domain.ProjectSnapshot{ID: "peer", State: domain.ProjectFailed, Apps: []domain.AppSnapshot{{State: domain.EntityStopped}}, Services: []domain.ServiceSnapshot{{State: domain.EntityStopped}}}
+	activity := control.ProjectActivity{ProjectID: project.ID}
+	if err := settledProject(project, activity); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*domain.ProjectSnapshot, *control.ProjectActivity){
+		func(p *domain.ProjectSnapshot, a *control.ProjectActivity) { p.State = domain.ProjectUnavailable },
+		func(p *domain.ProjectSnapshot, a *control.ProjectActivity) { p.State = domain.ProjectStopped },
+		func(p *domain.ProjectSnapshot, a *control.ProjectActivity) { a.ProjectID = "other" },
+		func(p *domain.ProjectSnapshot, a *control.ProjectActivity) {
+			a.Session = &control.ProjectSessionActivity{ID: "retained"}
+		},
+		func(p *domain.ProjectSnapshot, a *control.ProjectActivity) {
+			p.Resources = []domain.ResourceSnapshot{{}}
+		},
+		func(p *domain.ProjectSnapshot, a *control.ProjectActivity) {
+			p.Apps = []domain.AppSnapshot{{State: domain.EntityStopped, Active: true}}
+		},
+		func(p *domain.ProjectSnapshot, a *control.ProjectActivity) {
+			p.Apps = []domain.AppSnapshot{{State: domain.EntityReady}}
+		},
+		func(p *domain.ProjectSnapshot, a *control.ProjectActivity) {
+			p.Services = []domain.ServiceSnapshot{{State: domain.EntityReady}}
+		},
+	} {
+		changed, observed := project, activity
+		mutate(&changed, &observed)
+		if err := settledProject(changed, observed); err == nil {
+			t.Fatal("unsafe settlement admitted")
+		}
+	}
+}
+
+// TestInterruptedStartRequiresExactRetryableFailure rejects unrelated operations and recovery quarantine.
+func TestInterruptedStartRequiresExactRetryableFailure(t *testing.T) {
+	before := domain.Operation{ID: "operation", ProjectID: "peer", IntentID: "intent", Kind: domain.OperationKindProjectStart}
+	after := before
+	after.State = domain.OperationFailed
+	after.Problem = &domain.Problem{Code: "project.recovery.process_absent", Message: "Previous exact process settled.", Retryable: true}
+	if err := interruptedStart(before, after); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*domain.Operation){
+		func(o *domain.Operation) { o.ID = "other" }, func(o *domain.Operation) { o.ProjectID = "other" }, func(o *domain.Operation) { o.IntentID = "other" },
+		func(o *domain.Operation) { o.Kind = domain.OperationKindProjectStop }, func(o *domain.Operation) { o.State = domain.OperationCancelled },
+		func(o *domain.Operation) { o.Problem = nil }, func(o *domain.Operation) { o.Problem = &domain.Problem{} },
+		func(o *domain.Operation) {
+			o.Problem = &domain.Problem{Code: "project.recovery.ambiguous_launch", Message: "Quarantined.", Retryable: false}
+		},
+		func(o *domain.Operation) {
+			o.Problem = &domain.Problem{Code: "project.recovery.process_absent", Message: "Settled.", Retryable: false}
+		},
+	} {
+		changed := after
+		mutate(&changed)
+		if err := interruptedStart(before, changed); err == nil {
+			t.Fatal("unsafe interrupted operation admitted")
+		}
+	}
+}
+
+// TestWithdrawnRouteRequiresAffirmativeIngressResponse rejects live routes and ambiguous transport failures.
+func TestWithdrawnRouteRequiresAffirmativeIngressResponse(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		status   int
+		body     string
+		accepted bool
+	}{
+		{"withdrawn", 421, "Harbor has no route for this host.\n", true},
+		{"live", 200, "ready", false}, {"upstream failed", 502, "upstream failed", false},
+		{"foreign response", 421, "other server", false}, {"not found", 404, "missing", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(test.status); w.Write([]byte(test.body)) }))
+			defer server.Close()
+			err := withdrawnRoute(context.Background(), strings.TrimPrefix(server.URL, "http://"))
+			if (err == nil) != test.accepted {
+				t.Fatalf("route result = %v", err)
+			}
+		})
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	address := strings.TrimPrefix(server.URL, "http://")
+	server.Close()
+	if err := withdrawnRoute(context.Background(), address); err == nil {
+		t.Fatal("network failure counted as route absence")
+	}
+}
+
+// TestSettledObservationRejectsFinalReadDrift prevents an earlier retirement read from admitting a restarted session.
+func TestSettledObservationRejectsFinalReadDrift(t *testing.T) {
+	settled := projectEvidence{ID: "peer", State: domain.ProjectFailed}
+	if err := settledObservation(settled); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*projectEvidence){
+		func(project *projectEvidence) { project.State = domain.ProjectStarting },
+		func(project *projectEvidence) { project.State = domain.ProjectReady },
+		func(project *projectEvidence) { project.State = domain.ProjectUnavailable },
+		func(project *projectEvidence) { project.SessionID = "new-session" },
+		func(project *projectEvidence) { project.SessionState = domain.SessionAwaitingAttach },
+		func(project *projectEvidence) { project.Generation = 1 },
+	} {
+		changed := settled
+		mutate(&changed)
+		if err := settledObservation(changed); err == nil {
+			t.Fatalf("admitted final observation drift: %#v", changed)
+		}
 	}
 }

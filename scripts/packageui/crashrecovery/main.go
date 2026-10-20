@@ -24,15 +24,16 @@ import (
 
 // projectEvidence retains only the bounded observations necessary to establish recovery continuity.
 type projectEvidence struct {
-	ID           domain.ProjectID    `json:"id"`
-	Path         string              `json:"path"`
-	State        domain.ProjectState `json:"state"`
-	Host         string              `json:"host"`
-	Address      string              `json:"address"`
-	SessionID    domain.SessionID    `json:"session_id"`
-	SessionState domain.SessionState `json:"session_state"`
-	Generation   uint64              `json:"generation"`
-	HTTPS200     bool                `json:"https_200"`
+	ID             domain.ProjectID    `json:"id"`
+	Path           string              `json:"path"`
+	State          domain.ProjectState `json:"state"`
+	Host           string              `json:"host"`
+	Address        string              `json:"address"`
+	SessionID      domain.SessionID    `json:"session_id"`
+	SessionState   domain.SessionState `json:"session_state"`
+	Generation     uint64              `json:"generation"`
+	HTTPS200       bool                `json:"https_200"`
+	RouteWithdrawn bool                `json:"route_withdrawn"`
 }
 
 // crashEvidence records native identity replacement independently of project session continuity.
@@ -43,6 +44,7 @@ type crashEvidence struct {
 
 // receipt remains incomplete until every assertion and owned-peer cleanup succeeds.
 type receipt struct {
+	Stage                string                     `json:"stage"`
 	Complete             bool                       `json:"complete"`
 	Error                string                     `json:"error,omitempty"`
 	Observations         map[string]projectEvidence `json:"observations"`
@@ -57,13 +59,15 @@ type receipt struct {
 
 // recovery owns one private fixture and replaces each client after native daemon restart.
 type recovery struct {
-	client   *control.Client
-	original domain.ProjectID
-	peer     domain.ProjectID
-	peerPath string
-	parent   string
-	marker   string
-	evidence *receipt
+	client             *control.Client
+	original           domain.ProjectID
+	peer               domain.ProjectID
+	peerPath           string
+	parent             string
+	marker             string
+	evidence           *receipt
+	originalCurrent    projectEvidence
+	originalNeedsRetry bool
 }
 
 // main returns a failing process status for every incomplete recovery receipt.
@@ -81,12 +85,15 @@ func run(arguments []string) (result error) {
 	directory := flags.String("project-directory", "", "Canonical GUI fixture directory")
 	evidencePath := flags.String("evidence", evidenceArgument(arguments), "JSON receipt destination")
 	parseErr := flags.Parse(arguments)
-	evidence := &receipt{Observations: map[string]projectEvidence{}, Crashes: []crashEvidence{}, Assertions: []string{}, Cleanup: "no peer registered"}
+	evidence := &receipt{Observations: map[string]projectEvidence{}, Crashes: []crashEvidence{}, Assertions: []string{}, Cleanup: "no peer registered", Stage: "admission"}
 	defer func() {
 		if result != nil {
 			evidence.Error = result.Error()
 		}
 		evidence.Complete = result == nil
+		if result == nil {
+			evidence.Stage = "complete"
+		}
 		if *evidencePath == "" {
 			result = errors.Join(result, errors.New("evidence destination is required"))
 			return
@@ -165,6 +172,8 @@ func run(arguments []string) (result error) {
 		return err
 	}
 	evidence.Observations["original_initial"] = original
+	driver.originalCurrent = original
+	evidence.Stage = "peer_generation_and_registration"
 	if err := driver.createPeer(ctx); err != nil {
 		return err
 	}
@@ -344,30 +353,53 @@ func resolveAddress(ctx context.Context, host string) (string, error) {
 
 // probe performs an unproxied system-trust HTTP request and always closes its bounded response.
 func probe(ctx context.Context, url string, expected string) error {
+	status, body, err := probeResponse(ctx, url)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("probe returned HTTP %d", status)
+	}
+	if expected != "" && body != expected {
+		return errors.New("gate listener marker differs")
+	}
+	return nil
+}
+
+// probeResponse bounds direct HTTP observations without converting network failures into route absence.
+func probeResponse(ctx context.Context, url string) (int, string, error) {
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("unexpected probe redirect") }}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("probe returned HTTP %d", response.StatusCode)
-	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 4097))
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	if len(body) > 4096 {
-		return errors.New("probe response exceeds bound")
+		return 0, "", errors.New("probe response exceeds bound")
 	}
-	if expected != "" && string(body) != expected {
-		return errors.New("gate listener marker differs")
+	return response.StatusCode, string(body), nil
+}
+
+// processBackedSession recognizes supervised launch evidence without claiming authenticated managed attachment.
+// ProjectActivity deliberately omits native process facts; these states require persisted process evidence in Harbor.
+func processBackedSession(project projectEvidence) bool {
+	return project.SessionID != "" && project.Generation > 0 && (project.SessionState == domain.SessionAwaitingAttach || project.SessionState == domain.SessionAttached)
+}
+
+// freshSession requires a successful explicit retry with a new lifecycle and the same public identity.
+func freshSession(before, after projectEvidence) error {
+	if before.ID != after.ID || before.Path != after.Path || before.Host != after.Host || before.Address != after.Address || after.SessionID == before.SessionID || !processBackedSession(after) || after.State != domain.ProjectReady || !after.HTTPS200 {
+		return errors.New("explicit retry did not create a fresh Ready session with stable public identity")
 	}
 	return nil
 }
@@ -393,8 +425,8 @@ func (driver *recovery) observe(ctx context.Context, id domain.ProjectID, health
 		return result, err
 	}
 	if healthy {
-		if project.State != domain.ProjectReady || result.SessionID == "" || result.SessionState != domain.SessionAttached {
-			return result, errors.New("project is not Ready with an attached session")
+		if project.State != domain.ProjectReady || !processBackedSession(result) {
+			return result, errors.New("project is not Ready with a process-backed session")
 		}
 		if err := probe(ctx, "https://"+result.Host+"/-/ready", ""); err != nil {
 			return result, err
@@ -404,10 +436,10 @@ func (driver *recovery) observe(ctx context.Context, id domain.ProjectID, health
 	return result, nil
 }
 
-// continuity checks stable project, public identity, and exact session while allowing reconnect generations to advance.
+// continuity checks that ordinary peer lifecycle work preserves the original session and public identity.
 func continuity(before, after projectEvidence) error {
 	if before.ID != after.ID || before.Path != after.Path || before.Host != after.Host || before.Address != after.Address || before.SessionID == "" || before.SessionID != after.SessionID || after.Generation < before.Generation || !after.HTTPS200 {
-		return errors.New("project session or public identity changed across daemon crash")
+		return errors.New("ordinary peer lifecycle changed the original session or public identity")
 	}
 	return nil
 }
@@ -432,8 +464,8 @@ func (driver *recovery) healthy(ctx context.Context, id domain.ProjectID) (proje
 }
 
 // start requests a fresh idempotent start without replaying a failed recovery intent.
-func (driver *recovery) start(ctx context.Context) (domain.Operation, error) {
-	response, err := driver.client.StartProject(ctx, control.StartProjectRequest{ProjectID: driver.peer, IntentID: domain.IntentID("recovery-start-" + nonce())})
+func (driver *recovery) start(ctx context.Context, id domain.ProjectID) (domain.Operation, error) {
+	response, err := driver.client.StartProject(ctx, control.StartProjectRequest{ProjectID: id, IntentID: domain.IntentID("recovery-start-" + nonce())})
 	return response.Operation, err
 }
 

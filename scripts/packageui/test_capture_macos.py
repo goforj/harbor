@@ -3,12 +3,52 @@
 from pathlib import Path
 import os
 import plistlib
+import re
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
 import capture_macos
+
+
+@unittest.skipUnless(sys.platform == "darwin", "native Swift path behavior requires macOS")
+class RecoveryFixturePathTests(unittest.TestCase):
+    def test_native_caller_matches_registered_canonical_path_and_rejects_drift(self):
+        source = (Path(__file__).resolve().parents[2] / "desktop/packageui/macos/HarborPackageUITests.swift").read_text()
+        method = re.search(r"    private func canonicalRecoveryProjectDirectory\([^\n]+[\s\S]*?\n    }", source)
+        self.assertIsNotNone(method)
+        function = textwrap.dedent(method.group()).replace("private func", "func", 1)
+        program = "import Foundation\nimport Darwin\n" + function + r'''
+let project = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+let registered = CommandLine.arguments[2]
+let canonical = try canonicalRecoveryProjectDirectory(project, registeredPath: registered)
+precondition(canonical == registered)
+precondition(canonical.hasPrefix("/private/tmp/"))
+do {
+    _ = try canonicalRecoveryProjectDirectory(project, registeredPath: project.path)
+    fatalError("caller alias accepted as registered canonical path")
+} catch {}
+do {
+    _ = try canonicalRecoveryProjectDirectory(project, registeredPath: registered + "-foreign")
+    fatalError("different registered project accepted")
+} catch {}
+do {
+    _ = try canonicalRecoveryProjectDirectory(project.appendingPathComponent("missing"), registeredPath: registered)
+    fatalError("missing project accepted")
+} catch {}
+print(canonical)
+'''
+        with tempfile.TemporaryDirectory(prefix="harbor-package-ui-", dir="/tmp") as root:
+            project = Path(root) / "project"
+            project.mkdir()
+            registered = str(project.resolve())
+            result = subprocess.run(["/usr/bin/swift", "-", str(project), registered], input=program,
+                                    text=True, capture_output=True, timeout=60, check=True)
+            self.assertEqual(result.stdout.strip(), registered)
 
 
 @unittest.skipIf(os.name == "nt", "macOS trace fixtures use POSIX paths and links")

@@ -217,7 +217,7 @@ function Save-StartupDiagnostics([string]$Phase) {
         foreach ($row in $rows) { $byID[[int]$row.ProcessId] = $row }
         $facts = @()
         foreach ($row in $rows) {
-            if ($row.Name -notin @('forj.exe','go.exe','node.exe','npm.exe','cmd.exe','outputbroker.exe')) { continue }
+            if ($row.Name -notin @('forj.exe','go.exe','node.exe','npm.exe','cmd.exe','bash.exe','sh.exe','outputbroker.exe')) { continue }
             $held = [Collections.Generic.List[Diagnostics.Process]]::new()
             try {
                 $current = $row

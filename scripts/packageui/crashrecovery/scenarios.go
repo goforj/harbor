@@ -26,9 +26,121 @@ func (driver *recovery) checkOriginal(ctx context.Context, original projectEvide
 	return continuity(original, current)
 }
 
-// scenarios proves ready-session adoption, interrupted-start settlement, and an independent retry.
+// settledProject requires affirmative retirement of every process-owned public projection.
+func settledProject(project domain.ProjectSnapshot, activity control.ProjectActivity) error {
+	if project.State != domain.ProjectFailed || activity.ProjectID != project.ID || activity.Session != nil || len(project.Resources) != 0 {
+		return errors.New("crash recovery has not retired the failed project's session and resources")
+	}
+	for _, app := range project.Apps {
+		if app.Active || app.State != domain.EntityStopped {
+			return errors.New("failed project retains an active App")
+		}
+	}
+	for _, service := range project.Services {
+		if service.State != domain.EntityStopped {
+			return errors.New("failed project retains an active service")
+		}
+	}
+	return nil
+}
+
+// withdrawnRoute requires Harbor's affirmative unknown-host response rather than accepting TLS or network failure.
+func withdrawnRoute(ctx context.Context, host string) error {
+	status, body, err := probeResponse(ctx, "http://"+host+"/-/ready")
+	if err != nil {
+		return err
+	}
+	if status != 421 || body != "Harbor has no route for this host.\n" {
+		return fmt.Errorf("public route was not withdrawn: HTTP %d", status)
+	}
+	return nil
+}
+
+// settledObservation rejects a restarted or retained session in the final independently read observation.
+func settledObservation(project projectEvidence) error {
+	if project.State != domain.ProjectFailed || project.SessionID != "" || project.SessionState != "" || project.Generation != 0 {
+		return errors.New("final crash settlement observation retains a session or is no longer Failed")
+	}
+	return nil
+}
+
+// settled observes safe failure without treating quarantine or an unavailable ingress as successful cleanup.
+func (driver *recovery) settled(ctx context.Context, before projectEvidence, label string) error {
+	return waitFor(ctx, 90*time.Second, func(attempt context.Context) (bool, error) {
+		project, err := driver.project(attempt, before.ID)
+		if err != nil {
+			return false, err
+		}
+		activity, err := driver.client.ProjectActivity(attempt, control.ProjectActivityRequest{ProjectID: before.ID})
+		if err != nil {
+			return false, err
+		}
+		if err := settledProject(project, activity); err != nil {
+			return false, err
+		}
+		after, err := driver.observe(attempt, before.ID, false)
+		driver.evidence.Observations[label] = after
+		if err != nil {
+			return false, err
+		}
+		if after.ID != before.ID || after.Path != before.Path || after.Host != before.Host || after.Address != before.Address {
+			return false, errors.New("crash settlement changed project or DNS identity")
+		}
+		if err := settledObservation(after); err != nil {
+			return false, err
+		}
+		if err := withdrawnRoute(attempt, after.Host); err != nil {
+			return false, err
+		}
+		after.RouteWithdrawn = true
+		driver.evidence.Observations[label] = after
+		return true, nil
+	})
+}
+
+// retry explicitly starts a settled project without claiming its prior process survived the daemon crash.
+func (driver *recovery) retry(ctx context.Context, before projectEvidence, label string) (projectEvidence, error) {
+	driver.evidence.Stage = label
+	if _, err := driver.start(ctx, before.ID); err != nil {
+		return projectEvidence{}, err
+	}
+	after, err := driver.healthy(ctx, before.ID)
+	driver.evidence.Observations[label] = after
+	if err != nil {
+		return after, err
+	}
+	if err := freshSession(before, after); err != nil {
+		return after, err
+	}
+	if before.ID == driver.original {
+		driver.originalCurrent = after
+		driver.originalNeedsRetry = false
+	}
+	return after, nil
+}
+
+// completedStart requires a crash to preserve the historical success of an already completed start.
+func (driver *recovery) completedStart(ctx context.Context, id domain.OperationID) error {
+	snapshot, err := driver.client.Snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	for _, operation := range snapshot.Operations {
+		if operation.ID == id {
+			if operation.State != domain.OperationSucceeded {
+				return errors.New("daemon recovery rewrote an already successful start")
+			}
+			return nil
+		}
+	}
+	return errors.New("completed peer start is absent from bounded operation history")
+}
+
+// scenarios proves released supervised-session settlement, explicit retries, and ordinary peer isolation.
 func (driver *recovery) scenarios(ctx context.Context, original projectEvidence) error {
-	if _, err := driver.start(ctx); err != nil {
+	driver.evidence.Stage = "peer_initial_start"
+	readyOperation, err := driver.start(ctx, driver.peer)
+	if err != nil {
 		return err
 	}
 	peer, err := driver.healthy(ctx, driver.peer)
@@ -42,28 +154,49 @@ func (driver *recovery) scenarios(ctx context.Context, original projectEvidence)
 	if err := driver.checkOriginal(ctx, original, "original_before_ready_crash"); err != nil {
 		return err
 	}
+	driver.originalNeedsRetry = true
+	driver.evidence.Stage = "ready_daemon_crash"
 	if err := driver.crash(ctx); err != nil {
 		return fmt.Errorf("ready crash: %w", err)
 	}
-	after, err := driver.healthy(ctx, driver.peer)
-	driver.evidence.Observations["peer_ready_after_crash"] = after
+	driver.evidence.Stage = "ready_crash_settlement"
+	if err := driver.settled(ctx, original, "original_settled_after_ready_crash"); err != nil {
+		return err
+	}
+	if err := driver.settled(ctx, peer, "peer_settled_after_ready_crash"); err != nil {
+		return err
+	}
+	if err := driver.completedStart(ctx, readyOperation.ID); err != nil {
+		return err
+	}
+	driver.evidence.Assertions = append(driver.evidence.Assertions, "ready crash settled both supervised sessions to Failed with no active session or routes; completed peer Start remained Succeeded")
+	original, err = driver.retry(ctx, original, "original_retry_after_ready_crash")
 	if err != nil {
 		return err
 	}
-	if err := continuity(peer, after); err != nil {
+	peer, err = driver.retry(ctx, peer, "peer_retry_after_ready_crash")
+	if err != nil {
 		return err
 	}
-	if err := driver.checkOriginal(ctx, original, "original_after_ready_crash"); err != nil {
+	if err := distinctProjects(original, peer); err != nil {
 		return err
 	}
-	driver.evidence.Assertions = append(driver.evidence.Assertions, "ready crash preserved both exact sessions, distinct DNS addresses, and trusted HTTPS")
+	if err := driver.checkOriginal(ctx, original, "original_after_ready_crash_retries"); err != nil {
+		return err
+	}
+	driver.evidence.Assertions = append(driver.evidence.Assertions, "explicit retries restored both projects with fresh sessions, stable distinct DNS, and trusted HTTPS")
+	driver.evidence.Stage = "normal_peer_stop"
 	if err := driver.stop(ctx); err != nil {
+		return err
+	}
+	if err := driver.checkOriginal(ctx, original, "original_after_normal_peer_stop"); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(driver.parent, "gate-enabled"), []byte(driver.marker), 0600); err != nil {
 		return err
 	}
-	operation, err := driver.start(ctx)
+	driver.evidence.Stage = "gated_peer_start"
+	operation, err := driver.start(ctx, driver.peer)
 	if err != nil {
 		return err
 	}
@@ -88,7 +221,7 @@ func (driver *recovery) scenarios(ctx context.Context, original projectEvidence)
 				expectedSession = starting.SessionID
 			}
 			if expectedSession != starting.SessionID {
-				return false, errors.New("gated start session changed while waiting for attachment")
+				return false, errors.New("gated start session changed while awaiting its process-backed boundary")
 			}
 		}
 		snapshot, err := driver.client.Snapshot(attempt)
@@ -96,12 +229,12 @@ func (driver *recovery) scenarios(ctx context.Context, original projectEvidence)
 			return false, err
 		}
 		for _, current := range snapshot.Operations {
-			if current.ID == operation.ID && current.ProjectID == driver.peer && current.IntentID == operation.IntentID && current.State == domain.OperationRunning && starting.State == domain.ProjectStarting && starting.SessionID != "" && starting.SessionState == domain.SessionAttached {
+			if current.ID == operation.ID && current.ProjectID == driver.peer && current.IntentID == operation.IntentID && current.State == domain.OperationRunning && starting.State == domain.ProjectStarting && processBackedSession(starting) {
 				driver.evidence.InterruptedOperation = &current
 				return true, nil
 			}
 		}
-		return false, errors.New("gate has not reached an attached Starting session with running operation")
+		return false, errors.New("gate has not reached a process-backed Starting session with running operation")
 	})
 	driver.evidence.Observations["peer_starting_before_crash"] = starting
 	if err != nil {
@@ -117,9 +250,12 @@ func (driver *recovery) scenarios(ctx context.Context, original projectEvidence)
 	if err := driver.checkOriginal(ctx, original, "original_before_starting_crash"); err != nil {
 		return err
 	}
+	driver.originalNeedsRetry = true
+	driver.evidence.Stage = "starting_daemon_crash"
 	if err := driver.crash(ctx); err != nil {
 		return fmt.Errorf("starting crash: %w", err)
 	}
+	driver.evidence.Stage = "starting_crash_settlement"
 	err = waitFor(ctx, 90*time.Second, func(attempt context.Context) (bool, error) {
 		snapshot, err := driver.client.Snapshot(attempt)
 		if err != nil {
@@ -129,70 +265,63 @@ func (driver *recovery) scenarios(ctx context.Context, original projectEvidence)
 			if current.ID != operation.ID {
 				continue
 			}
-			if current.ProjectID != driver.peer || current.IntentID != operation.IntentID {
-				return false, errors.New("interrupted operation correlation changed")
-			}
 			driver.evidence.InterruptedOperation = &current
-			if current.State != domain.OperationFailed || current.Problem == nil {
-				return false, errors.New("interrupted start has not failed with a safe problem")
-			}
-			if err := current.Problem.Validate(); err != nil {
+			if err := interruptedStart(operation, current); err != nil {
 				return false, err
 			}
-			if current.Problem.Code != "project.recovery.process_absent" || !current.Problem.Retryable {
-				return false, errors.New("interrupted start was quarantined or did not settle retryably")
-			}
-			project, err := driver.project(attempt, driver.peer)
-			if err != nil {
-				return false, err
-			}
-			activity, err := driver.client.ProjectActivity(attempt, control.ProjectActivityRequest{ProjectID: driver.peer})
-			if err != nil {
-				return false, err
-			}
-			return (project.State == domain.ProjectFailed || project.State == domain.ProjectStopped) && activity.Session == nil, nil
+			return true, nil
 		}
 		return false, errors.New("interrupted start operation is absent")
 	})
 	if err != nil {
 		return err
 	}
+	if err := driver.settled(ctx, original, "original_settled_after_starting_crash"); err != nil {
+		return err
+	}
+	if err := driver.settled(ctx, starting, "peer_settled_after_starting_crash"); err != nil {
+		return err
+	}
+	driver.evidence.Stage = "gate_absence_before_release"
 	if err := listenerAbsent(ctx, proof.Address); err != nil {
 		return err
 	}
-	failed, err := driver.observe(ctx, driver.peer, false)
-	driver.evidence.Observations["peer_settled_after_crash"] = failed
-	if err != nil {
-		return err
-	}
-	if failed.Address != peer.Address || failed.Host != peer.Host || failed.SessionID != "" {
-		return errors.New("failed peer retained a session or changed DNS identity")
-	}
-	if err := driver.checkOriginal(ctx, original, "original_after_starting_crash"); err != nil {
-		return err
-	}
-	driver.evidence.Assertions = append(driver.evidence.Assertions, "starting crash failed the exact operation retryably, retired its session, and closed the live gate before release")
+	driver.evidence.Assertions = append(driver.evidence.Assertions, "starting crash failed the exact operation retryably, retired both supervised sessions and routes, and closed the live gate before release")
 	if err := os.Remove(filepath.Join(driver.parent, "gate-enabled")); err != nil {
 		return err
 	}
-	if _, err := driver.start(ctx); err != nil {
-		return err
-	}
-	retry, err := driver.healthy(ctx, driver.peer)
-	driver.evidence.Observations["peer_retry_ready"] = retry
+	original, err = driver.retry(ctx, original, "original_retry_after_starting_crash")
 	if err != nil {
 		return err
 	}
-	if retry.Address != peer.Address || retry.Host != peer.Host || retry.SessionID == starting.SessionID || retry.SessionID == peer.SessionID {
-		return errors.New("retry did not establish a fresh session with stable DNS")
+	retry, err := driver.retry(ctx, starting, "peer_retry_after_starting_crash")
+	if err != nil {
+		return err
+	}
+	if retry.SessionID == peer.SessionID {
+		return errors.New("peer retry reused its previous ready session")
 	}
 	if err := distinctProjects(original, retry); err != nil {
 		return err
 	}
-	if err := driver.checkOriginal(ctx, original, "original_after_retry"); err != nil {
+	if err := driver.checkOriginal(ctx, original, "original_after_starting_crash_retries"); err != nil {
 		return err
 	}
-	driver.evidence.Assertions = append(driver.evidence.Assertions, "fresh intent retried peer to Ready with new session, stable DNS and trusted HTTPS; original session remained healthy")
+	driver.evidence.Assertions = append(driver.evidence.Assertions, "explicit retries restored both projects with new sessions and stable DNS; subsequent ordinary peer cleanup must preserve the recovered original session")
+	return nil
+}
+
+// interruptedStart distinguishes safe retryable settlement from quarantine, cancellation, or operation drift.
+func interruptedStart(before, after domain.Operation) error {
+	if after.ID != before.ID || after.ProjectID != before.ProjectID || after.IntentID != before.IntentID || after.Kind != domain.OperationKindProjectStart || after.State != domain.OperationFailed || after.Problem == nil {
+		return errors.New("interrupted start has not failed at its exact operation boundary")
+	}
+	if err := after.Problem.Validate(); err != nil {
+		return err
+	}
+	if after.Problem.Code != "project.recovery.process_absent" || !after.Problem.Retryable {
+		return errors.New("interrupted start was quarantined or did not settle retryably")
+	}
 	return nil
 }
 
@@ -213,7 +342,9 @@ func listenerAbsent(ctx context.Context, address string) error {
 }
 
 // cleanup uses only typed production requests to settle and unregister this invocation's exact peer.
-func (driver *recovery) cleanup(ctx context.Context) error {
+func (driver *recovery) cleanup(ctx context.Context) (result error) {
+	stage := driver.evidence.Stage
+	defer func() { driver.evidence.Stage = stage }()
 	if driver.client != nil {
 		driver.client.Close()
 		driver.client = nil
@@ -235,6 +366,11 @@ func (driver *recovery) cleanup(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	defer func() {
+		if driver.originalNeedsRetry {
+			result = errors.Join(result, driver.restoreOriginal(ctx))
+		}
+	}()
 	if driver.peer == "" {
 		snapshot, err := driver.client.Snapshot(ctx)
 		if err != nil {
@@ -315,9 +451,37 @@ func (driver *recovery) cleanup(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	original, ok := driver.evidence.Observations["original_initial"]
-	if !ok {
-		return errors.New("initial original evidence missing")
+	if driver.originalCurrent.SessionID == "" {
+		return errors.New("original session evidence missing")
 	}
-	return driver.checkOriginal(ctx, original, "original_after_cleanup")
+	if driver.originalNeedsRetry {
+		return nil
+	}
+	return driver.checkOriginal(ctx, driver.originalCurrent, "original_after_cleanup")
+}
+
+// restoreOriginal records an explicit failure-cleanup retry without masking the failed acceptance assertion.
+func (driver *recovery) restoreOriginal(ctx context.Context) error {
+	if driver.originalNeedsRetry {
+		current, err := driver.project(ctx, driver.original)
+		if err != nil {
+			return err
+		}
+		if current.State == domain.ProjectFailed {
+			if err := driver.settled(ctx, driver.originalCurrent, "original_settled_during_failure_cleanup"); err != nil {
+				return err
+			}
+			if _, err := driver.retry(ctx, driver.originalCurrent, "original_restored_during_failure_cleanup"); err != nil {
+				return err
+			}
+		} else if current.State == domain.ProjectReady {
+			if err := driver.checkOriginal(ctx, driver.originalCurrent, "original_unchanged_during_failure_cleanup"); err != nil {
+				return err
+			}
+			driver.originalNeedsRetry = false
+		} else {
+			return errors.New("original cannot be safely restored from an unexpected recovery state")
+		}
+	}
+	return nil
 }

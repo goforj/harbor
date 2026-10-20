@@ -126,6 +126,13 @@ def project():
     return next((row for row in snapshot().get('projects', []) if Path(row['path']).resolve() == directory), None)
 
 
+def created_project():
+    row = project()
+    if row is None and (find('Review choices') or find('Retry registration')):
+        raise RuntimeError('graphical project creation failed; see retained creation output')
+    return row
+
+
 def state(expected):
     def check():
         row = project()
@@ -150,7 +157,16 @@ def capture(name):
         app = application()
         if app is not None:
             try:
-                rows = [node.getRoleName() + ': ' + node.name + ' states=' + str(node.getState().getStates()) for node in nodes(app)]
+                rows = []
+                for node in nodes(app):
+                    rows.append(node.getRoleName() + ': ' + node.name + ' states=' + str(node.getState().getStates()))
+                    if node.name == 'Creation output':
+                        output = accessible_text(node)
+                        if not output:
+                            # WebKit can expose the preformatted text on child
+                            # nodes instead of the labelled section itself.
+                            output = '\n'.join(accessible_text(child) for child in nodes(node))
+                        (EVIDENCE / (name + '-creation-output.txt')).write_text(output[-262144:])
                 (EVIDENCE / (name + '-accessibility.txt')).write_text('\n'.join(rows))
                 return
             except GLib.GError as caught:
@@ -181,6 +197,13 @@ def launch():
         require_running('initial window presentation')
         return window(True)
     wait('window visible', visible, 60)
+
+
+def accessible_text(node):
+    try:
+        return node.queryText().getText(0, -1)
+    except (NotImplementedError, GLib.GError):
+        return ''
 
 
 def window(visible):
@@ -238,7 +261,7 @@ try:
     click('Continue')
     capture('creation-review')
     click('Create project')
-    row = wait('created registration', project, 300)
+    row = wait('created registration', created_project, 300)
     assert row['state'] == 'stopped'
     click('Start project')
     state('ready')
