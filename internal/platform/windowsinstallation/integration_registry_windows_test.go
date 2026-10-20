@@ -37,6 +37,12 @@ func TestNativeIntegrationRegistryPreservesForeignEntries(t *testing.T) {
 	if err := integrationInspectRegistry(key.Key, values); err == nil {
 		t.Fatal("accepted wrong registry value type")
 	}
+	if err := integrationSetRegistryValue(key.Key, "NoModify", integrationRegistryValue{registry.DWORD, []byte{0, 0, 0, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := integrationInspectRegistry(key.Key, values); err == nil {
+		t.Fatal("accepted changed registry data")
+	}
 	if err := integrationSetRegistryValue(key.Key, "NoModify", values["NoModify"]); err != nil {
 		t.Fatal(err)
 	}

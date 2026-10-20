@@ -146,3 +146,64 @@ func integrationTestShellParser(t *testing.T, path string, spec integrationShort
 		t.Fatalf("native icon = %q,%d", actual, iconIndex)
 	}
 }
+
+// TestNativeIntegrationShortcutRejectsDrift proves bytes, hardlink counts and retained identities all gate repair.
+func TestNativeIntegrationShortcutRejectsDrift(t *testing.T) {
+	root := integrationTestAnchor(t)
+	spec := integrationShortcutSpec{Programs: root, Target: filepath.Join(root, "desktop-launcher.exe"), WorkingDirectory: root, Icon: filepath.Join(root, "harbor-desktop.exe")}
+	shortcut, err := integrationCreateShortcut(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := shortcut.Receipt
+	if err := shortcut.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receipt.File.Path, []byte("foreign shortcut"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if admitted, err := integrationAdmitShortcut(spec, receipt); err == nil {
+		admitted.Close()
+		t.Fatal("accepted changed shortcut bytes")
+	}
+	original, err := integrationShellLink(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receipt.File.Path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(receipt.Directory.Path, "alias.lnk")
+	if err := os.Link(receipt.File.Path, link); err != nil {
+		t.Fatal(err)
+	}
+	if admitted, err := integrationAdmitShortcut(spec, receipt); err == nil {
+		admitted.Close()
+		t.Fatal("accepted hardlinked shortcut")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	changed := receipt
+	changed.File.ID = "00000000000000000000000000000000"
+	if admitted, err := integrationAdmitShortcut(spec, changed); err == nil {
+		admitted.Close()
+		t.Fatal("accepted different native file identity")
+	}
+	changed = receipt
+	changed.SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+	if admitted, err := integrationAdmitShortcut(spec, changed); err == nil {
+		admitted.Close()
+		t.Fatal("accepted different planned digest")
+	}
+	admitted, err := integrationAdmitShortcut(spec, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admitted.retire(); err != nil {
+		t.Fatal(err)
+	}
+	if err := admitted.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
