@@ -47,7 +47,13 @@ def main():
                     if time.monotonic() >= deadline:
                         raise RuntimeError('fixture project did not stop before release: ' + project['id'])
                     time.sleep(.25)
-        run('/usr/bin/harbor', 'daemon', 'release')
+        if data.get('network_setup', {}).get('configured'):
+            run('/usr/bin/harbor', 'daemon', 'release')
+            report['network_release'] = 'completed'
+        else:
+            # The package prerm independently refuses removal while any owned
+            # host integration remains, including a partially completed setup.
+            report['network_release'] = 'not configured; native package removal must admit absence'
         run('/usr/bin/harbor', 'daemon', 'stop')
         deadline = time.monotonic() + 30
         while run('systemctl', '--user', 'show', 'harbord.service', '--property=MainPID', '--value') != '0':

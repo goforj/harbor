@@ -135,7 +135,13 @@ def launch():
     global process
     process = subprocess.Popen([APP], stdout=LOG, stderr=subprocess.STDOUT)
     children.append(process)
-    wait('installed UI accessibility', application, 60)
+    def available():
+        code = process.poll()
+        if code is not None:
+            (EVIDENCE / 'launch-exit.json').write_text(json.dumps({'pid': process.pid, 'returncode': code, 'application': APP}) + '\n')
+            raise RuntimeError('installed desktop exited before accessibility registration: ' + str(code))
+        return application()
+    wait('installed UI accessibility', available, 60)
     assert Path('/proc/' + str(process.pid) + '/exe').resolve() == Path(APP)
     assert Path('/proc/' + str(process.pid)).owner() == command('id', '-un')
     wait('window visible', lambda: window(True), 60)

@@ -12,7 +12,7 @@ import recover
 
 
 class RecoveryTests(unittest.TestCase):
-    def exercise(self, states, *, foreign=False, active=False, expired=False):
+    def exercise(self, states, *, foreign=False, active=False, expired=False, configured=True):
         with tempfile.TemporaryDirectory(prefix='harbor-package-ui-', dir='/tmp') as temporary:
             root = Path(temporary).resolve()
             project = root / 'project'
@@ -30,7 +30,7 @@ class RecoveryTests(unittest.TestCase):
             def snapshot():
                 state = next(observed)
                 events.append('snapshot:' + state)
-                return {'projects': [{'id': 'fixture', 'path': '/foreign/project' if foreign else str(project), 'state': state}]}
+                return {'network_setup': {'configured': configured}, 'projects': [{'id': 'fixture', 'path': '/foreign/project' if foreign else str(project), 'state': state}]}
 
             def run(*args):
                 events.append(' '.join(args))
@@ -81,6 +81,13 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn('non-fixture', str(error))
         self.assertEqual(events, ['snapshot:ready'])
         self.assertEqual(report['cleanup'], 'incomplete')
+
+    def test_unconfigured_daemon_uses_native_removal_absence_guard(self):
+        events, report, error = self.exercise(['stopped'], configured=False)
+        self.assertIsNone(error)
+        self.assertNotIn('/usr/bin/harbor daemon release', events)
+        self.assertIn('sudo -n dpkg --purge goforj-harbor', events)
+        self.assertIn('native package removal', report['network_release'])
 
     def test_deleted_but_active_service_does_not_pass_cleanup(self):
         _, report, error = self.exercise(['stopped'], active=True)
