@@ -85,7 +85,6 @@ func (installation *Installation) startAdmitted(path, role string, arguments []s
 			result = errors.Join(result, windows.CloseHandle(handle))
 		}
 	}()
-	inherit := role == "cli" || len(inherited) != 0
 	if role == "cli" {
 		for _, file := range []*os.File{os.Stdin, os.Stdout, os.Stderr} {
 			var handle windows.Handle
@@ -94,10 +93,23 @@ func (installation *Installation) startAdmitted(path, role string, arguments []s
 			}
 			streams = append(streams, handle)
 		}
+	} else if role == "uninstall-guard" {
+		// Windows console initialization must not inherit unspecified elevated standard-handle values alongside the event capabilities.
+		security := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), InheritHandle: 1}
+		for _, access := range []uint32{windows.GENERIC_READ, windows.GENERIC_WRITE, windows.GENERIC_WRITE} {
+			handle, err := windows.CreateFile(windows.StringToUTF16Ptr(`\\?\GLOBALROOT\Device\Null`), access, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, &security, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+			if err != nil {
+				return nil, fmt.Errorf("open fixed null standard stream: %w", err)
+			}
+			streams = append(streams, handle)
+		}
+	}
+	if len(streams) != 0 {
 		startup.Flags = windows.STARTF_USESTDHANDLES
 		startup.StdInput, startup.StdOutput, startup.StdErr = streams[0], streams[1], streams[2]
 	}
 	inheritedHandles := append(append([]windows.Handle(nil), streams...), inherited...)
+	inherit := len(inheritedHandles) != 0
 	if len(inheritedHandles) != 0 {
 		if err := attributes.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&inheritedHandles[0]), uintptr(len(inheritedHandles))*unsafe.Sizeof(inheritedHandles[0])); err != nil {
 			return nil, err
