@@ -7,8 +7,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -29,26 +31,46 @@ func TestUninstallGuardAdmission(t *testing.T) {
 	if _, err := installation.HoldUninstallGuard(ctx, os.Stdin); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	for _, path := range []string{`C:\Users\runner\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, `C:\Windows\Temp\foreign\HarborUninstall.exe`, `C:\Windows\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\foreign.exe`, `C:\Windows\Temp\HarborUninstall-` + strings.Repeat("A", 32) + `\HarborUninstall.exe`, `C:\Windows\Temp\..\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`} {
-		if err := admitUninstallGuardStagePath(path, `C:\Windows`); err == nil {
+	for _, path := range []string{`C:\Windows\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, `C:\Users\runner\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, `C:\Program Files\GoForj\foreign\HarborUninstall.exe`, `C:\Program Files\GoForj\HarborUninstall-` + strings.Repeat("a", 32) + `\foreign.exe`, `C:\Program Files\GoForj\HarborUninstall-` + strings.Repeat("A", 32) + `\HarborUninstall.exe`, `C:\Program Files\GoForj\..\GoForj\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`} {
+		if err := admitUninstallGuardStagePath(path, `C:\Program Files\GoForj`); err == nil {
 			t.Fatalf("admitted guard stage %q", path)
 		}
 	}
-	if err := admitUninstallGuardStagePath(`C:\Windows\Temp\HarborUninstall-`+strings.Repeat("a", 32)+`\HarborUninstall.exe`, `C:\Windows`); err != nil {
+	if err := admitUninstallGuardStagePath(`C:\Program Files\GoForj\HarborUninstall-`+strings.Repeat("a", 32)+`\HarborUninstall.exe`, `C:\Program Files\GoForj`); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // TestUninstallGuardStageDescriptor refuses foreign grants, owners, or weakened mandatory labels without changing native state.
 func TestUninstallGuardStageDescriptor(t *testing.T) {
+	const userSID = "S-1-5-21-1-2-3-1000"
+	uninstallGuardStageSDDL := uninstallGuardStagePolicy(userSID)
 	exact, err := windows.SecurityDescriptorFromString(uninstallGuardStageSDDL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := admitUninstallGuardStageDescriptor(exact); err != nil {
+	if err := admitUninstallGuardStageDescriptor(exact, true, userSID); err != nil {
 		t.Fatal(err)
 	}
+	fileDescriptor, err := windows.SecurityDescriptorFromString(strings.Replace(uninstallGuardStageSDDL, "(ML;OICI;", "(ML;;", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admitUninstallGuardStageDescriptor(fileDescriptor, false, userSID); err != nil {
+		t.Fatal(err)
+	}
+	if err := admitUninstallGuardStageDescriptor(fileDescriptor, true, userSID); err == nil {
+		t.Fatal("nonpropagating directory label admitted")
+	}
+	if err := admitUninstallGuardStageDescriptor(exact, false, userSID); err == nil {
+		t.Fatal("propagating regular-file label admitted")
+	}
+
 	for _, text := range []string{
+		strings.Replace(uninstallGuardStageSDDL, "0x1200a9", "FA", 1),
+		strings.Replace(uninstallGuardStageSDDL, userSID, "S-1-5-21-1-2-3-1001", 1),
+		strings.Replace(uninstallGuardStageSDDL, "(A;OICI;0x1200a9;;;"+userSID+")", "", 1),
+		strings.Replace(uninstallGuardStageSDDL, "(A;OICI;0x1200a9;;;"+userSID+")", "(A;;0x1200a9;;;"+userSID+")", 1),
 		strings.Replace(uninstallGuardStageSDDL, "O:BA", "O:SY", 1),
 		strings.Replace(uninstallGuardStageSDDL, "D:P", "D:", 1),
 		strings.Replace(uninstallGuardStageSDDL, "S:P", "(A;;FA;;;BU)S:P", 1),
@@ -65,7 +87,7 @@ func TestUninstallGuardStageDescriptor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("descriptor fixture %q: %v", text, err)
 		}
-		if err := admitUninstallGuardStageDescriptor(descriptor); err == nil {
+		if err := admitUninstallGuardStageDescriptor(descriptor, true, userSID); err == nil {
 			t.Fatalf("admitted guard descriptor %q", text)
 		}
 	}
@@ -186,6 +208,8 @@ func TestNativeUninstallGuardWorker(t *testing.T) {
 	if root == "" || agent == "" {
 		t.Skip("signed native maintenance agent fixture was not configured")
 	}
+	facts, factsErr := inspectRuntimeToken(windows.GetCurrentProcessToken())
+	t.Logf("native guard staging creator facts %+v (inspection error %v)", facts, factsErr)
 	publisher := os.Getenv("HARBOR_ADMISSION_PUBLISHER")
 	payloads := map[string][]byte{".txt": []byte(publisher)}
 	for extension, path := range map[string]string{".exe": agent, ".ps1": os.Getenv("HARBOR_ADMISSION_SIGNED_SCRIPT"), ".cer": os.Getenv("HARBOR_ADMISSION_CERTIFICATE")} {
@@ -209,6 +233,9 @@ func TestNativeUninstallGuardWorker(t *testing.T) {
 	}
 	defer installation.Close()
 	staged := writeNativeGuardStage(t, payloads[".exe"])
+	if err := probeNativeGuardStage(staged.Name()); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	guard, err := installation.HoldUninstallGuard(ctx, staged)
@@ -271,25 +298,38 @@ func TestNativeUninstallGuardWorker(t *testing.T) {
 	}
 }
 
-// writeNativeGuardStage creates only a unique protected Windows Temp fixture and preserves any unknown contents during cleanup.
+// writeNativeGuardStage creates only a unique protected vendor audit-cache fixture and preserves any unknown contents during cleanup.
 func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 	t.Helper()
-	system, err := windows.GetWindowsDirectory()
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		t.Fatal(err)
 	}
+	uninstallGuardStageSDDL := uninstallGuardStagePolicy(user.User.Sid.String())
+	parents, err := RetainUninstallStageParent()
+	if err != nil {
+		t.Fatalf("retain native guard protected vendor: %v", err)
+	}
+	t.Cleanup(func() {
+		for index := len(parents) - 1; index >= 0; index-- {
+			if err := parents[index].Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	vendor := parents[len(parents)-1].Name()
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
-		t.Fatal(err)
+		t.Fatalf("generate native guard stage nonce: %v", err)
 	}
-	root := filepath.Join(system, "Temp", "HarborUninstall-"+hex.EncodeToString(nonce[:]))
+	root := filepath.Join(vendor, "HarborUninstall-"+hex.EncodeToString(nonce[:]))
 	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(uninstallGuardStageSDDL, "S:")[0])
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("construct native guard creation DACL: %v", err)
 	}
 	attributes := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
 	if err := windows.CreateDirectory(windows.StringToUTF16Ptr(root), attributes); err != nil {
-		t.Fatal(err)
+		t.Fatalf("create native guard stage directory %q: %v", root, err)
 	}
 	labelNativeGuardStage(t, root, true)
 	t.Cleanup(func() {
@@ -300,12 +340,12 @@ func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 	path := filepath.Join(root, "HarborUninstall.exe")
 	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_WRITE, 0, attributes, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create native guard stage file %q: %v", path, err)
 	}
 	file := os.NewFile(uintptr(handle), path)
 	_, writeErr := file.Write(payload)
 	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write/sync/close native guard stage file %q: %v", path, err)
 	}
 	labelNativeGuardStage(t, path, false)
 	t.Cleanup(func() {
@@ -315,7 +355,7 @@ func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 	})
 	retained, err := openUninstallGuardObject(path, false)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("retain native guard stage file %q: %v", path, err)
 	}
 	t.Cleanup(func() {
 		if err := retained.Close(); err != nil {
@@ -332,20 +372,69 @@ func labelNativeGuardStage(t *testing.T, path string, directory bool) {
 	if directory {
 		flags |= windows.FILE_FLAG_BACKUP_SEMANTICS
 	}
-	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.WRITE_OWNER, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.WRITE_OWNER|windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open native guard label target %q (directory=%t): %v", path, directory, err)
 	}
 	defer windows.CloseHandle(handle)
 	descriptor, err := windows.SecurityDescriptorFromString(uninstallGuardStageSDDL)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("construct native guard mandatory label: %v", err)
 	}
 	label, _, err := descriptor.SACL()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("extract native guard mandatory label: %v", err)
 	}
 	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.LABEL_SECURITY_INFORMATION, nil, nil, nil, label); err != nil {
-		t.Fatal(err)
+		t.Fatalf("set native guard mandatory label %q: %v", path, err)
 	}
+}
+
+// probeNativeGuardStage proves the actual restricted token can load both stage objects but cannot mutate their bytes, names, or security.
+func probeNativeGuardStage(path string) (result error) {
+	var source windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE, &source); err != nil {
+		return err
+	}
+	defer source.Close()
+	restricted, err := restrictedRuntimeToken(source)
+	if err != nil {
+		return err
+	}
+	defer restricted.Close()
+	var token windows.Token
+	if err := windows.DuplicateTokenEx(restricted, windows.TOKEN_IMPERSONATE|windows.TOKEN_QUERY, nil, windows.SecurityImpersonation, windows.TokenImpersonation, &token); err != nil {
+		return err
+	}
+	defer token.Close()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := windows.SetThreadToken(nil, token); err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, windows.RevertToSelf()) }()
+	for _, target := range []string{filepath.Dir(path), path} {
+		flags := uint32(windows.FILE_FLAG_OPEN_REPARSE_POINT)
+		if target != path {
+			flags |= windows.FILE_FLAG_BACKUP_SEMANTICS
+		}
+		handle, err := windows.CreateFile(windows.StringToUTF16Ptr(target), windows.GENERIC_READ|windows.GENERIC_EXECUTE, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
+		if err != nil {
+			return fmt.Errorf("actual restricted loader read/execute %q: %w", target, err)
+		}
+		if err := windows.CloseHandle(handle); err != nil {
+			return err
+		}
+		for _, access := range []uint32{windows.GENERIC_WRITE, windows.DELETE, windows.WRITE_DAC, windows.WRITE_OWNER} {
+			handle, err := windows.CreateFile(windows.StringToUTF16Ptr(target), access, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
+			if err == nil {
+				windows.CloseHandle(handle)
+				return fmt.Errorf("actual restricted loader gained stage mutation %#x on %q", access, target)
+			}
+			if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+				return fmt.Errorf("actual restricted loader mutation %#x on %q failed ambiguously: %w", access, target, err)
+			}
+		}
+	}
+	return nil
 }

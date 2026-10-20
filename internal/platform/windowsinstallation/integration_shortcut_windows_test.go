@@ -31,7 +31,14 @@ func TestIntegrationShellLinkBounds(t *testing.T) {
 	if flags := binary.LittleEndian.Uint32(first[20:]); flags&0x20 != 0 || flags&0xd2 != 0xd2 {
 		t.Fatalf("unexpected shortcut flags %#x", flags)
 	}
-	for _, bad := range []string{`relative.exe`, `C:\a\..\launcher.exe`, `\\server\share\launcher.exe`, "C:\\nul\x00.exe"} {
+	block := first[len(first)-4-0x314 : len(first)-4]
+	if binary.LittleEndian.Uint32(block) != 0x314 || binary.LittleEndian.Uint32(block[4:]) != 0xa0000001 {
+		t.Fatal("shortcut omits native raw target block")
+	}
+	if !bytes.Equal(block[268:268+len(integrationUTF16Bytes(spec.Target, true))], integrationUTF16Bytes(spec.Target, true)) {
+		t.Fatal("shortcut target block differs")
+	}
+	for _, bad := range []string{`relative.exe`, `C:\a\..\launcher.exe`, `\\server\share\launcher.exe`, `C:\%TEMP%\launcher.exe`, "C:\\nul\x00.exe"} {
 		changed := spec
 		changed.Target = bad
 		if _, err := integrationShellLink(changed); err == nil {
@@ -44,6 +51,21 @@ func TestIntegrationShellLinkBounds(t *testing.T) {
 func TestNativeIntegrationShortcut(t *testing.T) {
 	root := integrationTestAnchor(t)
 	spec := integrationShortcutSpec{Programs: root, Target: filepath.Join(root, "desktop-launcher.exe"), WorkingDirectory: root, Icon: filepath.Join(root, "harbor-desktop.exe")}
+	for _, path := range []string{spec.Target, spec.Icon} {
+		descriptor, err := windows.SecurityDescriptorFromString(integrationShortcutFileSDDL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attributes := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
+		pointer, _ := windows.UTF16PtrFromString(path)
+		handle, err := windows.CreateFile(pointer, windows.GENERIC_WRITE, 0, &attributes, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := windows.CloseHandle(handle); err != nil {
+			t.Fatal(err)
+		}
+	}
 	shortcut, err := integrationCreateShortcut(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +154,7 @@ func integrationTestShellParser(t *testing.T, path string, spec integrationShort
 		buffer := make([]uint16, 32768)
 		arguments := []uintptr{uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer))}
 		arguments = append(arguments, check.extra...)
-		if status := integrationTestCOMCall(link, check.method, arguments...); int32(status) < 0 {
+		if status := integrationTestCOMCall(link, check.method, arguments...); status != 0 {
 			t.Fatalf("Shell Link getter %d: %#x", check.method, status)
 		}
 		if actual := windows.UTF16ToString(buffer); actual != check.expected {

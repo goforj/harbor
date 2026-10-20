@@ -44,7 +44,7 @@ $launcherPath = Join-Path $InstallRoot 'desktop-launcher.exe'
 $desktopPath = Join-Path $InstallRoot $rolePaths['desktop']
 $daemonPath = Join-Path $InstallRoot $rolePaths['daemon']
 $cliPath = Join-Path $InstallRoot 'harbor.exe'
-$projectRoot = Join-Path $env:TEMP ('harbor-installed-ui-' + [Guid]::NewGuid().ToString('N'))
+$projectRoot = Join-Path (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'Temp') ('harbor-package-ui-' + [Guid]::NewGuid().ToString('N'))
 $projectDirectory = Join-Path $projectRoot 'project'
 New-Item -ItemType Directory -Path $projectRoot | Out-Null
 $script:window = $null
@@ -117,6 +117,27 @@ function Await-ProjectState([string]$Expected) {
         if ($project.state -in @('failed', 'quarantined')) { throw "project entered $($project.state)" }
         return $project.state -ceq $Expected
     } 240
+}
+function Unregister-Fixture($Project) {
+    if (-not [string]::Equals($Project.path, $projectDirectory, [StringComparison]::OrdinalIgnoreCase)) { throw 'refusing removal outside the exact created fixture' }
+    if (-not (Test-Path -LiteralPath $env:HARBOR_PACKAGE_UI_APPROVAL_TOOL -PathType Leaf)) { throw 'fixture approval tool is missing' }
+    $intent = 'intent-windows-ui-remove-' + $Project.id
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    do {
+        $output = & $cliPath remove $Project.id --intent $intent --json
+        if ($LASTEXITCODE -ne 0) { throw 'fixture unregister did not return authoritative state' }
+        $result = $output | ConvertFrom-Json
+        $operation = $result.operation
+        if ($operation.state -ceq 'succeeded') { return }
+        if ($operation.state -in @('failed','cancelled')) { throw "fixture unregister ended $($operation.state)" }
+        if ($operation.state -ceq 'requires_approval') {
+            & $env:HARBOR_PACKAGE_UI_APPROVAL_TOOL --project-id $Project.id --operation-id $operation.id `
+                --intent-id $intent --revision $result.revision --project-directory $projectDirectory
+            if ($LASTEXITCODE -ne 0) { throw 'exact fixture removal approval failed' }
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'fixture unregister exceeded its cleanup deadline'
 }
 function Assert-HTTPS {
     $project = Get-Project
@@ -228,7 +249,7 @@ try {
     try { [HarborUIProfile]::QuiesceLaunchedUIs() } catch { Write-Warning "failed to quiesce exact launched UI handles: $_" }
     throw $originalFailure
 } finally {
-    $cleanup = [ordered]@{ launched_token_facts=[HarborUIProfile]::LastLaunchFacts; gui_quiescent=$false; fixtures_stopped=$false; network_released=$false; daemon_absent=$false; retained_files=@{}; missing_files=@() }
+    $cleanup = [ordered]@{ launched_token_facts=[HarborUIProfile]::LastLaunchFacts; gui_quiescent=$false; fixtures_stopped=$false; fixture_unregistered=$false; network_released=$false; daemon_absent=$false; retained_files=@{}; missing_files=@() }
     try {
         [HarborUIProfile]::QuiesceLaunchedUIs()
         $cleanup.gui_quiescent = $true
@@ -241,6 +262,11 @@ try {
             Wait-Until 'stopped cleanup fixture' { (Get-Project).state -ceq 'stopped' } 120
         }
         $cleanup.fixtures_stopped = $true
+        if ($null -ne $registered) {
+            Unregister-Fixture $registered
+            if ($null -ne (Get-Project)) { throw 'removed fixture registration remains' }
+        }
+        $cleanup.fixture_unregistered = $true
         & $cliPath daemon release
         if ($LASTEXITCODE -ne 0) { throw 'network release did not complete' }
         $cleanup.network_released = $true

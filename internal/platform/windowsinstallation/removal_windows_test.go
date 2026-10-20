@@ -160,3 +160,25 @@ func TestNativePayloadRemovalPrevalidatesEveryObject(t *testing.T) {
 		t.Fatal("earlier file deleted before full admission")
 	}
 }
+
+// TestNativePayloadRemovalKeepsPinnedSharedVendor permits the retained maintenance cache outside the app root without retiring its shared ancestor.
+func TestNativePayloadRemovalKeepsPinnedSharedVendor(t *testing.T) {
+	root, objects := deletionFixture(t, "pinned-vendor")
+	vendor := filepath.Dir(root)
+	pin, err := openRetained(vendor, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pin.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := deletePayload(ctx, objects, ctx.Err); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatal("installed application root remains")
+	}
+	if _, err := os.Stat(vendor); err != nil {
+		t.Fatal("shared protected vendor ancestor was removed")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -62,7 +63,7 @@ func (installation *Installation) InstallMachineIntegration(ctx context.Context)
 	}
 	spool, err := preparePrivilegedSpool(programData, installation.selection.UserSID)
 	if err != nil {
-		return err
+		return fmt.Errorf("install helper spool: %w", err)
 	}
 	owned := &machineIntegration{Spool: spool}
 	committed := false
@@ -80,11 +81,11 @@ func (installation *Installation) InstallMachineIntegration(ctx context.Context)
 	}()
 	owned.Registry, err = integrationCreateRegistry(values)
 	if err != nil {
-		return err
+		return fmt.Errorf("install uninstall registration: %w", err)
 	}
 	owned.Shortcut, err = integrationCreateShortcut(spec)
 	if err != nil {
-		return err
+		return fmt.Errorf("install Start Menu shortcut: %w", err)
 	}
 	receipt := integrationReceipt{SchemaVersion: 1, InstallationID: installation.selection.InstallationID, UserSID: installation.selection.UserSID, BundleDigest: installation.selection.BundleDigest, Shortcut: owned.Shortcut.Receipt}
 	for _, directory := range spool.Directories {
@@ -114,7 +115,7 @@ func (installation *Installation) ValidateMachineIntegration(ctx context.Context
 }
 
 // RemoveMachineIntegration retires admitted machine projections while the caller holds machine and stopped-runtime leases.
-func (installation *Installation) RemoveMachineIntegration(ctx context.Context) (result error) {
+func (installation *Installation) RemoveMachineIntegration(ctx context.Context, check func() error) (result error) {
 	if err := installation.requireIntegrationAuthority(ctx); err != nil {
 		return err
 	}
@@ -123,23 +124,32 @@ func (installation *Installation) RemoveMachineIntegration(ctx context.Context) 
 		return err
 	}
 	defer func() { result = errors.Join(result, owned.Close()) }()
-	if err := ctx.Err(); err != nil {
+	guarded := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return check()
+	}
+	if err := guarded(); err != nil {
 		return err
 	}
 	if err := owned.Registry.retire(); err != nil {
 		return err
 	}
-	if err := owned.Shortcut.retire(); err != nil {
+	if err := owned.Shortcut.retireChecked(guarded); err != nil {
 		return err
 	}
-	if err := owned.State.retire(); err != nil {
+	if err := owned.State.retireChecked(guarded); err != nil {
 		return err
 	}
 	if err := owned.State.Close(); err != nil {
 		return err
 	}
 	owned.State = nil
-	if err := owned.Spool.retire(); err != nil {
+	if err := owned.Spool.retireChecked(guarded); err != nil {
+		return err
+	}
+	if err := guarded(); err != nil {
 		return err
 	}
 	return retireIntegrationFile(owned.Receipt)
@@ -225,10 +235,18 @@ func (installation *Installation) admitMachineIntegration(removal bool) (_ *mach
 
 // retire removes owned empty directories deepest first while preserving shared foreign neighbors.
 func (spool *privilegedSpool) retire() error {
+	return spool.retireChecked(func() error { return nil })
+}
+
+// retireChecked rechecks the required runtime lease before each directory retirement request.
+func (spool *privilegedSpool) retireChecked(check func() error) error {
 	for index := len(spool.Directories) - 1; index >= 0; index-- {
 		directory := &spool.Directories[index]
 		if !directory.Object.Created {
 			continue
+		}
+		if err := check(); err != nil {
+			return err
 		}
 		err := retireIntegrationFile(directory.File)
 		if index < 2 && errors.Is(err, windows.ERROR_DIR_NOT_EMPTY) {

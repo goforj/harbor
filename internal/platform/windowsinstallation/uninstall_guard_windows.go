@@ -317,6 +317,39 @@ func admitUninstallGuardEvent(handle windows.Handle, rights uint32) error {
 	return nil
 }
 
+// RetainUninstallStageParent pins the OS-derived protected vendor namespace used for retained maintenance audit copies.
+// It creates only the fixed vendor directory when absent and never rewrites an existing parent's permissions.
+// Callers retain these handles throughout stage use, then close them in reverse order without removing the vendor directory.
+func RetainUninstallStageParent() (files []*os.File, result error) {
+	parents := &Installation{}
+	defer func() {
+		if result != nil {
+			result = errors.Join(result, parents.Close())
+			files = nil
+		}
+	}()
+	root, err := MachineRoot()
+	if err != nil {
+		return nil, err
+	}
+	vendor := filepath.Dir(root)
+	if err := parents.retainDirectoryChain(filepath.Dir(vendor)); err != nil {
+		return nil, err
+	}
+	if err := createMachineDirectory(vendor); err != nil {
+		return nil, err
+	}
+	file, err := openRetained(vendor, true)
+	if err != nil {
+		return nil, err
+	}
+	parents.handles = append(parents.handles, file)
+	if err := admitSecurity(windows.Handle(file.Fd()), true); err != nil {
+		return nil, err
+	}
+	return parents.handles, nil
+}
+
 // retainUninstallGuardStage pins the only admitted copy layout before signature verification and restricted process creation.
 func (installation *Installation) retainUninstallGuardStage(staged *os.File) (files []*os.File, result error) {
 	defer func() {
@@ -330,15 +363,16 @@ func (installation *Installation) retainUninstallGuardStage(staged *os.File) (fi
 	if _, err := installation.Path("uninstaller"); err != nil {
 		return nil, err
 	}
-	system, err := windows.GetWindowsDirectory()
+	files, err := RetainUninstallStageParent()
 	if err != nil {
 		return nil, err
 	}
+	vendor := files[len(files)-1].Name()
 	path := staged.Name()
-	if err := admitUninstallGuardStagePath(path, system); err != nil {
-		return nil, err
+	if err := admitUninstallGuardStagePath(path, vendor); err != nil {
+		return files, err
 	}
-	for _, current := range []string{system, filepath.Join(system, "Temp"), filepath.Dir(path), path} {
+	for _, current := range []string{filepath.Dir(path), path} {
 		directory := current != path
 		file, err := openUninstallGuardObject(current, directory)
 		if err != nil {
@@ -350,7 +384,7 @@ func (installation *Installation) retainUninstallGuardStage(staged *os.File) (fi
 			if err != nil {
 				return files, err
 			}
-			if err := admitUninstallGuardStageDescriptor(descriptor); err != nil {
+			if err := admitUninstallGuardStageDescriptor(descriptor, directory, installation.selection.UserSID); err != nil {
 				return files, err
 			}
 		}
@@ -370,10 +404,10 @@ func (installation *Installation) retainUninstallGuardStage(staged *os.File) (fi
 }
 
 // admitUninstallGuardStagePath rejects caller temp paths and any unreviewed executable or directory spelling.
-func admitUninstallGuardStagePath(path, system string) error {
+func admitUninstallGuardStagePath(path, vendor string) error {
 	stage := filepath.Base(filepath.Dir(path))
 	suffix, ok := strings.CutPrefix(stage, "HarborUninstall-")
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || !strings.EqualFold(filepath.Base(path), "HarborUninstall.exe") || !ok || !identityPattern.MatchString(suffix) || !strings.EqualFold(filepath.Dir(filepath.Dir(path)), filepath.Join(system, "Temp")) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || !strings.EqualFold(filepath.Base(path), "HarborUninstall.exe") || !ok || !identityPattern.MatchString(suffix) || !strings.EqualFold(filepath.Dir(filepath.Dir(path)), vendor) {
 		return errors.New("uninstall guard copy is outside protected Windows staging")
 	}
 	return nil
@@ -406,8 +440,14 @@ func openUninstallGuardObject(path string, directory bool) (*os.File, error) {
 	return file, nil
 }
 
+// uninstallGuardStagePolicy permits the selected restricted loader to read/execute only, without giving it any staging mutation authority.
+func uninstallGuardStagePolicy(userSID string) string {
+	return strings.Replace(uninstallGuardStageSDDL, "S:", "(A;OICI;0x1200a9;;;"+userSID+")S:", 1)
+}
+
 // admitUninstallGuardStageDescriptor admits only the protected machine grants and inherited high mandatory label used by maintenance staging.
-func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR) error {
+// Windows preserves label propagation on directories and removes it from regular files.
+func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, directory bool, userSID string) error {
 	owner, _, err := descriptor.Owner()
 	if err != nil {
 		return err
@@ -423,17 +463,21 @@ func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR)
 	if err != nil {
 		return err
 	}
-	if dacl == nil || dacl.AceCount != 2 {
+	if dacl == nil || dacl.AceCount != 3 {
 		return errors.New("uninstall guard stage has unexpected access grants")
 	}
 	seen := map[string]bool{}
-	for index := uint32(0); index < 2; index++ {
+	for index := uint32(0); index < 3; index++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, index, &ace); err != nil {
 			return err
 		}
 		principal := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
-		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || ace.Mask != fileAllAccess || (principal != administratorsSID && principal != systemSID) || seen[principal] {
+		expectedMask := windows.ACCESS_MASK(fileAllAccess)
+		if principal == userSID {
+			expectedMask = 0x1200a9
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || ace.Mask != expectedMask || (principal != administratorsSID && principal != systemSID && principal != userSID) || seen[principal] {
 			return errors.New("uninstall guard stage ACL differs from its protected machine policy")
 		}
 		seen[principal] = true
@@ -449,8 +493,12 @@ func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR)
 	if err := windows.GetAce(sacl, 0, &label); err != nil {
 		return err
 	}
-	if label.Header.AceType != 0x11 || label.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || label.Mask != 1 || (*windows.SID)(unsafe.Pointer(&label.SidStart)).String() != "S-1-16-12288" {
-		return errors.New("uninstall guard stage high mandatory label differs")
+	expectedFlags := byte(0)
+	if directory {
+		expectedFlags = windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE
+	}
+	if label.Header.AceType != 0x11 || label.Header.AceFlags != expectedFlags || label.Mask != 1 || (*windows.SID)(unsafe.Pointer(&label.SidStart)).String() != "S-1-16-12288" {
+		return fmt.Errorf("uninstall guard stage high mandatory label differs: type=%#x flags=%#x mask=%#x sid=%s descriptor=%s", label.Header.AceType, label.Header.AceFlags, label.Mask, (*windows.SID)(unsafe.Pointer(&label.SidStart)).String(), descriptor.String())
 	}
 	return nil
 }

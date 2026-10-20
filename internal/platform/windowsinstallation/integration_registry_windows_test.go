@@ -81,6 +81,10 @@ func TestIntegrationRegistryParentAllowsRedundantReadGrants(t *testing.T) {
 		{"redundant readers", "O:BAD:(A;;KA;;;BA)(A;;KA;;;SY)(A;;KR;;;BU)(A;;KR;;;BU)", true},
 		{"reader mutation", "O:BAD:(A;;KA;;;BA)(A;;KA;;;SY)(A;;KR;;;BU)(A;;KW;;;BU)", false},
 		{"foreign owner", "O:BUD:(A;;KA;;;BA)(A;;KA;;;SY)(A;;KR;;;BU)", false},
+		{"terminal compatibility", "O:SYD:(A;;KA;;;BA)(A;;KA;;;SY)(A;;0x3001f;;;S-1-5-13)", true},
+		{"terminal security mutation", "O:SYD:(A;;KA;;;BA)(A;;KA;;;SY)(A;;0x7001f;;;S-1-5-13)", false},
+		{"terminal unexpected inheritance", "O:SYD:(A;;KA;;;BA)(A;;KA;;;SY)(A;CI;0x3001f;;;S-1-5-13)", false},
+		{"ordinary delete mutation", "O:SYD:(A;;KA;;;BA)(A;;KA;;;SY)(A;;0x3001f;;;BU)", false},
 		{"trusted inherited", "O:BAD:(A;ID;KA;;;BA)(A;ID;KA;;;SY)(A;ID;KR;;;BU)", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -103,7 +103,7 @@ func removeInstallation(ctx context.Context, installation *Installation, guard *
 	if err := guard.Check(); err != nil {
 		return err
 	}
-	if err := installation.RemoveMachineIntegration(ctx); err != nil {
+	if err := installation.RemoveMachineIntegration(ctx, guard.Check); err != nil {
 		return err
 	}
 	if err := installation.Close(); err != nil {
@@ -157,7 +157,7 @@ func snapshotDeletion(installation *Installation) ([]deletionObject, error) {
 			continue
 		}
 		seen[strings.ToLower(file.Name())] = true
-		if information.IsDir() && !strings.EqualFold(file.Name(), filepath.Dir(installation.root)) && !strings.EqualFold(file.Name(), installation.root) && !strings.HasPrefix(strings.ToLower(file.Name()), strings.ToLower(installation.root+string(filepath.Separator))) {
+		if information.IsDir() && !strings.EqualFold(file.Name(), installation.root) && !strings.HasPrefix(strings.ToLower(file.Name()), strings.ToLower(installation.root+string(filepath.Separator))) {
 			continue
 		}
 		identity, err := identifyFile(windows.Handle(file.Fd()))

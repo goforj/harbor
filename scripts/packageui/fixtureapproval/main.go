@@ -129,7 +129,7 @@ func fixtureRoot(directory string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	temporary, err := filepath.EvalSymlinks("/tmp")
+	temporary, err := fixtureTemporaryRoot()
 	if err != nil {
 		return "", err
 	}

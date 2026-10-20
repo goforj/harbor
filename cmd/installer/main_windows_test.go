@@ -87,13 +87,13 @@ func TestWindowsMaintenanceParentSyntax(t *testing.T) {
 
 // TestWindowsMaintenanceStagePaths refuses mutable caller Temp paths and noncanonical continuation names.
 func TestWindowsMaintenanceStagePaths(t *testing.T) {
-	system := `C:\Windows`
-	stage := `C:\Windows\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`
-	if err := admitMaintenanceStagePath(stage, system); err != nil {
+	vendor := `C:\Program Files\GoForj`
+	stage := `C:\Program Files\GoForj\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`
+	if err := admitMaintenanceStagePath(stage, vendor); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{`C:\Users\runner\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, strings.Replace(stage, "HarborUninstall.exe", "foreign.exe", 1), strings.Replace(stage, "HarborUninstall-", "foreign-", 1), strings.Replace(stage, strings.Repeat("a", 32), strings.Repeat("A", 32), 1), strings.Replace(stage, `Temp\`, `Temp\..\Temp\`, 1), `relative\HarborUninstall.exe`, stage + `:alternate`} {
-		if err := admitMaintenanceStagePath(path, system); err == nil {
+	for _, path := range []string{`C:\Windows\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, `C:\Users\runner\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, strings.Replace(stage, "HarborUninstall.exe", "foreign.exe", 1), strings.Replace(stage, "HarborUninstall-", "foreign-", 1), strings.Replace(stage, strings.Repeat("a", 32), strings.Repeat("A", 32), 1), strings.Replace(stage, `GoForj\`, `GoForj\..\GoForj\`, 1), `relative\HarborUninstall.exe`, stage + `:alternate`} {
+		if err := admitMaintenanceStagePath(path, vendor); err == nil {
 			t.Fatalf("admitted staging path %q", path)
 		}
 	}
@@ -101,14 +101,34 @@ func TestWindowsMaintenanceStagePaths(t *testing.T) {
 
 // TestWindowsMaintenanceStageSecurity exercises every staged ACL and mandatory-label rejection without host mutation.
 func TestWindowsMaintenanceStageSecurity(t *testing.T) {
+	const userSID = "S-1-5-21-1-2-3-1000"
+	maintenanceStageSDDL := maintenanceStagePolicy(userSID)
 	exact, err := windows.SecurityDescriptorFromString(maintenanceStageSDDL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := admitMaintenanceDescriptor(exact); err != nil {
+	if err := admitMaintenanceDescriptor(exact, true, userSID); err != nil {
 		t.Fatal(err)
 	}
+	fileDescriptor, err := windows.SecurityDescriptorFromString(strings.Replace(maintenanceStageSDDL, "(ML;OICI;", "(ML;;", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admitMaintenanceDescriptor(fileDescriptor, false, userSID); err != nil {
+		t.Fatal(err)
+	}
+	if err := admitMaintenanceDescriptor(fileDescriptor, true, userSID); err == nil {
+		t.Fatal("nonpropagating directory label admitted")
+	}
+	if err := admitMaintenanceDescriptor(exact, false, userSID); err == nil {
+		t.Fatal("propagating regular-file label admitted")
+	}
+
 	for _, descriptor := range []string{
+		strings.Replace(maintenanceStageSDDL, "0x1200a9", "FA", 1),
+		strings.Replace(maintenanceStageSDDL, userSID, "S-1-5-21-1-2-3-1001", 1),
+		strings.Replace(maintenanceStageSDDL, "(A;OICI;0x1200a9;;;"+userSID+")", "", 1),
+		strings.Replace(maintenanceStageSDDL, "(A;OICI;0x1200a9;;;"+userSID+")", "(A;;0x1200a9;;;"+userSID+")", 1),
 		strings.Replace(maintenanceStageSDDL, "O:BA", "O:SY", 1),
 		strings.Replace(maintenanceStageSDDL, "D:P", "D:", 1),
 		strings.Replace(maintenanceStageSDDL, "(A;OICI;FA;;;SY)", "", 1),
@@ -125,7 +145,7 @@ func TestWindowsMaintenanceStageSecurity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fixture descriptor %q: %v", descriptor, err)
 		}
-		if err := admitMaintenanceDescriptor(native); err == nil {
+		if err := admitMaintenanceDescriptor(native, true, userSID); err == nil {
 			t.Fatalf("admitted descriptor %q", descriptor)
 		}
 	}
@@ -185,16 +205,24 @@ func TestNativeMaintenanceParentRefusal(t *testing.T) {
 	}
 }
 
-// TestNativeMaintenanceProtectedStage verifies the actual Windows Temp ACL, label, and replacement-denying handles in disposable CI.
+// TestNativeMaintenanceProtectedStage verifies the actual protected vendor ACL, label, and replacement-denying handles in disposable CI.
 func TestNativeMaintenanceProtectedStage(t *testing.T) {
 	if os.Getenv("HARBOR_ADMISSION_FIXTURE_ROOT") == "" {
 		t.Skip("disposable native CI fixture was not configured")
 	}
-	system, err := windows.GetWindowsDirectory()
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.MkdirTemp(filepath.Join(system, "Temp"), "HarborMaintenanceFixture-")
+	userSID := user.User.Sid.String()
+	maintenanceStageSDDL := maintenanceStagePolicy(userSID)
+	parents, err := windowsinstallation.RetainUninstallStageParent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeMaintenanceFiles(parents)
+	vendor := parents[len(parents)-1].Name()
+	root, err := os.MkdirTemp(vendor, "HarborMaintenanceFixture-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +247,7 @@ func TestNativeMaintenanceProtectedStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer directory.Close()
-	if err := admitMaintenanceStage(directory); err != nil {
+	if err := admitMaintenanceStage(directory, userSID); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "fixture.exe")
@@ -242,7 +270,7 @@ func TestNativeMaintenanceProtectedStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	if err := admitMaintenanceStage(file); err != nil {
+	if err := admitMaintenanceStage(file, userSID); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(path, path+".foreign"); err == nil {
