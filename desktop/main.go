@@ -136,11 +136,7 @@ func configureTray(native *application.App, client *App) {
 	tray.OnClick(client.presentation.activate)
 	menu := newTrayMenu(client.presentation)
 	tray.SetMenu(menu)
-	native.Event.On(desktopwire.ConnectionEventName, func(event *application.CustomEvent) {
-		connection := event.Data.(desktopwire.ConnectionEvent)
-		menu.ItemAt(0).SetLabel("Harbor: " + string(connection.State))
-		menu.Update()
-	})
+	native.Event.On(desktopwire.ConnectionEventName, newTrayConnectionHandler(native.Context(), application.InvokeAsync, menu.ItemAt(0)))
 }
 
 // nativeWindow resolves the mandatory named window for all presentation callbacks.
