@@ -102,9 +102,50 @@ func inspectRuntimeToken(token windows.Token) (TokenFacts, error) {
 			return facts, errors.New("Harbor installed role retains a removable privilege entry")
 		}
 	}
+	if err := admitRuntimeDefaultDACL(token, facts.UserSID); err != nil {
+		return facts, err
+	}
 	runtime.KeepAlive(integrity)
 	runtime.KeepAlive(privileges)
 	return facts, nil
+}
+
+// admitRuntimeDefaultDACL revalidates inherited object security on the actual token before any restricted role resumes.
+func admitRuntimeDefaultDACL(token windows.Token, userSID string) error {
+	information, err := tokenInformation(token, windows.TokenDefaultDacl)
+	if err != nil {
+		return err
+	}
+	if len(information) < int(unsafe.Sizeof(uintptr(0))) {
+		return errors.New("Windows token default DACL has an invalid native size")
+	}
+	dacl := (*struct{ DACL *windows.ACL })(unsafe.Pointer(&information[0])).DACL
+	err = admitRuntimeObjectACL(dacl, userSID)
+	runtime.KeepAlive(information)
+	return err
+}
+
+// admitRuntimeObjectACL excludes inherited high defaults and foreign grants from newly created private objects.
+func admitRuntimeObjectACL(dacl *windows.ACL, userSID string) error {
+	if dacl == nil || dacl.AceCount != 2 {
+		return errors.New("Windows token default object DACL must contain only user and SYSTEM grants")
+	}
+	seen := make(map[string]bool, 2)
+	for index := uint32(0); index < 2; index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, index, &ace); err != nil {
+			return err
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != 0 || ace.Mask != windows.GENERIC_ALL {
+			return errors.New("Windows token default object DACL has unexpected rights or inheritance")
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
+		if (sid != userSID && sid != systemSID) || seen[sid] {
+			return errors.New("Windows token default object DACL contains a foreign or duplicate principal")
+		}
+		seen[sid] = true
+	}
+	return nil
 }
 
 // restrictedRuntimeToken removes privileges rather than relying on disabled entries that can be enabled again.

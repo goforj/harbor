@@ -115,3 +115,39 @@ func nativeTokenDefaultDACL(t *testing.T, token windows.Token) string {
 	runtime.KeepAlive(information)
 	return serialized
 }
+
+// TestRuntimeObjectACLRejectsDrift covers every admitted default grant and rejection branch without mutating source tokens.
+func TestRuntimeObjectACLRejectsDrift(t *testing.T) {
+	const user = "S-1-5-21-1-2-3-1000"
+	for _, test := range []struct {
+		name, sddl string
+		allowed    bool
+	}{
+		{"user-system", "D:(A;;GA;;;" + user + ")(A;;GA;;;SY)", true},
+		{"system-user", "D:(A;;GA;;;SY)(A;;GA;;;" + user + ")", true},
+		{"null", "D:NO_ACCESS_CONTROL", false},
+		{"empty", "D:", false},
+		{"missing-system", "D:(A;;GA;;;" + user + ")", false},
+		{"extra", "D:(A;;GA;;;" + user + ")(A;;GA;;;SY)(A;;GA;;;BA)", false},
+		{"duplicate", "D:(A;;GA;;;" + user + ")(A;;GA;;;" + user + ")", false},
+		{"foreign", "D:(A;;GA;;;BU)(A;;GA;;;SY)", false},
+		{"deny", "D:(D;;GA;;;" + user + ")(A;;GA;;;SY)", false},
+		{"inherited", "D:(A;ID;GA;;;" + user + ")(A;;GA;;;SY)", false},
+		{"inherit-only", "D:(A;IO;GA;;;" + user + ")(A;;GA;;;SY)", false},
+		{"reduced", "D:(A;;GR;;;" + user + ")(A;;GA;;;SY)", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			descriptor, err := windows.SecurityDescriptorFromString(test.sddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dacl, _, err := descriptor.DACL()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := admitRuntimeObjectACL(dacl, user); (err == nil) != test.allowed {
+				t.Fatalf("default object DACL admission=%v expected allowed=%t", err, test.allowed)
+			}
+		})
+	}
+}
