@@ -102,7 +102,7 @@ def daemon_process_facts(pid):
         raise RuntimeError("native daemon executable unavailable")
     if info.words[3] != pid or info.seconds == 0:
         raise RuntimeError("native daemon identity unavailable")
-    return {"pid": pid, "uid": info.words[5], "birth_seconds": info.seconds,
+    return {"pid": pid, "parent_pid": info.words[4], "uid": info.words[5], "real_uid": info.words[7], "birth_seconds": info.seconds,
             "birth_microseconds": info.microseconds, "executable": os.fsdecode(executable.value)}
 
 
@@ -176,10 +176,115 @@ def collect_release_diagnostics(directory):
     (directory / "release-timeout-diagnostics.json").write_text(json.dumps(diagnostics, indent=2) + "\n")
 
 
+def installed_executable(path, setuid=False):
+    """installed_executable admits only the fixed root-owned package executable shape."""
+    if setuid and Path(path).is_symlink():
+        raise RuntimeError("installed helper must be a direct executable")
+    expected = Path(path).resolve(strict=True)
+    metadata = expected.stat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise RuntimeError("installed diagnostic executable lacks package ownership")
+    if setuid and (metadata.st_mode & 0o7777 != 0o4755 or metadata.st_nlink != 1):
+        raise RuntimeError("installed helper lacks its exact setuid shape")
+    return str(expected)
+
+
+def collect_live_release_diagnostics(directory, initial):
+    """collect_live_release_diagnostics samples only the retained CLI birth and its exact package helper children."""
+    diagnostics = {"cli": initial, "samples": [], "errors": []}
+
+    def require_cli():
+        if daemon_process_facts(initial["pid"]) != initial:
+            raise RuntimeError("release CLI changed before diagnostic observation")
+
+    def sample(before, name, privileged=False):
+        target = directory / name
+        try:
+            require_cli()
+            if daemon_process_facts(before["pid"]) != before:
+                raise RuntimeError("admitted release process changed before sampling")
+            command = ["/usr/bin/sample", str(before["pid"]), "1", "1", "-file", str(target)]
+            if privileged:
+                command = ["/usr/bin/sudo", "-n"] + command
+            result = subprocess.run(command, text=True, capture_output=True, timeout=5)
+            require_cli()
+            if daemon_process_facts(before["pid"]) != before:
+                raise RuntimeError("admitted release process changed during sampling")
+            result.check_returncode()
+            diagnostics["samples"].append({"process": before, "file": name,
+                "stdout": bounded_text(result.stdout), "stderr": bounded_text(result.stderr)})
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+
+    try:
+        require_cli()
+        children = subprocess.run(["/usr/bin/pgrep", "-P", str(initial["pid"])], text=True, capture_output=True, timeout=5)
+        if children.returncode not in (0, 1):
+            children.check_returncode()
+        pids = children.stdout.split()
+        if len(pids) > 16 or any(not pid.isdecimal() for pid in pids):
+            raise RuntimeError("release CLI child projection is malformed or exceeds its bound")
+        helper = installed_executable("/Library/PrivilegedHelperTools/com.goforj.harbor.helper", setuid=True)
+        for value in pids:
+            try:
+                require_cli()
+                child = daemon_process_facts(int(value))
+                birth = (child["birth_seconds"], child["birth_microseconds"])
+                initial_birth = (initial["birth_seconds"], initial["birth_microseconds"])
+                if child["parent_pid"] != initial["pid"] or child["executable"] != helper or child["real_uid"] != initial["uid"] or child["uid"] != 0 or birth < initial_birth:
+                    diagnostics["errors"].append("preserved non-matching release CLI child")
+                    continue
+                sample(child, f"release-helper-{child['pid']}.sample.txt", privileged=True)
+            except Exception as error:
+                diagnostics["errors"].append(str(error))
+    except Exception as error:
+        diagnostics["errors"].append(str(error))
+    try:
+        sample(initial, "release-cli.sample.txt")
+    except Exception as error:
+        diagnostics["errors"].append(str(error))
+    (directory / "release-live-diagnostics.json").write_text(json.dumps(diagnostics, indent=2) + "\n")
+
+
+def run_release_process(directory, receipt):
+    """run_release_process retains admitted live process evidence before the existing timeout kill."""
+    arguments = [CLI, "daemon", "release"]
+    process = subprocess.Popen(arguments, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    initial = None
+    try:
+        expected = installed_executable(CLI)
+        candidate = daemon_process_facts(process.pid)
+        if candidate["uid"] != os.getuid() or candidate["real_uid"] != os.getuid() or candidate["parent_pid"] != os.getpid() or candidate["executable"] != expected:
+            raise RuntimeError("release CLI lacks exact native parent, user, and executable admission")
+        initial = candidate
+    except Exception as error:
+        receipt["release_cli_admission_error"] = str(error)
+    try:
+        stdout, stderr = process.communicate(timeout=180)
+    except subprocess.TimeoutExpired as error:
+        try:
+            if initial is not None:
+                collect_live_release_diagnostics(directory, initial)
+        except Exception as diagnostic_error:
+            receipt["release_live_diagnostics_error"] = str(diagnostic_error)
+        finally:
+            # Match subprocess.run's existing timeout behavior after bounded read-only observations.
+            process.kill()
+            stdout, stderr = process.communicate()
+            error.output, error.stderr = stdout, stderr
+        raise
+    except BaseException:
+        process.kill()
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+
+
 def run_recorded(arguments, directory, receipt):
     """run_recorded preserves bounded command evidence before propagating a release timeout."""
     try:
-        result = subprocess.run(arguments, text=True, capture_output=True, timeout=180)
+        result = run_release_process(directory, receipt) if arguments == [CLI, "daemon", "release"] else subprocess.run(arguments, text=True, capture_output=True, timeout=180)
     except subprocess.TimeoutExpired as error:
         receipt["commands"].append({"arguments": arguments, "timed_out": True, "timeout_seconds": 180,
                                     "stdout": bounded_text(error.output), "stderr": bounded_text(error.stderr)})
