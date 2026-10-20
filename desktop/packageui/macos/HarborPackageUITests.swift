@@ -28,7 +28,7 @@ final class HarborPackageUITests: XCTestCase {
         let root = URL(fileURLWithPath: "/tmp/harbor-package-ui-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         let projectDirectory = root.appendingPathComponent("project", isDirectory: true)
-        application.launch()
+        try launchInstalledApplication("first-launch")
         try awaitWindow()
         try assertInstalledBundle()
         attach("installed-first-launch")
@@ -80,7 +80,7 @@ final class HarborPackageUITests: XCTestCase {
             !self.application.windows.firstMatch.isHittable
         }
         try assertProject(identifier, state: "ready")
-        _ = try command("/usr/bin/open", ["-n", installedApplication.path])
+        try launchInstalledApplication("second-launch")
         try awaitWindow()
         try waitUntil("single-instance handoff completes") {
             let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.goforj.harbor")
@@ -92,7 +92,7 @@ final class HarborPackageUITests: XCTestCase {
         application.typeKey("q", modifierFlags: .command)
         XCTAssertTrue(application.wait(for: .notRunning, timeout: 20))
         try assertProject(identifier, state: "ready")
-        application.launch()
+        try launchInstalledApplication("relaunch")
         try awaitWindow()
         try assertInstalledBundle()
         try assertProject(identifier, state: "ready")
@@ -128,6 +128,15 @@ final class HarborPackageUITests: XCTestCase {
 
     private func awaitWindow() throws {
         try waitUntil("installed Harbor window", timeout: 60) { self.application.windows.firstMatch.isHittable }
+    }
+
+    // launchInstalledApplication retains native stderr even if startup exits before a window appears.
+    private func launchInstalledApplication(_ stage: String) throws {
+        let evidence = URL(fileURLWithPath: "/tmp/harbor-package-ui-native-logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        _ = try command("/usr/bin/open", ["-n", "--stdout", evidence.appendingPathComponent(stage + "-stdout.log").path,
+                                         "--stderr", evidence.appendingPathComponent(stage + "-stderr.log").path,
+                                         installedApplication.path])
     }
 
     private func installedProcess() throws -> pid_t {

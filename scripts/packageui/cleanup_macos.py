@@ -47,6 +47,29 @@ def verify_service_absence():
     return {"domain_exit_code": reachable.returncode, "service_exit_code": absent.returncode, "stderr": absent.stderr}
 
 
+def unregister_fixture(project, run):
+    """unregister_fixture retains one CLI intent and approves only its exact disposable removal."""
+    root = fixture_root(project)
+    identifier = project["id"]
+    intent = "intent-macos-ui-remove-" + identifier
+    deadline = time.monotonic() + 120
+    while True:
+        result = json.loads(run([CLI, "remove", identifier, "--intent", intent, "--json"]).stdout)
+        operation = result["operation"]
+        if operation["state"] == "succeeded":
+            return
+        if operation["state"] in ("failed", "cancelled"):
+            raise RuntimeError("fixture unregister ended " + operation["state"])
+        if time.monotonic() >= deadline:
+            raise RuntimeError("fixture unregister exceeded its cleanup deadline")
+        if operation["state"] == "requires_approval":
+            run([os.environ["HARBOR_PACKAGE_UI_APPROVAL_TOOL"],
+                 "--project-id", identifier, "--operation-id", operation["id"],
+                 "--intent-id", intent, "--revision", str(result["revision"]),
+                 "--project-directory", str(root)])
+        time.sleep(0.25)
+
+
 def recover(directory):
     """recover uses production commands and retains partial failure evidence instead of forcing host changes."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -69,7 +92,8 @@ def recover(directory):
             projects = snapshot.get("projects", [])
             roots = [fixture_root(project) for project in projects]
             for project in projects:
-                run([CLI, "stop", project["id"]])
+                if project.get("state") != "stopped":
+                    run([CLI, "stop", project["id"]])
             deadline = time.monotonic() + 120
             while True:
                 snapshot = json.loads(run([CLI, "daemon", "snapshot"]).stdout)
@@ -78,6 +102,17 @@ def recover(directory):
                 if time.monotonic() >= deadline:
                     raise RuntimeError("fixture projects did not stop during failure recovery")
                 time.sleep(0.25)
+            for project in projects:
+                unregister_fixture(project, run)
+            deadline = time.monotonic() + 120
+            while projects:
+                snapshot = json.loads(run([CLI, "daemon", "snapshot"]).stdout)
+                if not snapshot.get("projects", []):
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("fixture registrations did not retire before network release")
+                time.sleep(0.25)
+            receipt["fixture_unregistered"] = [project["id"] for project in projects]
             if snapshot.get("network_setup", {}).get("configured") is False and not snapshot.get("projects", []):
                 receipt["network_release"] = "not configured; no registered projects"
             else:

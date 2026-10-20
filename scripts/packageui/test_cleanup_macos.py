@@ -68,10 +68,12 @@ class CleanupFixtureTests(unittest.TestCase):
             for name in (".goforj.yml", "go.mod"):
                 (root / name).write_text("retained project")
             project = {"path": str(root), "id": "fixture", "state": "ready"}
-            snapshots = [json.dumps({"projects": [project]}), json.dumps({"projects": [dict(project, state="stopped")]})]
+            snapshots = [json.dumps({"projects": [project]}), json.dumps({"projects": [dict(project, state="stopped")]}), json.dumps({"projects": []})]
 
             def result(arguments, **kwargs):
                 output = snapshots.pop(0) if arguments == [cleanup_macos.CLI, "daemon", "snapshot"] else ""
+                if arguments[:2] == [cleanup_macos.CLI, "remove"]:
+                    output = json.dumps({"operation": {"state": "succeeded"}})
                 return subprocess.CompletedProcess(arguments, 0, output, "")
 
             original_exists = Path.exists
@@ -86,8 +88,11 @@ class CleanupFixtureTests(unittest.TestCase):
             self.assertEqual(len(receipt["retained"]), 3)
             commands = [call.args[0] for call in run.call_args_list]
             self.assertEqual(commands[0], ["/usr/bin/swift", "desktop/packageui/macos/QuitInstalledHarbor.swift"])
-            self.assertLess(commands.index([cleanup_macos.CLI, "stop", "fixture"]),
+            removal = [cleanup_macos.CLI, "remove", "fixture", "--intent", "intent-macos-ui-remove-fixture", "--json"]
+            self.assertLess(commands.index([cleanup_macos.CLI, "stop", "fixture"]), commands.index(removal))
+            self.assertLess(commands.index(removal),
                             commands.index([cleanup_macos.CLI, "daemon", "release"]))
+            self.assertEqual(receipt["fixture_unregistered"], ["fixture"])
 
     def test_failed_stop_retains_error_without_uninstalling(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -133,6 +138,65 @@ class CleanupFixtureTests(unittest.TestCase):
             self.assertEqual(receipt["network_release"], "not configured; no registered projects")
             self.assertEqual(len(receipt["retained"]), 1)
             self.assertNotIn([cleanup_macos.CLI, "daemon", "release"], [call.args[0] for call in run.call_args_list])
+
+    def test_failed_unregister_prevents_release_and_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            database = home / "Library/Application Support/GoForj/Harbor/harbor.db"
+            database.parent.mkdir(parents=True)
+            database.write_bytes(b"retained registration")
+            snapshot = {"projects": [{"path": "/private/tmp/harbor-package-ui-8591F1BE-D15A-4E9E-BE3D-71F45B32AFED/project",
+                                      "id": "fixture", "state": "stopped"}]}
+
+            def result(arguments, **kwargs):
+                if arguments[:3] == [cleanup_macos.CLI, "remove", "fixture"]:
+                    return subprocess.CompletedProcess(arguments, 1, "", "remove refused")
+                output = json.dumps(snapshot) if arguments == [cleanup_macos.CLI, "daemon", "snapshot"] else ""
+                return subprocess.CompletedProcess(arguments, 0, output, "")
+
+            with patch.object(cleanup_macos.Path, "home", return_value=home), \
+                    patch.object(cleanup_macos.subprocess, "run", side_effect=result) as run:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    cleanup_macos.recover(home / "evidence")
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertNotIn([cleanup_macos.CLI, "daemon", "release"], commands)
+            self.assertFalse(any(command[:3] == ["sudo", "-n", cleanup_macos.INSTALLER] for command in commands))
+            receipt = json.loads((home / "evidence/failure-cleanup.json").read_text())
+            self.assertFalse(receipt["completed"])
+            self.assertEqual(receipt["commands"][-1]["stderr"], "remove refused")
+            self.assertEqual(database.read_bytes(), b"retained registration")
+
+    def test_unregister_approves_exact_revision_and_replays_same_intent(self):
+        project = {"id": "fixture", "path": "/private/tmp/harbor-package-ui-8591F1BE-D15A-4E9E-BE3D-71F45B32AFED/project"}
+        pending = {"operation": {"id": "operation-fixture", "state": "requires_approval"}, "revision": 42}
+        complete = {"operation": {"id": "operation-fixture", "state": "succeeded"}, "revision": 43}
+        results = [subprocess.CompletedProcess([], 0, json.dumps(pending), ""),
+                   subprocess.CompletedProcess([], 0, "approved", ""),
+                   subprocess.CompletedProcess([], 0, json.dumps(complete), "")]
+        with patch.dict(os.environ, {"HARBOR_PACKAGE_UI_APPROVAL_TOOL": "/fixture/approval"}), \
+                patch.object(cleanup_macos.time, "sleep"), \
+                patch.object(cleanup_macos.subprocess, "run", side_effect=results) as run:
+            cleanup_macos.unregister_fixture(project, run)
+        calls = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(calls[0], calls[2])
+        self.assertEqual(calls[1], ["/fixture/approval", "--project-id", "fixture", "--operation-id", "operation-fixture",
+                                   "--intent-id", "intent-macos-ui-remove-fixture", "--revision", "42", "--project-directory", project["path"]])
+
+    def test_failed_approval_does_not_replay_or_release(self):
+        project = {"id": "fixture", "path": "/private/tmp/harbor-package-ui-8591F1BE-D15A-4E9E-BE3D-71F45B32AFED/project"}
+        pending = {"operation": {"id": "operation-fixture", "state": "requires_approval"}, "revision": 42}
+        calls = []
+
+        def run(arguments):
+            calls.append(arguments)
+            if arguments[0] == "/fixture/approval":
+                raise subprocess.CalledProcessError(1, arguments)
+            return subprocess.CompletedProcess(arguments, 0, json.dumps(pending), "")
+
+        with patch.dict(os.environ, {"HARBOR_PACKAGE_UI_APPROVAL_TOOL": "/fixture/approval"}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                cleanup_macos.unregister_fixture(project, run)
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":

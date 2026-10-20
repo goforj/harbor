@@ -47,6 +47,7 @@ jobs:
           test ! -e /Applications/Harbor.app
           test ! -e "$HOME/Library/Application Support/GoForj/Harbor/harbor.db"
           test ! -e /tmp/harbor-package-ui-evidence.json
+          test ! -e /tmp/harbor-package-ui-native-logs
 
       - name: Download exact native-tested packages
         env:
@@ -92,7 +93,9 @@ jobs:
           GOWORK=off GOBIN="$binary_directory" go install github.com/goforj/goforj/cmd/forj@v0.34.1
           GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
           test "$("$binary_directory/forj" --version)" = v0.34.1
+          GOWORK=off go build -o "$binary_directory/harbor-fixture-approval" ./scripts/packageui/fixtureapproval
           printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
+          printf 'HARBOR_PACKAGE_UI_APPROVAL_TOOL=%s/harbor-fixture-approval\n' "$binary_directory" >> "$GITHUB_ENV"
 
       - name: Expose prerequisite toolchain to the graphical user session
         run: |
@@ -169,6 +172,26 @@ jobs:
       - name: Release owned networking and record retained user files
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import json, subprocess, sys, time
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/packageui')
+          from cleanup_macos import unregister_fixture
+          evidence = Path('harbor-package-ui-evidence')
+          fixture = json.loads((evidence / 'installed-ui.json').read_text())
+          identifier = fixture['project_id']
+          unregister_fixture({'id': identifier, 'path': fixture['project_directory']},
+                             lambda arguments: subprocess.run(arguments, check=True, text=True, capture_output=True, timeout=180))
+          deadline = time.monotonic() + 120
+          while True:
+              snapshot = json.loads(subprocess.check_output(['/usr/local/bin/harbor', 'daemon', 'snapshot'], text=True, timeout=30))
+              if not any(project['id'] == identifier for project in snapshot.get('projects', [])):
+                  break
+              if time.monotonic() >= deadline:
+                  raise RuntimeError('fixture unregister did not finish before network release')
+              time.sleep(.25)
+          (evidence / 'fixture-unregister.json').write_text(json.dumps({'project_id': identifier, 'removed_before_network_release': True}) + '\n')
+          PY
           /usr/local/bin/harbor daemon release
           /usr/local/bin/harbor daemon stop
           python3 - <<'PY'
@@ -241,6 +264,7 @@ jobs:
           path: |
             ${{ runner.temp }}/harbor-package-ui.xcresult
             harbor-package-ui-evidence/
+            /tmp/harbor-package-ui-native-logs/
             package-assets/provenance.json
             package-assets/SHA256SUMS
           if-no-files-found: error
