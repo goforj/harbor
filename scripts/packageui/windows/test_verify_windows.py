@@ -66,6 +66,35 @@ class WindowsAdmissionTests(unittest.TestCase):
                     verify_windows.verify_assets(self.directory, self.run)
                 target.write_bytes(original)
 
+    def test_package_selection(self):
+        """test_package_selection rejects absent or ambiguous installer selection."""
+        package = self.directory / self.name
+        original = package.read_bytes()
+        package.unlink()
+        with self.assertRaises(ValueError):
+            verify_windows.verify_assets(self.directory, self.run)
+        package.write_bytes(original)
+        (self.directory / self.name.replace("dev.10", "dev.11")).write_bytes(original)
+        with self.assertRaises(ValueError):
+            verify_windows.verify_assets(self.directory, self.run)
+
+    def test_nonregular_or_empty_assets(self):
+        """test_nonregular_or_empty_assets refuses substituted package and provenance files."""
+        for filename in (self.name, self.name + ".provenance.json"):
+            target = self.directory / filename
+            original = target.read_bytes()
+            for mode in ("empty", "symlink"):
+                with self.subTest(filename=filename, mode=mode):
+                    target.unlink()
+                    if mode == "empty":
+                        target.write_bytes(b"")
+                    else:
+                        target.symlink_to(self.directory / (self.name + ".sha256"))
+                    with self.assertRaises(ValueError):
+                        verify_windows.verify_assets(self.directory, self.run)
+                    target.unlink()
+                    target.write_bytes(original)
+
     def test_artifact_shape(self):
         """test_artifact_shape rejects extra content, symlinks, and missing or empty sidecars."""
         extra = self.directory / "unexpected.ps1"
