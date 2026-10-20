@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/goforj/harbor/internal/control"
@@ -206,7 +205,7 @@ func listenerAbsent(ctx context.Context, address string) error {
 			connection.Close()
 			return false, errors.New("orphan recovery gate listener remains live")
 		}
-		if errors.Is(err, syscall.ECONNREFUSED) {
+		if connectionRefused(err) {
 			return true, nil
 		}
 		return false, fmt.Errorf("gate absence is ambiguous: %w", err)
