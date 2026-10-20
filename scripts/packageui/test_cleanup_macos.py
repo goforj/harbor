@@ -364,6 +364,7 @@ class CleanupDiagnosticsTests(RecordedRunFixture):
                 self.assertEqual(receipt["commands"][0]["arguments"], command)
 
 
+@unittest.skipIf(os.name == "nt", "macOS recovery uses POSIX process identity")
 class LiveReleaseDiagnosticsTests(unittest.TestCase):
     def cli_facts(self):
         return {"pid": 123, "parent_pid": os.getpid(), "uid": os.getuid(), "real_uid": os.getuid(),
