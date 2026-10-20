@@ -137,6 +137,14 @@ final class HarborPackageUITests: XCTestCase {
         _ = try command("/usr/bin/open", ["-n", "--stdout", evidence.appendingPathComponent(stage + "-stdout.log").path,
                                          "--stderr", evidence.appendingPathComponent(stage + "-stderr.log").path,
                                          installedApplication.path])
+        try waitUntil("single installed application process", timeout: 20) {
+            NSRunningApplication.runningApplications(withBundleIdentifier: "com.goforj.harbor").count == 1
+        }
+        try assertInstalledBundle()
+        let process = try installedProcess()
+        application.activate()
+        XCTAssertEqual(try installedProcess(), process, "activation must not replace an application that exited")
+        XCTAssertTrue(application.wait(for: .runningForeground, timeout: 20))
     }
 
     private func installedProcess() throws -> pid_t {
