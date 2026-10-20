@@ -3,13 +3,19 @@ name: Windows native capacity diagnostics
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      suite:
+        description: Select a bounded native proof
+        type: choice
+        options: [capacity, foundation]
+        default: capacity
 
 permissions:
   contents: read
 
 jobs:
   capacity:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event_name == 'workflow_dispatch' && inputs.suite != 'foundation') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: windows-2022
     timeout-minutes: 15
     env:
@@ -55,4 +61,82 @@ jobs:
             ${{ runner.temp }}/windows-native-sockets.json
             ${{ runner.temp }}/windows-native-excluded-ports.txt
           if-no-files-found: error
+          retention-days: 14
+
+  foundation:
+    if: github.event_name == 'workflow_dispatch' && inputs.suite == 'foundation'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Prepare disposable signed admission fixtures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $fixture = Join-Path $env:RUNNER_TEMP "harbor-installation-admission"
+          New-Item -ItemType Directory -Path $fixture | Out-Null
+          $env:GOCACHE = Join-Path $fixture "gocache"
+          $env:GOMODCACHE = Join-Path $fixture "gomodcache"
+          "GOCACHE=$env:GOCACHE" | Out-File $env:GITHUB_ENV -Append
+          "GOMODCACHE=$env:GOMODCACHE" | Out-File $env:GITHUB_ENV -Append
+          go test -c -o "$fixture\admission.test.exe" ./internal/platform/windowsinstallation
+          if ($LASTEXITCODE -ne 0) { throw "native admission test build failed" }
+          Copy-Item "$fixture\admission.test.exe" "$fixture\signed.exe"
+          'Write-Output "admission fixture only"' | Set-Content "$fixture\signed.ps1"
+          $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Harbor Disposable Native Admission" -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddHours(2)
+          Export-Certificate -Cert $certificate -FilePath "$fixture\signer.cer" | Out-Null
+          Import-Certificate -FilePath "$fixture\signer.cer" -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          Import-Certificate -FilePath "$fixture\signer.cer" -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
+          $certificate.Thumbprint | Set-Content "$fixture\publisher.txt"
+          foreach ($path in @("$fixture\signed.exe", "$fixture\signed.ps1")) {
+            $signature = Set-AuthenticodeSignature -FilePath $path -Certificate $certificate -HashAlgorithm SHA256
+            if ($signature.Status -ne "Valid") { throw "fixture signature is not valid" }
+          }
+          $protected = Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "HarborAdmission-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Path $protected | Out-Null
+          $acl = New-Object System.Security.AccessControl.DirectorySecurity
+          $acl.SetSecurityDescriptorSddlForm("O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;GRGX;;;BU)")
+          Set-Acl -LiteralPath $protected -AclObject $acl
+          "HARBOR_ADMISSION_FIXTURE_ROOT=$protected" | Out-File $env:GITHUB_ENV -Append
+          "HARBOR_ADMISSION_PUBLISHER=$($certificate.Thumbprint)" | Out-File $env:GITHUB_ENV -Append
+          "HARBOR_ADMISSION_SIGNED_PE=$fixture\signed.exe" | Out-File $env:GITHUB_ENV -Append
+          "HARBOR_ADMISSION_SIGNED_SCRIPT=$fixture\signed.ps1" | Out-File $env:GITHUB_ENV -Append
+          "HARBOR_ADMISSION_CERTIFICATE=$fixture\signer.cer" | Out-File $env:GITHUB_ENV -Append
+      - name: Prove exact native admission and drift refusal
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & "$env:RUNNER_TEMP\harbor-installation-admission\admission.test.exe" -test.v -test.timeout=5m 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-installation-admission.log"
+          if ($LASTEXITCODE -ne 0) { throw "native installation admission failed" }
+      - name: Remove only this worker's disposable fixtures
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $fixture = Join-Path $env:RUNNER_TEMP "harbor-installation-admission"
+          $thumbprintFile = Join-Path $fixture "publisher.txt"
+          if (Test-Path -LiteralPath $thumbprintFile) {
+            $thumbprint = (Get-Content -LiteralPath $thumbprintFile -Raw).Trim()
+            if ($thumbprint -cnotmatch '^[A-F0-9]{40}$') { throw "invalid disposable publisher receipt" }
+            foreach ($store in @("Cert:\LocalMachine\Root", "Cert:\LocalMachine\TrustedPublisher", "Cert:\CurrentUser\My")) {
+              $path = Join-Path $store $thumbprint
+              if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+            }
+          }
+          $protected = Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "HarborAdmission-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $protected) { Remove-Item -LiteralPath $protected -Recurse -Force }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-installation-admission
+          path: ${{ runner.temp }}/windows-installation-admission.log
+          if-no-files-found: warn
           retention-days: 14
