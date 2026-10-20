@@ -171,7 +171,8 @@ def activate():
 
 def quit_ui():
     activate()
-    key('ctrl+q')
+    click('Harbor', ['menu'])
+    click('Quit Harbor UI', ['menu item'])
     wait('native UI quit', lambda: process.poll() is not None)
     assert process.returncode == 0
 
@@ -240,7 +241,9 @@ try:
         'fixture': 'Ubuntu 24.04 x86_64, XFCE X11 desktop on Xvfb, AT-SPI, GTK/WebKit',
         'creation': 'production graphical wizard', 'start': 'ready and system-trusted HTTPS 200',
         'close': 'hidden with project ready', 'reopen': 'original process restored',
-        'quit': 'native Ctrl+Q, same daemon PID and project ready',
+        'quit': 'native GTK menu, same daemon PID and project ready',
+        'quit_method': 'native GTK menu',
+        'ctrl_q': 'unsupported by pinned Wails GTK3 menu accelerator implementation',
         'relaunch': 'new installed process, registration retained and HTTPS 200',
         'stop': 'stopped registration retained',
     }, indent=2) + '\n')
@@ -261,12 +264,13 @@ finally:
     for child in children:
         if child.poll() is not None:
             continue
-        result = {'pid': child.pid, 'method': 'native Ctrl+Q'}
+        result = {'pid': child.pid, 'method': 'native GTK menu'}
         try:
             if child is not process:
                 raise RuntimeError('single-instance child did not finish handoff')
             activate()
-            key('ctrl+q')
+            click('Harbor', ['menu'])
+            click('Quit Harbor UI', ['menu item'])
             child.wait(timeout=15)
         except (subprocess.SubprocessError, RuntimeError):
             # Popen retains this exact direct child until wait reaps it. Failed
