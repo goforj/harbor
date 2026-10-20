@@ -78,6 +78,13 @@ jobs:
         run: |
           go test ./cmd/daemonlauncher ./cmd/desktoplauncher ./cmd/clilauncher -count=1 -v
           if ($LASTEXITCODE -ne 0) { throw "native stable launcher tests failed" }
+      - name: Validate native desktop task activation adapter
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          go test -tags=release ./internal/daemonprerequisite -run '^TestWindowsEnsure' -count=1 -v
+          if ($LASTEXITCODE -ne 0) { throw "native desktop activation adapter tests failed" }
       - name: Remove only this worker's disposable fixtures
         if: always()
         shell: pwsh

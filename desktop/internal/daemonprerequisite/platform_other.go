@@ -1,4 +1,4 @@
-//go:build (!darwin && !linux) || !release
+//go:build (!darwin && !linux && !windows) || !release
 
 package daemonprerequisite
 
