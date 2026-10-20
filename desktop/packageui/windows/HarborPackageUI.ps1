@@ -252,7 +252,7 @@ try {
     Wait-Until 'Quit shortcut target keyboard focus' { $quitFocus.Current.HasKeyboardFocus } 10
     if (-not [HarborUIProfile]::IsRetainedProductWindowForeground($originalProcess, $script:windowHandle)) { throw 'Quit keyboard target is not in the exact foreground product window' }
     [System.Windows.Forms.SendKeys]::SendWait('^q')
-    Wait-Until 'UI-only quit exits desktop' { $null -eq (Get-Process -Id $originalProcess -ErrorAction SilentlyContinue) }
+    Wait-Until 'UI-only quit exits desktop' { [HarborUIProfile]::HasRetainedProductExited($originalProcess) }
     if ((Get-Project).state -cne 'ready') { throw 'UI-only quit stopped the project' }
     @{ pid=$originalProcess; native_window=$script:windowHandle.ToInt64().ToString(); foreground_before=$true; focus_target='Projects'; user_key_chord='Ctrl+Q'; process_exited=$true; project_state='ready' } |
         ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'native-window-quit.json') -Encoding UTF8

@@ -201,6 +201,18 @@ public static class HarborUIProfile {
         } finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
     }
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder path, ref uint size);
+    public static bool HasRetainedProductExited(int pid) {
+        bool found=false;
+        foreach (IntPtr process in launches) {
+            if (GetProcessId(process) != (uint)pid) continue;
+            found=true;
+            uint state=WaitForSingleObject(process, 0);
+            if (state == 258) return false;
+            if (state != 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "observe exact retained product exit");
+        }
+        if (!found) throw new Exception("exit observation has no exact retained product process");
+        return true;
+    }
     public static bool IsRetainedProductWindowForeground(int pid, IntPtr window) {
         if (!IsRetainedProductWindowVisible(pid, window)) throw new Exception("foreground target is not the visible admitted product window");
         return GetForegroundWindow() == window;
