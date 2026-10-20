@@ -15,6 +15,8 @@ public static class HarborUIProfile {
     [DllImport("kernel32.dll", SetLastError=true)] static extern uint GetProcessId(IntPtr process);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll", SetLastError=true)] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr data, int length, out int needed);
@@ -199,6 +201,14 @@ public static class HarborUIProfile {
         } finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
     }
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder path, ref uint size);
+    public static bool IsRetainedProductWindowForeground(int pid, IntPtr window) {
+        if (!IsRetainedProductWindowVisible(pid, window)) throw new Exception("foreground target is not the visible admitted product window");
+        return GetForegroundWindow() == window;
+    }
+    public static void ActivateRetainedProductWindow(int pid, IntPtr window) {
+        if (IsRetainedProductWindowForeground(pid, window)) return;
+        if (!SetForegroundWindow(window) || !IsRetainedProductWindowForeground(pid, window)) throw new Exception("Windows did not foreground the exact admitted product window");
+    }
     public static bool IsRetainedProductWindowVisible(int pid, IntPtr window) {
         bool live=false;
         foreach (IntPtr process in launches) {
