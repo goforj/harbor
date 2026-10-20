@@ -27,12 +27,36 @@ func (helper windowsReadbackDiagnostic) address(identity windows.MibUnicastIpAdd
 		return observed, err
 	}
 	helper.t.Logf("conflicting native readback: request=%+v observed=%+v", identity, observed)
+	helper.logAddressTable(identity, -1)
 	for sample := 0; sample < 10; sample++ {
 		time.Sleep(100 * time.Millisecond)
 		later, laterErr := helper.windowsIPHelper.address(identity)
 		helper.t.Logf("read-only sample %d: row=%+v err=%v", sample, later, laterErr)
+		helper.logAddressTable(identity, sample)
 	}
 	return observed, err
+}
+
+// logAddressTable cross-checks the direct query against the independently copied native table.
+func (helper windowsReadbackDiagnostic) logAddressTable(identity windows.MibUnicastIpAddressRow, sample int) {
+	target, ok := windowsIPv4Address(&identity.Address)
+	if !ok {
+		helper.t.Fatal("diagnostic requested an invalid native IPv4 identity")
+	}
+	rows, err := helper.windowsIPHelper.addressRows()
+	if err != nil {
+		helper.t.Logf("table sample %d: err=%v", sample, err)
+		return
+	}
+	count := 0
+	for _, row := range rows {
+		address, ipv4 := windowsIPv4Address(&row.Address)
+		if ipv4 && address == target {
+			helper.t.Logf("table sample %d: row=%+v", sample, row)
+			count++
+		}
+	}
+	helper.t.Logf("table sample %d: matching_rows=%d", sample, count)
 }
 
 // createAddress records whether the native create API modifies its input despite its const-pointer contract.
