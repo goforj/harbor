@@ -378,10 +378,13 @@ try {
     Save-Observation 'reopened-running-project'
     $recoveryTool = $env:HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL
     if (-not $recoveryTool -or -not (Test-Path -LiteralPath $recoveryTool -PathType Leaf)) { throw 'installed crash recovery client is missing' }
+    $recoveryControllerPath = $env:PATH
     try {
+        $env:PATH = $ToolsPath
         & $recoveryTool --project-id (Get-Project).id --project-directory $projectDirectory --evidence (Join-Path $EvidenceDirectory 'crash-recovery.json')
         if ($LASTEXITCODE -ne 0) { throw 'installed crash recovery client failed' }
     } finally {
+        $env:PATH = $recoveryControllerPath
         # The original retained process exited intentionally; refresh only the selected installed daemon for subsequent approval and cleanup.
         $replacement = @(Get-Process -Name harbord -ErrorAction SilentlyContinue)
         if ($replacement.Count -ne 1) { throw 'exactly one recovered installed daemon is required' }
