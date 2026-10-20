@@ -337,7 +337,7 @@ public static class HarborUIProfile {
             List<LuidAndAttributes> deleted=new List<LuidAndAttributes>();
             foreach (LuidAndAttributes privilege in Privileges(original)) if (PrivilegeName(privilege.luid) != "SeChangeNotifyPrivilege") deleted.Add(privilege);
             // DISABLE_MAX_PRIVILEGE ignores the deletion list and leaves reenableable entries behind.
-            if (!CreateRestrictedToken(original, 0, 1, disable, (uint)deleted.Count, deleted.ToArray(), 0, IntPtr.Zero, out restricted)) throw new Win32Exception();
+            if (!CreateRestrictedToken(original, 4, 1, disable, (uint)deleted.Count, deleted.ToArray(), 0, IntPtr.Zero, out restricted)) throw new Win32Exception();
             IntPtr user=TokenBuffer(restricted, 1);
             try { if (!SetTokenInformation(restricted, 4, user, IntPtr.Size)) throw new Win32Exception(); }
             finally { Marshal.FreeHGlobal(user); }
