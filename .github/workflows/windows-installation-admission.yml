@@ -72,6 +72,14 @@ jobs:
         run: |
           go test ./internal/platform/daemonservice -run '^TestWindowsPreparation' -count=1 -timeout=3m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\windows-migration-preparation.log"
           if ($LASTEXITCODE -ne 0) { throw "native migration preparation failed" }
+      - name: Prove privileged machine writer serialization
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          go test ./internal/platform/windowsmachine -count=1 -timeout=1m -v
+          if ($LASTEXITCODE -ne 0) { throw "native machine transaction tests failed" }
+          go test ./cmd/helper -run '^TestHelper(DependencyBoundary|HasOnlyReviewedRuntimeDependencies)$' -count=1 -v
+          if ($LASTEXITCODE -ne 0) { throw "privileged helper dependency boundary failed" }
       - name: Validate native stable launcher orchestration
         if: ${{ !cancelled() }}
         shell: pwsh

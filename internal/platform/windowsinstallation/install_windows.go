@@ -4,6 +4,7 @@ package windowsinstallation
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -19,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -45,7 +47,18 @@ func Install(payload fs.FS) (*Installation, error) {
 	if err != nil {
 		return nil, err
 	}
-	return installAt(root, PublisherThumbprint, payload)
+	var installation *Installation
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	err = WithMachineTransaction(ctx, func() error {
+		var installErr error
+		installation, installErr = installAt(root, PublisherThumbprint, payload)
+		return installErr
+	})
+	if err != nil && installation != nil {
+		return nil, errors.Join(err, installation.Close())
+	}
+	return installation, err
 }
 
 // installAt is separately exercised with complete disposable signed fixtures without invoking installed product code.
