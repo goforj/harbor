@@ -191,37 +191,50 @@ jobs:
             -InstallRoot $env:HARBOR_INSTALL_ROOT `
             -EvidenceDirectory "$env:RUNNER_TEMP\harbor-installed-ui-evidence" `
             -ToolsPath $env:HARBOR_UI_TOOLS
-      - name: Retain stopped registration and project file hashes
+      - name: Require complete ownership-aware cleanup
+        if: always() && env.HARBOR_INSTALL_ROOT != ''
+        id: cleanup
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $evidence = "$env:RUNNER_TEMP\harbor-installed-ui-evidence"
-          $ui = Get-Content "$evidence\installed-ui.json" -Raw | ConvertFrom-Json
-          & "$env:HARBOR_INSTALL_ROOT\harbor.exe" daemon stop
-          if ($LASTEXITCODE -ne 0) { throw 'daemon shutdown failed' }
-          $database = "$env:LOCALAPPDATA\GoForj\Harbor\harbor.db"
-          $retained = @{}
-          foreach ($path in @($database, (Join-Path $ui.project_directory '.goforj.yml'), (Join-Path $ui.project_directory 'go.mod'))) {
-            $retained[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          $path = "$env:RUNNER_TEMP\harbor-installed-ui-evidence\cleanup.json"
+          if (-not (Test-Path $path -PathType Leaf)) { throw 'installed UI cleanup receipt is missing' }
+          $cleanup = Get-Content $path -Raw | ConvertFrom-Json
+          foreach ($fact in @('gui_quiescent','fixtures_stopped','network_released','daemon_absent')) {
+            if ($cleanup.$fact -ne $true) { throw "partial installed cleanup: $fact was not verified" }
           }
-          $retained | ConvertTo-Json | Set-Content "$evidence\retained-files.json"
+          'ready=true' | Out-File $env:GITHUB_OUTPUT -Append
       - name: Uninstall exact admitted package
+        if: always() && steps.cleanup.outputs.ready == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $sentinel = Join-Path $env:HARBOR_INSTALL_ROOT 'harbor-ui-foreign-sentinel.txt'
+          [IO.File]::WriteAllText($sentinel, "foreign package state $env:GITHUB_RUN_ID")
+          $sentinelHash = (Get-FileHash $sentinel -Algorithm SHA256).Hash
+          $signerThumbprint = [IO.File]::ReadAllText((Join-Path $env:HARBOR_INSTALL_ROOT 'harbor-helper-signing-thumbprint.txt')).Trim()
           $uninstaller = Join-Path $env:RUNNER_TEMP 'harbor-ui-uninstall.exe'
           Copy-Item "$env:HARBOR_INSTALL_ROOT\Uninstall.exe" $uninstaller
           $process = Start-Process $uninstaller -ArgumentList "/S _?=$env:HARBOR_INSTALL_ROOT" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "uninstall exit $($process.ExitCode)" }
           $evidence = "$env:RUNNER_TEMP\harbor-installed-ui-evidence"
-          $retained = Get-Content "$evidence\retained-files.json" -Raw | ConvertFrom-Json -AsHashtable
+          $retained = (Get-Content "$evidence\cleanup.json" -Raw | ConvertFrom-Json -AsHashtable).retained_files
           foreach ($path in $retained.Keys) {
             if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $retained[$path]) { throw "uninstall changed retained file $path" }
           }
           if (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor') { throw 'package receipt remains' }
           if (Test-Path "$env:ProgramData\GoForj\Harbor") { throw 'Harbor machine state remains' }
           if (@(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -like 'GoForj Harbor Resolver *' -or $_.Comment -like 'goforj.harbor.resolver *' }).Count -ne 0) { throw 'Harbor resolver projection remains' }
-          'retained_user_files=preserved' | Set-Content "$evidence\uninstall.txt"
+          foreach ($name in @('harbor-desktop.exe','harbor.exe','harbord.exe','outputbroker.exe','harbor-helper.exe','harbor-helper-signing.cer','harbor-helper-signing-thumbprint.txt','harbor-uninstall.ps1','Uninstall.exe')) {
+            if (Test-Path (Join-Path $env:HARBOR_INSTALL_ROOT $name)) { throw "installed component remains: $name" }
+          }
+          foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher')) {
+            if (Test-Path (Join-Path $store $signerThumbprint)) { throw 'disposable package signer remains trusted' }
+          }
+          if ((Get-FileHash $sentinel -Algorithm SHA256).Hash -cne $sentinelHash) { throw 'foreign package sentinel changed' }
+          @('retained_user_files=preserved','foreign_package_sentinel=preserved','package_receipt=absent','installed_components=absent','harbor_machine_state=absent') | Set-Content "$evidence\uninstall.txt"
+          Remove-Item $sentinel
+          Remove-Item $env:HARBOR_INSTALL_ROOT
       - uses: actions/upload-artifact@v7
         if: always()
         with:
