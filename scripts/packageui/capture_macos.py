@@ -1,9 +1,44 @@
 """Retain a live launch transcript before a failed startup retires its temporary diagnostics."""
 
 from pathlib import Path
+from datetime import datetime, timezone
 import subprocess
 import sys
 import time
+
+
+def retain_process_stages(temporary, evidence):
+    """retain_process_stages observes arguments only for descendants of a validated disposable project."""
+    observed = subprocess.run(["/bin/ps", "-axo", "pid,ppid,state,etime,time,%cpu,nice,comm"], text=True, capture_output=True, timeout=10)
+    rows = []
+    admitted = set()
+    for line in observed.stdout.splitlines()[1:]:
+        fields = line.split(None, 7)
+        if len(fields) != 8 or not fields[0].isdigit() or not fields[1].isdigit():
+            continue
+        pid, parent = int(fields[0]), int(fields[1])
+        rows.append((pid, parent))
+        if Path(fields[7]).name != "forj":
+            continue
+        cwd = subprocess.run(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], text=True, capture_output=True, timeout=10)
+        for name in cwd.stdout.splitlines():
+            if not name.startswith("n"):
+                continue
+            project = Path(name[1:])
+            if project.name == "project" and project.parent.parent == temporary and project.parent.match("harbor-package-ui-????????-????-????-????-????????????") and not project.parent.is_symlink() and not project.is_symlink() and project.is_dir() and project.resolve().parent.parent == temporary.resolve():
+                admitted.add(pid)
+    while True:
+        descendants = {pid for pid, parent in rows if parent in admitted}
+        if descendants.issubset(admitted):
+            break
+        admitted.update(descendants)
+    evidence.mkdir(parents=True, exist_ok=True)
+    with (evidence / "fixture-process-stages.txt").open("a") as output:
+        output.write("\nobserved=" + datetime.now(timezone.utc).isoformat() + "\n")
+        output.write(observed.stdout + observed.stderr)
+        if admitted:
+            stages = subprocess.run(["/bin/ps", "-p", ",".join(str(pid) for pid in sorted(admitted)), "-o", "pid,ppid,state,etime,time,%cpu,nice,args"], text=True, capture_output=True, timeout=10)
+            output.write("\nvalidated fixture descendants:\n" + stages.stdout + stages.stderr)
 
 
 def retain_traces(temporary, evidence, npm_logs=None):
@@ -47,9 +82,7 @@ def main():
         while process.poll() is None:
             retained = retain_traces(temporary, evidence, npm_logs)
             if retained and time.monotonic() - observed_at >= 15:
-                # Command names expose stalled tool stages without collecting arguments or process environments.
-                observed = subprocess.run(["/bin/ps", "-axo", "pid,ppid,state,etime,comm"], text=True, capture_output=True, timeout=10)
-                (evidence / "fixture-process-stages.txt").write_text(observed.stdout + observed.stderr)
+                retain_process_stages(temporary, evidence)
                 observed_at = time.monotonic()
             time.sleep(0.2)
         retain_traces(temporary, evidence, npm_logs)
