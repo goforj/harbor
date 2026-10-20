@@ -280,3 +280,49 @@ func admitDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, directory bool) er
 	}
 	return nil
 }
+
+// VerifyUninstallerCopy pins a retained staged copy to the exact admitted maintenance agent before execution or removal.
+func (installation *Installation) VerifyUninstallerCopy(file *os.File) error {
+	if _, err := installation.Path("uninstaller"); err != nil {
+		return err
+	}
+	var expected Component
+	for _, component := range installation.manifest.Components {
+		if component.Role == "uninstaller" {
+			expected = component
+			break
+		}
+	}
+	var information windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &information); err != nil {
+		return err
+	}
+	if information.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 || information.NumberOfLinks != 1 {
+		return errors.New("uninstaller copy has a reparse, hardlink or type conflict")
+	}
+	final, err := windowsfile.FinalPath(windows.Handle(file.Fd()))
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(final, `\\?\`+file.Name()) {
+		return errors.New("uninstaller copy path is not canonical")
+	}
+	stat, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if stat.Size() != expected.Size {
+		return errors.New("uninstaller copy size differs from admitted component")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return err
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != expected.SHA256 {
+		return errors.New("uninstaller copy digest differs from admitted component")
+	}
+	return verifySignature(file, installation.selection.SignerThumbprint)
+}

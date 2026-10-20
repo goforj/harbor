@@ -27,7 +27,7 @@ type TokenFacts struct {
 	MandatoryPolicy uint32 `json:"mandatory_policy"`
 	// UIAccess must remain zero for Harbor product roles.
 	UIAccess uint32 `json:"ui_access"`
-	// Elevation records metadata that may remain one for a restricted SID500 token.
+	// Elevation must be zero on the actual product worker.
 	Elevation uint32 `json:"elevation"`
 }
 
@@ -140,8 +140,8 @@ func restrictedRuntimeToken(source windows.Token) (windows.Token, error) {
 		removedPointer = &removed[0]
 	}
 	var token windows.Token
-	// Flags must remain zero: DISABLE_MAX_PRIVILEGE ignores the explicit removal list.
-	result, _, callErr := createRestrictedToken.Call(uintptr(source), 0, 1, uintptr(unsafe.Pointer(&groups[0])), uintptr(len(removed)), uintptr(unsafe.Pointer(removedPointer)), 0, 0, uintptr(unsafe.Pointer(&token)))
+	// LUA_TOKEN creates the documented filtered token; DISABLE_MAX_PRIVILEGE would ignore explicit removal.
+	result, _, callErr := createRestrictedToken.Call(uintptr(source), 4, 1, uintptr(unsafe.Pointer(&groups[0])), uintptr(len(removed)), uintptr(unsafe.Pointer(removedPointer)), 0, 0, uintptr(unsafe.Pointer(&token)))
 	runtime.KeepAlive(buffer)
 	runtime.KeepAlive(groups)
 	runtime.KeepAlive(removed)
@@ -208,7 +208,7 @@ func admitRuntimeFacts(facts TokenFacts) error {
 	if facts.UserSID == "" || facts.UserSID == "S-1-5-18" || facts.OwnerSID != facts.UserSID {
 		return errors.New("Windows token default owner differs from its interactive user SID")
 	}
-	if facts.Session == 0 || facts.Integrity != 8192 || facts.MandatoryPolicy&1 == 0 || facts.UIAccess != 0 {
+	if facts.Session == 0 || facts.Integrity != 8192 || facts.MandatoryPolicy&1 == 0 || facts.UIAccess != 0 || facts.Elevation != 0 {
 		return errors.New("Harbor installed role requires interactive medium integrity, no-write-up and no UIAccess")
 	}
 	return nil

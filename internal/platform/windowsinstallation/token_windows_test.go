@@ -44,7 +44,7 @@ func TestRuntimeFactsRejectAuthorityDrift(t *testing.T) {
 	if err := admitRuntimeFacts(valid); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutate := range []func(*TokenFacts){func(f *TokenFacts) { f.OwnerSID = administratorsSID }, func(f *TokenFacts) { f.UserSID = "" }, func(f *TokenFacts) { f.UserSID = systemSID; f.OwnerSID = systemSID }, func(f *TokenFacts) { f.Session = 0 }, func(f *TokenFacts) { f.Integrity = 12288 }, func(f *TokenFacts) { f.MandatoryPolicy = 2 }, func(f *TokenFacts) { f.UIAccess = 1 }} {
+	for _, mutate := range []func(*TokenFacts){func(f *TokenFacts) { f.OwnerSID = administratorsSID }, func(f *TokenFacts) { f.UserSID = "" }, func(f *TokenFacts) { f.UserSID = systemSID; f.OwnerSID = systemSID }, func(f *TokenFacts) { f.Session = 0 }, func(f *TokenFacts) { f.Integrity = 12288 }, func(f *TokenFacts) { f.MandatoryPolicy = 2 }, func(f *TokenFacts) { f.UIAccess = 1 }, func(f *TokenFacts) { f.Elevation = 1 }} {
 		changed := valid
 		mutate(&changed)
 		if admitRuntimeFacts(changed) == nil {
