@@ -1,8 +1,14 @@
 # Development Handoff
 
-Status: installed daemon lifecycle passed native macOS/Ubuntu package checks; PR CI follow-up in progress
+Status: updating PR #12 acceptance pins to released GoForj v0.34.1 before merge
 
 Last updated: 2026-10-19
+
+## CLI pin integration continuation (2026-10-19)
+
+The user authorized merging Harbor PR #12, updating its packaged/CI CLI pins, and verifying the clean installed graphical lifecycle. Work remains isolated in `/tmp/harbor-installed-daemon-20261019` on `fix/installed-daemon-lifecycle`; the active source-development checkout and running projects are preserved.
+
+All executable CLI source pins and expected acceptance versions now select GoForj v0.34.1. Existing v0.34.0 evidence below is historical and is not rewritten. Root/desktop framework module dependencies and the desktop relative replacement remain unchanged. All nine workflow files parse, all fourteen executable CLI pins and version expectations align, the three-project MySQL render check passes with the published CLI, and focused macOS release-adapter checks pass. Refreshed PR checks and a new native package rehearsal are pending. Installed GUI proof requires an actual disposable interactive session; the headless daemon adapter gate does not establish it, and package installation/removal must not replace the user's active source-development installation.
 
 ## Installed daemon implementation continuation (2026-10-19)
 

@@ -1,5 +1,11 @@
 # Current Implementation State
 
+## GoForj CLI maintenance (2026-10-19)
+
+CI, hosted lifecycle jobs, native package acceptance, and generated-project acceptance now select released GoForj v0.34.1. That patch centralizes local database readiness and recognizes standard historical database hooks once per service while preserving custom hook ordering. This changes the external CLI selected for Harbor acceptance, not Harbor's framework module dependencies, generated-project configuration metadata, or the intentional relative desktop module replacement.
+
+GoForj PR #252 merged at `1566ce542af416cdf643bc07e35986ff8de760ad`; its 51 PR checks passed. The published CLI is installed locally, and Test4 restarted through Harbor with its original configuration unchanged, one database preparation, no historical wait-script execution, preserved frontend hook order, and system-trusted HTTPS 200. Native Harbor package evidence below predates this CLI pin until a new rehearsal is recorded.
+
 ## Installed daemon lifecycle (2026-10-19)
 
 The `fix/installed-daemon-lifecycle` implementation adds a package-owned `harbord.service` and a release-only Linux desktop adapter. The adapter verifies direct root-owned package files, rejects user-shadowed units and drop-ins, then starts the systemd user service. It does not enable linger or create a daemon child tied to the window. Source development and Windows activation remain unchanged.
