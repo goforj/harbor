@@ -42,7 +42,7 @@ func (child *fixtureChild) Close() error {
 	return child.closeError
 }
 
-// TestWindowsDaemonLauncher rejects worker authority and unsupported modes before installation or user-data access.
+// TestWindowsDaemonLauncherAdmission rejects worker authority and unsupported modes before installation or user-data access.
 func TestWindowsDaemonLauncherAdmission(t *testing.T) {
 	for _, arguments := range [][]string{{"--unknown"}, {"--installed-worker", "extra"}, {"migrate"}, {"--foreground"}} {
 		operations := launcherOperations{}
