@@ -217,7 +217,16 @@ function Save-StartupDiagnostics([string]$Phase) {
         foreach ($row in $rows) { $byID[[int]$row.ProcessId] = $row }
         $facts = @()
         foreach ($row in $rows) {
-            if ($row.Name -notin @('forj.exe','go.exe','node.exe','npm.exe','cmd.exe','outputbroker.exe')) { continue }
+            if ($facts.Count -ge 128) { break }
+            $candidate = $row
+            $reachesDaemon = $false
+            for ($depth=0; $depth -lt 16; $depth++) {
+                if ([int]$candidate.ProcessId -eq $daemonProcess.Id) { $reachesDaemon = $true; break }
+                if (-not $byID.ContainsKey([int]$candidate.ParentProcessId)) { break }
+                $candidate = $byID[[int]$candidate.ParentProcessId]
+            }
+            if (-not $reachesDaemon -or [int]$row.ProcessId -eq $daemonProcess.Id) { continue }
+            # Snapshot ancestry only selects candidates; retained native handles and births below establish ownership.
             $held = [Collections.Generic.List[Diagnostics.Process]]::new()
             try {
                 $current = $row
@@ -260,7 +269,7 @@ function Await-ProjectState([string]$Expected) {
             throw "project entered $($project.state)"
         }
         return $project.state -ceq $Expected
-    } 240
+    } $(if ($Expected -ceq 'ready') { 360 } else { 240 })
 }
 function Unregister-Fixture($Project) {
     if (-not [string]::Equals($Project.path, $projectDirectory, [StringComparison]::OrdinalIgnoreCase)) { throw 'refusing removal outside the exact created fixture' }
@@ -320,11 +329,19 @@ function Save-Observation([string]$Name) {
 Assert-InteractiveWorker
 try {
     $originalProcess = Open-Harbor
+    $null = Get-Snapshot
     Wait-Until 'medium-integrity installed daemon' { @(Get-Process -Name harbord -ErrorAction SilentlyContinue).Count -eq 1 } 60
-    $daemonProcess = Get-Process -Name harbord
+    $initialDaemons = @(Get-Process -Name harbord -ErrorAction SilentlyContinue)
+    if ($initialDaemons.Count -ne 1) { throw 'initial installed daemon selection is ambiguous' }
+    $daemonProcess = $initialDaemons[0]
     $null = $daemonProcess.Handle
     [HarborUIProfile]::AssertProductProcess($daemonProcess.Id)
-    if ($daemonProcess.Path -cne $daemonPath) { throw 'daemon process is outside admitted installation' }
+    if ($daemonProcess.HasExited -or $daemonProcess.Path -cne $daemonPath) { throw 'initial daemon is unavailable or outside admitted installation' }
+    [ordered]@{
+        phase='initial-selection-after-authoritative-snapshot'; pid=$daemonProcess.Id
+        native_birth=$daemonProcess.StartTime.ToFileTimeUtc().ToString(); image=$daemonProcess.Path
+        session=$daemonProcess.SessionId; token_profile_verified=$true
+    } | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'initial-daemon-selection.json') -Encoding UTF8
     Save-Observation 'installed-first-launch'
     Wait-Until 'fresh setup action' {
         $null -ne (Find-Control 'Set up secure networking' ([System.Windows.Automation.ControlType]::Button))
@@ -367,6 +384,28 @@ try {
     Await-ProjectState 'ready'
     Assert-HTTPS
     Save-Observation 'reopened-running-project'
+    $recoveryTool = $env:HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL
+    if (-not $recoveryTool -or -not (Test-Path -LiteralPath $recoveryTool -PathType Leaf)) { throw 'installed crash recovery client is missing' }
+    $recoveryControllerPath = $env:PATH
+    try {
+        $env:PATH = $ToolsPath
+        & $recoveryTool --project-id (Get-Project).id --project-directory $projectDirectory --evidence (Join-Path $EvidenceDirectory 'crash-recovery.json')
+        if ($LASTEXITCODE -ne 0) { throw 'installed crash recovery client failed' }
+    } finally {
+        $env:PATH = $recoveryControllerPath
+        # The original retained process exited intentionally; refresh only the selected installed daemon for subsequent approval and cleanup.
+        $replacement = @(Get-Process -Name harbord -ErrorAction SilentlyContinue)
+        if ($replacement.Count -ne 1) { throw 'exactly one recovered installed daemon is required' }
+        $null = $replacement[0].Handle
+        [HarborUIProfile]::AssertProductProcess($replacement[0].Id)
+        if ($replacement[0].HasExited -or $replacement[0].Path -cne $daemonPath) { throw 'recovered daemon is outside admitted installation' }
+        if ($null -ne $daemonProcess) { $daemonProcess.Dispose() }
+        $daemonProcess = $replacement[0]
+    }
+    Await-ProjectState 'ready'
+    Assert-HTTPS
+    Invoke-Button 'Projects'
+    Invoke-Button 'Refresh Harbor state'
     if ($null -eq (Find-Control 'Stop project' ([System.Windows.Automation.ControlType]::Button))) {
         Invoke-Button 'Projects'
         $projectLink = $null
@@ -383,6 +422,8 @@ try {
         }
         $script:projectLink.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     }
+    $null = Await-Control 'Stop project' ([System.Windows.Automation.ControlType]::Button)
+    Save-Observation 'reconnected-after-crash-recovery'
     Invoke-Button 'Stop project'
     Await-ProjectState 'stopped'
     Invoke-NativeUIQuit $reopenedProcess
@@ -390,7 +431,7 @@ try {
         application=$desktopPath; launcher=$launcherPath; daemon=$daemonPath; bundle_digest=$selection.bundle_digest; project_directory=$projectDirectory; project_id=(Get-Project).id
         creation='production graphical wizard through native UIAutomation'; start='ready and system-trusted HTTPS 200'
         window_close='project remains ready'; second_launch='original process restored'
-        ui_quit='daemon and project remain ready'; ui_reopen='registration retained and HTTPS 200'; final_project_state='stopped'
+        crash_recovery='installed authenticated daemon crashes, safe retry, healthy peer and live GUI reconnect'; ui_quit='daemon and project remain ready'; ui_reopen='registration retained and HTTPS 200'; final_project_state='stopped'
     } | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'installed-ui.json') -Encoding utf8
 } catch {
     $originalFailure = $_

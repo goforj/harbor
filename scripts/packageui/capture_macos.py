@@ -2,9 +2,38 @@
 
 from pathlib import Path
 from datetime import datetime, timezone
+import os
+import plistlib
 import subprocess
 import sys
 import time
+
+
+def configure_test_runner(products, environment):
+    """configure_test_runner forwards worker facts to the compiled native runner without unresolved scheme macros."""
+    files = list(products.glob("*.xctestrun"))
+    if len(files) != 1 or files[0].is_symlink() or not files[0].is_file():
+        raise ValueError("exactly one regular XCTest run configuration is required")
+    path = files[0]
+    data = plistlib.loads(path.read_bytes())
+    if not isinstance(data, dict):
+        raise ValueError("native run configuration is malformed")
+    targets = [key for key in data if key != "__xctestrun_metadata__"]
+    target = data.get("HarborPackageUITests")
+    if targets != ["HarborPackageUITests"] or not isinstance(target, dict) or target.get("BlueprintName") != "HarborPackageUITests":
+        raise ValueError("unexpected native test target")
+    required = ("HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL", "PATH", "GITHUB_ACTIONS",
+                "GITHUB_REPOSITORY", "RUNNER_ENVIRONMENT", "RUNNER_TEMP")
+    selected = {key: environment.get(key, "") for key in required}
+    if any(not isinstance(value, str) or not value or "\0" in value for value in selected.values()):
+        raise ValueError("native runner environment is incomplete")
+    if not isinstance(target.get("EnvironmentVariables"), dict):
+        raise ValueError("native runner environment is malformed")
+    target["EnvironmentVariables"].update(selected)
+    temporary = path.with_suffix(".xctestrun.tmp")
+    temporary.write_bytes(plistlib.dumps(data))
+    temporary.replace(path)
+    return path
 
 
 def retain_process_stages(temporary, evidence):
@@ -74,6 +103,12 @@ def retain_traces(temporary, evidence, npm_logs=None):
 
 def main():
     """main preserves the native driver's exit status while observing its temporary launch output."""
+    if len(sys.argv) == 3 and sys.argv[1] == "configure-runner":
+        products = Path(os.environ["RUNNER_TEMP"]) / "harbor-package-ui-build/Build/Products"
+        if products.is_symlink() or Path(sys.argv[2]).resolve() != products.resolve():
+            raise ValueError("native runner must come from the workflow's selected build")
+        print(configure_test_runner(products, os.environ))
+        return 0
     temporary = Path("/private/tmp")
     evidence = Path("harbor-package-ui-evidence")
     npm_logs = Path.home() / ".npm/_logs"

@@ -18,6 +18,19 @@ type unixProcessMember struct {
 	BirthToken string
 }
 
+// errOwnedUnixSessionLeaderOmitted identifies only an exact live leader omitted from an empty scope census.
+var errOwnedUnixSessionLeaderOmitted = errors.New("live leader absent from empty session census")
+
+const emptyOwnedUnixSessionObservationWindow = 50 * time.Millisecond
+const emptyOwnedUnixSessionObservationPoll = 5 * time.Millisecond
+
+// unixSessionObservation binds each retry to a fresh native root, full census, and leader-state observation.
+type unixSessionObservation struct {
+	birth   func(int) (string, bool, error)
+	members func(int) ([]unixProcessMember, error)
+	zombie  func(int) (bool, bool, error)
+}
+
 // hostProcessBirthToken removes Harbor's ownership-scope marker before comparing the kernel birth identity.
 func hostProcessBirthToken(persistedBirthToken string) string {
 	return strings.TrimPrefix(persistedBirthToken, ownedUnixSessionBirthTokenPrefix)
@@ -74,38 +87,58 @@ func legacyUnixProcessScopeError(pid int, state PriorProcessState) error {
 }
 
 // observeOwnedProcessSession classifies the launch PID and every live descendant that still shares its session ID.
-func observeOwnedProcessSession(
-	sessionID int,
-	expectedRootBirth string,
-) (PriorProcessState, []unixProcessMember, error) {
-	rootState, err := observePriorProcessState(sessionID, expectedRootBirth, observeProcessBirthToken)
+func observeOwnedProcessSession(sessionID int, expectedRootBirth string) (PriorProcessState, []unixProcessMember, error) {
+	return observeOwnedProcessSessionWithObservation(sessionID, expectedRootBirth, unixSessionObservation{
+		birth: observeProcessBirthToken, members: unixSessionMembers, zombie: unixProcessZombie,
+	})
+}
+
+// observeOwnedProcessSessionWithObservation tolerates only the demonstrated empty-census exit transition for the same birth.
+func observeOwnedProcessSessionWithObservation(sessionID int, expectedRootBirth string, observation unixSessionObservation) (PriorProcessState, []unixProcessMember, error) {
+	deadline := time.Now().Add(emptyOwnedUnixSessionObservationWindow)
+	for {
+		state, members, err := observeOwnedProcessSessionOnce(sessionID, expectedRootBirth, observation)
+		if !errors.Is(err, errOwnedUnixSessionLeaderOmitted) || !time.Now().Before(deadline) {
+			return state, members, err
+		}
+		time.Sleep(emptyOwnedUnixSessionObservationPoll)
+	}
+}
+
+// observeOwnedProcessSessionOnce never carries a partial census or prior root observation into the next attempt.
+func observeOwnedProcessSessionOnce(sessionID int, expectedRootBirth string, observation unixSessionObservation) (PriorProcessState, []unixProcessMember, error) {
+	rootState, err := observePriorProcessState(sessionID, expectedRootBirth, observation.birth)
 	if err != nil || rootState == PriorProcessReplaced {
 		return rootState, nil, err
 	}
-	members, err := unixSessionMembers(sessionID)
+	members, err := observation.members(sessionID)
 	if err != nil {
 		return "", nil, err
 	}
-	rootState, err = observePriorProcessState(sessionID, expectedRootBirth, observeProcessBirthToken)
+	rootState, err = observePriorProcessState(sessionID, expectedRootBirth, observation.birth)
 	if err != nil || rootState == PriorProcessReplaced {
 		return rootState, nil, err
 	}
 	if len(members) == 0 {
-		return classifyEmptyOwnedUnixSession(sessionID, expectedRootBirth)
+		return classifyEmptyOwnedUnixSessionWithObservation(sessionID, expectedRootBirth, observation)
 	}
 	return PriorProcessPresent, members, nil
 }
 
 // classifyEmptyOwnedUnixSession distinguishes an exited zombie leader from an unexpectedly omitted live leader.
-func classifyEmptyOwnedUnixSession(
-	sessionID int,
-	expectedRootBirth string,
-) (PriorProcessState, []unixProcessMember, error) {
-	zombie, present, err := unixProcessZombie(sessionID)
+func classifyEmptyOwnedUnixSession(sessionID int, expectedRootBirth string) (PriorProcessState, []unixProcessMember, error) {
+	return classifyEmptyOwnedUnixSessionWithObservation(sessionID, expectedRootBirth, unixSessionObservation{
+		birth: observeProcessBirthToken, zombie: unixProcessZombie,
+	})
+}
+
+// classifyEmptyOwnedUnixSessionWithObservation tags only a present, exact, non-zombie leader as eligible for re-observation.
+func classifyEmptyOwnedUnixSessionWithObservation(sessionID int, expectedRootBirth string, observation unixSessionObservation) (PriorProcessState, []unixProcessMember, error) {
+	zombie, present, err := observation.zombie(sessionID)
 	if err != nil {
 		return "", nil, fmt.Errorf("inspect owned Unix session %d leader state: %w", sessionID, err)
 	}
-	rootState, err := observePriorProcessState(sessionID, expectedRootBirth, observeProcessBirthToken)
+	rootState, err := observePriorProcessState(sessionID, expectedRootBirth, observation.birth)
 	if err != nil || rootState != PriorProcessPresent {
 		return rootState, nil, err
 	}
@@ -115,7 +148,7 @@ func classifyEmptyOwnedUnixSession(
 	if zombie {
 		return PriorProcessAbsent, nil, nil
 	}
-	return "", nil, fmt.Errorf("owned Unix session %d omitted its live leader", sessionID)
+	return "", nil, fmt.Errorf("owned Unix session %d omitted its live leader: %w", sessionID, errOwnedUnixSessionLeaderOmitted)
 }
 
 // signalOwnedProcessSession signals only members whose birth and session identity still match the observed scope.

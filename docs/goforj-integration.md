@@ -41,6 +41,8 @@ The file is created exclusively in Harbor's private runtime/output directory, na
 
 Harbor keeps process supervision and independent HTTP readiness authoritative. A completed GoForj startup span means watcher reconciliation completed, not that Harbor may publish routes or report readiness. The desktop uses these records solely for a bounded, collapsible startup timeline. Read-only Docker diagnostics can additionally identify a conflicting running-container publication after failure; they grant no stop, repair, or container mutation capability.
 
+Harbor allows up to five minutes for App readiness after launching the supervised runtime. Cold dependency installation and frontend builds share that budget: a [native Windows dependency install](https://github.com/goforj/harbor/actions/runs/39470269576) alone took about 98 seconds. The previous two-minute limit could expire before the build finished. A stalled runtime can therefore remain starting for five minutes before Harbor reports `project.readiness.timeout` and settles the supervised process. Individual HTTP probes retain their one-second bound within the overall deadline.
+
 ## Current foundation
 
 GoForj already provides most of the project semantics Harbor needs:

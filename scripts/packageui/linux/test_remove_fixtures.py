@@ -12,7 +12,7 @@ import remove_fixtures
 
 
 class FixtureRemovalTests(unittest.TestCase):
-    def exercise(self, states, *, wrong_project=False, approval_failure=False, registration_remains=False, expired=False):
+    def exercise(self, states, *, wrong_project=False, approval_failure=False, registration_remains=False, expired=False, project_state='stopped'):
         with tempfile.TemporaryDirectory(prefix='harbor-package-ui-', dir='/tmp') as temporary:
             root = Path(temporary).resolve()
             checkout = root / 'project'
@@ -21,7 +21,7 @@ class FixtureRemovalTests(unittest.TestCase):
             tool = root / 'approval-tool'
             tool.write_text('fixture executable stub, intercepted by test')
             tool.chmod(0o700)
-            project = {'id': 'project-fixture', 'path': str(checkout), 'state': 'stopped'}
+            project = {'id': 'project-fixture', 'path': str(checkout), 'state': project_state}
             events = []
             choices = iter(states)
 
@@ -79,6 +79,23 @@ class FixtureRemovalTests(unittest.TestCase):
         self.assertIn('ended failed', str(error))
         self.assertEqual(len(events), 1)
         self.assertEqual(report['projects'][0]['state'], 'incomplete')
+
+    def test_failed_fixture_still_requires_authoritative_unregister_success(self):
+        _, report, error = self.exercise(['requires_approval', 'succeeded'], project_state='failed')
+        self.assertIsNone(error)
+        self.assertEqual(report['projects'][0]['state'], 'unregistered')
+        _, report, error = self.exercise(['failed'], project_state='failed')
+        self.assertIn('ended failed', str(error))
+        self.assertEqual(report['projects'][0]['state'], 'incomplete')
+
+    def test_failed_runtime_projections_never_receive_cleanup_requests(self):
+        for extra in ({'apps': [{'state': 'ready', 'active': True}]},
+                      {'services': [{'state': 'ready'}]}, {'resources': [{'id': 'retained'}]}):
+            with self.subTest(extra=extra), mock.patch.object(remove_fixtures, 'run') as run:
+                project = dict(id='failed', path='/tmp/harbor-package-ui-test/project', state='failed', **extra)
+                with self.assertRaisesRegex(RuntimeError, 'retains runtime'):
+                    remove_fixtures.remove_projects([project], Path('/unused-receipt'))
+                run.assert_not_called()
 
     def test_success_response_does_not_substitute_for_registry_absence(self):
         _, report, error = self.exercise(['succeeded'], registration_remains=True, expired=True)

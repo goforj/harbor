@@ -126,13 +126,20 @@ def project():
     return next((row for row in snapshot().get('projects', []) if Path(row['path']).resolve() == directory), None)
 
 
+def created_project():
+    row = project()
+    if row is None and (find('Review choices') or find('Retry registration')):
+        raise RuntimeError('graphical project creation failed; see retained creation output')
+    return row
+
+
 def state(expected):
     def check():
         row = project()
         if row and row['state'] in ['failed', 'quarantined', 'unavailable']:
             raise RuntimeError('project failed: ' + json.dumps(row))
         return row and row['state'] == expected
-    wait('project ' + expected, check, 180)
+    wait('project ' + expected, check, 360 if expected == 'ready' else 180)
 
 
 def https(slug):
@@ -150,7 +157,16 @@ def capture(name):
         app = application()
         if app is not None:
             try:
-                rows = [node.getRoleName() + ': ' + node.name + ' states=' + str(node.getState().getStates()) for node in nodes(app)]
+                rows = []
+                for node in nodes(app):
+                    rows.append(node.getRoleName() + ': ' + node.name + ' states=' + str(node.getState().getStates()))
+                    if node.name == 'Creation output':
+                        output = accessible_text(node)
+                        if not output:
+                            # WebKit can expose the preformatted text on child
+                            # nodes instead of the labelled section itself.
+                            output = '\n'.join(accessible_text(child) for child in nodes(node))
+                        (EVIDENCE / (name + '-creation-output.txt')).write_text(output[-262144:])
                 (EVIDENCE / (name + '-accessibility.txt')).write_text('\n'.join(rows))
                 return
             except GLib.GError as caught:
@@ -181,6 +197,13 @@ def launch():
         require_running('initial window presentation')
         return window(True)
     wait('window visible', visible, 60)
+
+
+def accessible_text(node):
+    try:
+        return node.queryText().getText(0, -1)
+    except (NotImplementedError, GLib.GError):
+        return ''
 
 
 def window(visible):
@@ -238,7 +261,7 @@ try:
     click('Continue')
     capture('creation-review')
     click('Create project')
-    row = wait('created registration', project, 300)
+    row = wait('created registration', created_project, 300)
     assert row['state'] == 'stopped'
     click('Start project')
     state('ready')
@@ -267,11 +290,27 @@ try:
     state('ready')
     https(row['slug'])
     capture('reopened-running-project')
+    # The driver uses authenticated control requests and native service identity.
+    # Keep this original graphical process alive across both daemon crashes.
+    recovery_tool = Path(os.environ['HARBOR_PACKAGE_UI_CRASH_RECOVERY_TOOL'])
+    assert recovery_tool.is_absolute() and recovery_tool.is_file()
+    subprocess.run([
+        str(recovery_tool), '--project-id', row['id'],
+        '--project-directory', str(directory.resolve()),
+        '--evidence', str((EVIDENCE / 'installed-crash-recovery.json').resolve()),
+    ], check=True, timeout=900, stdout=LOG, stderr=subprocess.STDOUT)
+    assert process.poll() is None
+    state('ready')
+    https(row['slug'])
     if not find('Stop project'):
         click('Projects')
         app = application()
         link = wait('project link', lambda: next((node for node in nodes(application()) if node.getRoleName() == 'link' and 'Harbor Installed Linux UI' in node.name), None))
         assert link.queryAction().doAction(0)
+    # This product control requires a connected daemon and a fresh snapshot.
+    wait('graphical client reconnected with live project controls', lambda:
+         find('Stop project') and find('Stop project').getState().contains(pyatspi.STATE_ENABLED), 60)
+    capture('daemon-crash-recovered-live-ui')
     click('Stop project')
     state('stopped')
     quit_ui()
@@ -285,6 +324,7 @@ try:
         'quit_method': 'native GTK menu',
         'ctrl_q': 'unsupported by pinned Wails GTK3 menu accelerator implementation',
         'relaunch': 'new installed process, registration retained and HTTPS 200',
+        'daemon_crash_recovery': 'two main-process crashes, live GUI reconnect, HTTPS 200, and enabled Stop',
         'stop': 'stopped registration retained',
     }, indent=2) + '\n')
 except BaseException:
