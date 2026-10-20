@@ -43,7 +43,7 @@ func (installation *Installation) Start(role string, arguments []string) (_ *Chi
 		return nil, err
 	}
 	var source windows.Token
-	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_ALL_ACCESS, &source); err != nil {
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE, &source); err != nil {
 		return nil, fmt.Errorf("open installed source token: %w", err)
 	}
 	defer func() { result = errors.Join(result, source.Close()) }()

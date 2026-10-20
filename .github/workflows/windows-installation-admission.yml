@@ -60,6 +60,7 @@ jobs:
           "HARBOR_ADMISSION_SIGNED_SCRIPT=$fixture\signed.ps1" | Out-File $env:GITHUB_ENV -Append
           "HARBOR_ADMISSION_CERTIFICATE=$fixture\signer.cer" | Out-File $env:GITHUB_ENV -Append
       - name: Prove exact native admission and drift refusal
+        working-directory: internal/platform/windowsinstallation
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
