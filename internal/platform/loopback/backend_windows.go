@@ -24,6 +24,7 @@ const (
 var (
 	ipHelperDLL                   = windows.NewLazySystemDLL("iphlpapi.dll")
 	initializeUnicastAddressEntry = ipHelperDLL.NewProc("InitializeUnicastIpAddressEntry")
+	setUnicastAddressEntry        = ipHelperDLL.NewProc("SetUnicastIpAddressEntry")
 	createUnicastAddressEntry     = ipHelperDLL.NewProc("CreateUnicastIpAddressEntry")
 	deleteUnicastAddressEntry     = ipHelperDLL.NewProc("DeleteUnicastIpAddressEntry")
 	windowsProcedureResolution    sync.Once
@@ -39,6 +40,7 @@ type windowsIPHelper interface {
 	initializeAddress(*windows.MibUnicastIpAddressRow) error
 	address(windows.MibUnicastIpAddressRow) (windows.MibUnicastIpAddressRow, error)
 	createAddress(*windows.MibUnicastIpAddressRow) error
+	setAddress(*windows.MibUnicastIpAddressRow) error
 	deleteAddress(*windows.MibUnicastIpAddressRow) error
 }
 
@@ -133,12 +135,21 @@ func (backend *platformBackend) ensure(ctx context.Context, interf InterfaceFact
 	if err != nil {
 		return err
 	}
+	if err := backend.requireAbsentAddress(row); err != nil {
+		return fmt.Errorf("verify absent address before create: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var creation windowsAddressCreation
+	windows.GetSystemTimeAsFileTime(&creation.before)
 	if err := backend.ipHelper.createAddress(&row); err != nil {
 		return fmt.Errorf("create IP Helper unicast address: %w", err)
 	}
 
-	if err := backend.reconcileAddress(context.Background(), row, true); err != nil {
-		rollbackErr := backend.rollbackCreatedAddress(row)
+	windows.GetSystemTimeAsFileTime(&creation.after)
+	if err := backend.reconcileCreatedAddress(context.Background(), row, true, &creation); err != nil {
+		rollbackErr := backend.rollbackCreatedAddress(row, &creation)
 		return errors.Join(fmt.Errorf("verify created IP Helper unicast address: %w", err), rollbackErr)
 	}
 	return nil
@@ -237,11 +248,19 @@ func configureWindowsAddressRow(row *windows.MibUnicastIpAddressRow, interf Inte
 
 // reconcileAddress bounds Windows' asynchronous DAD and deletion visibility before reporting a completed effect.
 func (backend *platformBackend) reconcileAddress(ctx context.Context, identity windows.MibUnicastIpAddressRow, wantPresent bool) error {
+	return backend.reconcileCreatedAddress(ctx, identity, wantPresent, nil)
+}
+
+// reconcileCreatedAddress restricts Windows source-selection correction to this successful absent-to-created transaction.
+func (backend *platformBackend) reconcileCreatedAddress(ctx context.Context, identity windows.MibUnicastIpAddressRow, wantPresent bool, creation *windowsAddressCreation) error {
 	for attempt := 0; attempt < backend.reconciliationAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		observed, err := backend.ipHelper.address(identity)
+		if wantPresent && creation != nil && err == nil && observed.SkipAsSource == 0 {
+			observed, err = backend.setCreatedSkipAsSource(observed, identity, creation)
+		}
 		if wantPresent {
 			switch {
 			case err == nil && exactWindowsAddressRow(observed, identity):
@@ -276,7 +295,7 @@ func (backend *platformBackend) reconcileAddress(ctx context.Context, identity w
 }
 
 // rollbackCreatedAddress removes only an address whose Create call succeeded in this operation.
-func (backend *platformBackend) rollbackCreatedAddress(row windows.MibUnicastIpAddressRow) error {
+func (backend *platformBackend) rollbackCreatedAddress(row windows.MibUnicastIpAddressRow, creation *windowsAddressCreation) error {
 	observed, err := backend.ipHelper.address(row)
 	if errors.Is(err, windows.ERROR_NOT_FOUND) {
 		return nil
@@ -284,7 +303,14 @@ func (backend *platformBackend) rollbackCreatedAddress(row windows.MibUnicastIpA
 	if err != nil {
 		return fmt.Errorf("inspect created IP Helper unicast address for rollback: %w", err)
 	}
-	if !ownedWindowsAddressRow(observed, row) {
+	if creation.birth != (windows.Filetime{}) {
+		if !createdWindowsTransitionRow(observed, row, creation.birth) {
+			return fmt.Errorf("created IP Helper unicast birth or attributes changed before rollback")
+		}
+		if err := backend.requireAddressTableRow(observed); err != nil {
+			return fmt.Errorf("verify created-address rollback table: %w", err)
+		}
+	} else if !ownedWindowsAddressRow(observed, row) {
 		return fmt.Errorf("created IP Helper unicast address changed before rollback")
 	}
 	if err := backend.ipHelper.deleteAddress(&row); err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
@@ -294,6 +320,113 @@ func (backend *platformBackend) rollbackCreatedAddress(row windows.MibUnicastIpA
 		return fmt.Errorf("verify created-address rollback: %w", err)
 	}
 	return nil
+}
+
+// windowsAddressCreation retains authority only for a successful create within one native wall-clock interval.
+type windowsAddressCreation struct {
+	before, after windows.Filetime
+	birth         windows.Filetime
+}
+
+// requireAbsentAddress rejects preexisting or ambiguous native address rows before acquiring creation authority.
+func (backend *platformBackend) requireAbsentAddress(identity windows.MibUnicastIpAddressRow) error {
+	if _, err := backend.ipHelper.address(identity); !errors.Is(err, windows.ERROR_NOT_FOUND) {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("address already exists")
+	}
+	target, _ := windowsIPv4Address(&identity.Address)
+	rows, err := backend.ipHelper.addressRows()
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		address, ipv4 := windowsIPv4Address(&row.Address)
+		if ipv4 && address == target {
+			return fmt.Errorf("address already exists in native table")
+		}
+	}
+	return nil
+}
+
+// createdWindowsTransitionRow accepts only the controlled source flag on one exact preferred creation birth.
+func createdWindowsTransitionRow(observed, expected windows.MibUnicastIpAddressRow, birth windows.Filetime) bool {
+	if birth == (windows.Filetime{}) || observed.CreationTimeStamp != birth || observed.SkipAsSource > 1 {
+		return false
+	}
+	observed.SkipAsSource = 1
+	return exactWindowsAddressRow(observed, expected) && observed.Address == expected.Address && observed.ScopeId == expected.ScopeId
+}
+
+// requireAddressTableRow corroborates a direct observation with one identical independent table row.
+func (backend *platformBackend) requireAddressTableRow(expected windows.MibUnicastIpAddressRow) error {
+	rows, err := backend.ipHelper.addressRows()
+	if err != nil {
+		return err
+	}
+	target, _ := windowsIPv4Address(&expected.Address)
+	count := 0
+	for _, row := range rows {
+		address, ipv4 := windowsIPv4Address(&row.Address)
+		if !ipv4 || address != target {
+			continue
+		}
+		count++
+		if row != expected {
+			return fmt.Errorf("native address table disagrees with direct observation")
+		}
+	}
+	if count != 1 {
+		return fmt.Errorf("native address table contains %d matching rows", count)
+	}
+	return nil
+}
+
+// setCreatedSkipAsSource corrects source selection after immediate optimistic revalidation.
+// IP Helper ignores the input creation timestamp, so a replacement inside Set can only be detected afterward.
+func (backend *platformBackend) setCreatedSkipAsSource(observed, identity windows.MibUnicastIpAddressRow, creation *windowsAddressCreation) (windows.MibUnicastIpAddressRow, error) {
+	birth := observed.CreationTimeStamp
+	// A backwards clock or a birth outside the captured interval provides no mutation authority.
+	if birth.Nanoseconds() < creation.before.Nanoseconds() || birth.Nanoseconds() > creation.after.Nanoseconds() || !createdWindowsTransitionRow(observed, identity, birth) {
+		return observed, fmt.Errorf("created address lacks an exact fresh preferred birth")
+	}
+	if creation.birth != (windows.Filetime{}) && creation.birth != birth {
+		return observed, fmt.Errorf("created address birth changed")
+	}
+	creation.birth = birth
+	if err := backend.revalidateInterface(context.Background(), InterfaceFact{Kind: InterfaceKindWindowsSoftware, NativeLoopback: true, WindowsLUID: identity.InterfaceLuid, Index: int(identity.InterfaceIndex)}); err != nil {
+		return observed, err
+	}
+	if err := backend.requireAddressTableRow(observed); err != nil {
+		return observed, err
+	}
+	current, err := backend.ipHelper.address(identity)
+	if err != nil {
+		return current, err
+	}
+	if current != observed {
+		return current, fmt.Errorf("created address changed before source-selection update")
+	}
+	if err := backend.requireAddressTableRow(current); err != nil {
+		return current, err
+	}
+	updated := current
+	updated.SkipAsSource = 1
+	if err := backend.ipHelper.setAddress(&updated); err != nil {
+		return current, fmt.Errorf("set created address source selection: %w", err)
+	}
+	verified, err := backend.ipHelper.address(identity)
+	if err != nil {
+		return verified, err
+	}
+	if verified != updated {
+		return verified, fmt.Errorf("created address source-selection readback differs")
+	}
+	if err := backend.requireAddressTableRow(verified); err != nil {
+		return verified, err
+	}
+	return verified, nil
 }
 
 // waitForWindowsReconciliation keeps each asynchronous IP Helper transition cancellable between observations.
@@ -503,6 +636,15 @@ func (helper nativeWindowsIPHelper) createAddress(row *windows.MibUnicastIpAddre
 	return windowsStatusError(status)
 }
 
+// setAddress updates only a caller-admitted existing row and preserves the native status.
+func (helper nativeWindowsIPHelper) setAddress(row *windows.MibUnicastIpAddressRow) error {
+	if helper.procedureErr != nil {
+		return helper.procedureErr
+	}
+	status, _, _ := setUnicastAddressEntry.Call(uintptr(unsafe.Pointer(row)))
+	return windowsStatusError(status)
+}
+
 // deleteAddress returns the IP Helper status as a Windows errno so callers can inspect the actual cause.
 func (helper nativeWindowsIPHelper) deleteAddress(row *windows.MibUnicastIpAddressRow) error {
 	if helper.procedureErr != nil {
@@ -526,6 +668,7 @@ func resolveWindowsProcedures() error {
 		windowsProcedureResolutionErr = errors.Join(
 			findWindowsProcedure("InitializeUnicastIpAddressEntry", initializeUnicastAddressEntry),
 			findWindowsProcedure("CreateUnicastIpAddressEntry", createUnicastAddressEntry),
+			findWindowsProcedure("SetUnicastIpAddressEntry", setUnicastAddressEntry),
 			findWindowsProcedure("DeleteUnicastIpAddressEntry", deleteUnicastAddressEntry),
 		)
 	})
