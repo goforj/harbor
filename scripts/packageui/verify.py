@@ -58,7 +58,8 @@ def test_only_path(name):
             or name in ("README.md", ".github/workflows/macos-package-ui.yml",
                         ".github/workflows/linux-package-ui.yml",
                         ".github/workflows/windows-package-ui.yml",
-                        ".github/workflows/windows-native-capacity.yml"))
+                        ".github/workflows/windows-native-capacity.yml",
+                        "internal/platform/loopback/backend_windows_diagnostic_integration_test.go"))
 
 
 def verify_product(expected, current):

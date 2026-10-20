@@ -93,8 +93,10 @@ class PackageVerificationTests(unittest.TestCase):
         verify.verify_product(expected, dict(expected, **{".github/workflows/linux-package-ui.yml": "new"}))
         for name in ("windows-package-ui.yml", "windows-native-capacity.yml"):
             verify.verify_product(expected, dict(expected, **{f".github/workflows/{name}": "new"}))
+        verify.verify_product(expected, dict(expected, **{"internal/platform/loopback/backend_windows_diagnostic_integration_test.go": "new"}))
         for current in ({}, {"desktop/main.go": ("file", "changed")},
                         dict(expected, **{"cmd/harbord/main.go": "new"}),
+                        dict(expected, **{"internal/platform/loopback/backend_windows.go": "changed"}),
                         dict(expected, **{".github/workflows/macos-development-package.yml": "changed"})):
             with self.subTest(current=current), self.assertRaises(ValueError):
                 verify.verify_product(expected, current)
