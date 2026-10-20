@@ -140,6 +140,9 @@ def https(slug):
 
 
 def capture(name):
+    (EVIDENCE / (name + '-children.json')).write_text(json.dumps([
+        {'pid': child.pid, 'returncode': child.poll()} for child in children
+    ], indent=2) + '\n')
     command('scrot', str(EVIDENCE / (name + '.png')))
     deadline = time.monotonic() + 5
     error = 'installed accessibility application is temporarily unavailable'
@@ -160,18 +163,24 @@ def capture(name):
 
 def launch():
     global process
+    wait('window manager before product launch', window_manager_ready)
     process = subprocess.Popen([APP], stdout=LOG, stderr=subprocess.STDOUT)
     children.append(process)
-    def available():
+    def require_running(stage):
         code = process.poll()
         if code is not None:
-            (EVIDENCE / 'launch-exit.json').write_text(json.dumps({'pid': process.pid, 'returncode': code, 'application': APP}) + '\n')
-            raise RuntimeError('installed desktop exited before accessibility registration: ' + str(code))
+            (EVIDENCE / 'launch-exit.json').write_text(json.dumps({'pid': process.pid, 'returncode': code, 'application': APP, 'stage': stage}) + '\n')
+            raise RuntimeError('installed desktop exited during ' + stage + ': ' + str(code))
+    def available():
+        require_running('accessibility registration')
         return application()
     wait('installed UI accessibility', available, 60)
     assert Path('/proc/' + str(process.pid) + '/exe').resolve() == Path(APP)
     assert Path('/proc/' + str(process.pid)).owner() == command('id', '-un')
-    wait('window visible', lambda: window(True), 60)
+    def visible():
+        require_running('initial window presentation')
+        return window(True)
+    wait('window visible', visible, 60)
 
 
 def window(visible):
@@ -186,9 +195,13 @@ def window(visible):
     return '\n'.join(clients) if visible else not clients
 
 
-def activate():
+def window_manager_ready():
     # The visible WebKit client can precede XFCE's window-manager registration.
-    wait('window manager', lambda: 'window id #' in command('xprop', '-root', '_NET_SUPPORTING_WM_CHECK'))
+    return 'window id #' in command('xprop', '-root', '_NET_SUPPORTING_WM_CHECK')
+
+
+def activate():
+    wait('window manager', window_manager_ready)
     identifier = wait('visible window', lambda: window(True))
     command('xdotool', 'windowactivate', '--sync', identifier.splitlines()[0])
     wait('active installed window', lambda: command('xdotool', 'getactivewindow') == identifier.splitlines()[0])
@@ -313,3 +326,6 @@ finally:
         retired.append(result)
     if retired:
         (EVIDENCE / 'failure-ui-retirement.json').write_text(json.dumps(retired, indent=2) + '\n')
+    (EVIDENCE / 'ui-child-settlement.json').write_text(json.dumps([
+        {'pid': child.pid, 'returncode': child.poll()} for child in children
+    ], indent=2) + '\n')
