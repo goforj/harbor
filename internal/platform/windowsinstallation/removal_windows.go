@@ -103,7 +103,7 @@ func removeInstallation(ctx context.Context, installation *Installation, guard *
 	if err := guard.Check(); err != nil {
 		return err
 	}
-	if err := installation.RemoveMachineIntegration(ctx); err != nil {
+	if err := installation.RemoveMachineIntegration(ctx, guard.Check); err != nil {
 		return err
 	}
 	if err := installation.Close(); err != nil {
