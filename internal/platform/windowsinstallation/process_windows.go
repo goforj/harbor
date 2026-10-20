@@ -29,12 +29,6 @@ type Child struct {
 
 // Start launches only a compiled admitted role and checks its actual token before its first instruction.
 func (installation *Installation) Start(role string, arguments []string) (_ *Child, result error) {
-	var child *Child
-	defer func() {
-		if result != nil && child != nil {
-			result = errors.Join(result, child.abort(), child.Close())
-		}
-	}()
 	if err := admitRoleArguments(role, arguments); err != nil {
 		return nil, err
 	}
@@ -42,6 +36,17 @@ func (installation *Installation) Start(role string, arguments []string) (_ *Chi
 	if err != nil {
 		return nil, err
 	}
+	return installation.startAdmitted(path, role, arguments, nil)
+}
+
+// startAdmitted shares actual-child token and lifetime admission with the fixed signed maintenance guard capability.
+func (installation *Installation) startAdmitted(path, role string, arguments []string, inherited []windows.Handle) (_ *Child, result error) {
+	var child *Child
+	defer func() {
+		if result != nil && child != nil {
+			result = errors.Join(result, child.abort(), child.Close())
+		}
+	}()
 	var source windows.Token
 	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE, &source); err != nil {
 		return nil, fmt.Errorf("open installed source token: %w", err)
@@ -80,8 +85,8 @@ func (installation *Installation) Start(role string, arguments []string) (_ *Chi
 			result = errors.Join(result, windows.CloseHandle(handle))
 		}
 	}()
-	inherit := role == "cli"
-	if inherit {
+	inherit := role == "cli" || len(inherited) != 0
+	if role == "cli" {
 		for _, file := range []*os.File{os.Stdin, os.Stdout, os.Stderr} {
 			var handle windows.Handle
 			if err := windows.DuplicateHandle(windows.CurrentProcess(), windows.Handle(file.Fd()), windows.CurrentProcess(), &handle, 0, true, windows.DUPLICATE_SAME_ACCESS); err != nil {
@@ -91,7 +96,10 @@ func (installation *Installation) Start(role string, arguments []string) (_ *Chi
 		}
 		startup.Flags = windows.STARTF_USESTDHANDLES
 		startup.StdInput, startup.StdOutput, startup.StdErr = streams[0], streams[1], streams[2]
-		if err := attributes.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&streams[0]), uintptr(len(streams))*unsafe.Sizeof(streams[0])); err != nil {
+	}
+	inheritedHandles := append(append([]windows.Handle(nil), streams...), inherited...)
+	if len(inheritedHandles) != 0 {
+		if err := attributes.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&inheritedHandles[0]), uintptr(len(inheritedHandles))*unsafe.Sizeof(inheritedHandles[0])); err != nil {
 			return nil, err
 		}
 	}
@@ -100,7 +108,7 @@ func (installation *Installation) Start(role string, arguments []string) (_ *Chi
 		return nil, err
 	}
 	flags := uint32(windows.CREATE_SUSPENDED | windows.CREATE_UNICODE_ENVIRONMENT | windows.EXTENDED_STARTUPINFO_PRESENT)
-	if role == "daemon" || role == "daemon-launcher" {
+	if role == "daemon" || role == "daemon-launcher" || role == "uninstall-guard" {
 		flags |= windows.CREATE_NO_WINDOW
 	}
 	var created windows.ProcessInformation
@@ -113,6 +121,7 @@ func (installation *Installation) Start(role string, arguments []string) (_ *Chi
 		runtime.KeepAlive(environment)
 		runtime.KeepAlive(command)
 		runtime.KeepAlive(streams)
+		runtime.KeepAlive(inheritedHandles)
 	}()
 	var actual windows.Token
 	if err := windows.OpenProcessToken(created.Process, windows.TOKEN_QUERY, &actual); err != nil {
