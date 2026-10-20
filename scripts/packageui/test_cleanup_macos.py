@@ -110,6 +110,30 @@ class CleanupFixtureTests(unittest.TestCase):
             self.assertEqual(receipt["commands"][-1]["stderr"], "stop refused")
             self.assertEqual(database.read_bytes(), b"retained state")
 
+    def test_unconfigured_empty_profile_has_no_network_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            database = home / "Library/Application Support/GoForj/Harbor/harbor.db"
+            database.parent.mkdir(parents=True)
+            database.write_bytes(b"retained empty profile")
+            snapshot = {"network_setup": {"configured": False}, "projects": []}
+
+            def result(arguments, **kwargs):
+                output = json.dumps(snapshot) if arguments == [cleanup_macos.CLI, "daemon", "snapshot"] else ""
+                return subprocess.CompletedProcess(arguments, 0, output, "")
+
+            original_exists = Path.exists
+            with patch.object(cleanup_macos.Path, "home", return_value=home), \
+                    patch.object(cleanup_macos.Path, "exists", lambda path: False if str(path) == "/Applications/Harbor.app" else original_exists(path)), \
+                    patch.object(cleanup_macos.subprocess, "run", side_effect=result) as run, \
+                    patch.object(cleanup_macos, "verify_service_absence", return_value={"service_exit_code": 113}):
+                cleanup_macos.recover(home / "evidence")
+            receipt = json.loads((home / "evidence/failure-cleanup.json").read_text())
+            self.assertTrue(receipt["completed"])
+            self.assertEqual(receipt["network_release"], "not configured; no registered projects")
+            self.assertEqual(len(receipt["retained"]), 1)
+            self.assertNotIn([cleanup_macos.CLI, "daemon", "release"], [call.args[0] for call in run.call_args_list])
+
 
 if __name__ == "__main__":
     unittest.main()

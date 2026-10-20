@@ -78,7 +78,10 @@ def recover(directory):
                 if time.monotonic() >= deadline:
                     raise RuntimeError("fixture projects did not stop during failure recovery")
                 time.sleep(0.25)
-            run([CLI, "daemon", "release"])
+            if snapshot.get("network_setup", {}).get("configured") is False and not snapshot.get("projects", []):
+                receipt["network_release"] = "not configured; no registered projects"
+            else:
+                run([CLI, "daemon", "release"])
             run([CLI, "daemon", "stop"])
             wait_for_daemon_exit(run)
             retained.append(database)

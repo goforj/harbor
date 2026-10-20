@@ -268,9 +268,15 @@ final class HarborPackageUITests: XCTestCase {
     }
 
     private func attach(_ name: String) {
-        let attachment = XCTAttachment(screenshot: application.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.goforj.harbor")
+        let processes = running.map { "pid=\($0.processIdentifier) bundle=\($0.bundleURL?.path ?? "unknown")" }
+        let state = XCTAttachment(string: "application_state=\(application.state.rawValue)\n" + processes.joined(separator: "\n"))
+        state.name = name + "-native-state"
+        state.lifetime = .keepAlways
+        add(state)
     }
 }
