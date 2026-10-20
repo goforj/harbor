@@ -152,11 +152,78 @@ function Open-Harbor {
     if (-not [HarborUIProfile]::IsRetainedProductWindowVisible($process.Id, $script:windowHandle)) { throw 'reopened installed window is not natively visible' }
     return $process.Id
 }
+# Save-StartupDiagnostics retains bounded public fixture output before timeout teardown retires the session.
+function Save-StartupDiagnostics([string]$Name) {
+    try { Save-Observation $Name } catch { Write-Warning "startup observation failed: $_" }
+    try {
+        $trace = $projectDirectory
+        foreach ($segment in @('_data', 'harbor', 'forj-dev.log')) {
+            $item = Get-Item -LiteralPath $trace -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'startup trace has a reparse ancestor' }
+            $trace = Join-Path $trace $segment
+        }
+        if (Test-Path -LiteralPath $trace -PathType Leaf) {
+            $item = Get-Item -LiteralPath $trace -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'startup trace is a reparse point' }
+            $stream = [IO.File]::Open($trace, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+            try {
+                $null = $stream.Seek([Math]::Max(0, $stream.Length - 262144), [IO.SeekOrigin]::Begin)
+                $bytes = New-Object byte[] 262144
+                $count = $stream.Read($bytes, 0, $bytes.Length)
+                [IO.File]::WriteAllText((Join-Path $EvidenceDirectory ($Name + '-forj-dev.log')), [Text.Encoding]::UTF8.GetString($bytes, 0, $count))
+            } finally { $stream.Dispose() }
+        }
+    } catch { Write-Warning "startup trace diagnostics failed: $_" }
+    try {
+        if ($null -eq $daemonProcess -or $daemonProcess.HasExited) { throw 'retained daemon exited before process sampling' }
+        $rows = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5)
+        $byID = @{}
+        foreach ($row in $rows) { $byID[[int]$row.ProcessId] = $row }
+        $facts = @()
+        foreach ($row in $rows) {
+            if ($row.Name -notin @('forj.exe','go.exe','node.exe','npm.exe','cmd.exe','outputbroker.exe')) { continue }
+            $held = [Collections.Generic.List[Diagnostics.Process]]::new()
+            try {
+                $current = $row
+                $chain = @()
+                $childBirth = [long]::MaxValue
+                for ($depth=0; $depth -lt 16; $depth++) {
+                    $process = Get-Process -Id $current.ProcessId -ErrorAction Stop
+                    $null = $process.Handle
+                    $held.Add($process)
+                    $birth = $process.StartTime.ToFileTimeUtc()
+                    if ($process.HasExited -or $process.SessionId -ne $daemonProcess.SessionId -or $birth -gt $childBirth -or
+                        [Math]::Abs($birth - $current.CreationDate.ToFileTimeUtc()) -ge 10) { throw 'process sample identity or ancestry changed' }
+                    $chain += [ordered]@{ pid=$process.Id; parent_pid=[int]$current.ParentProcessId; native_birth=$birth.ToString(); session=$process.SessionId; image=$process.Path }
+                    if ($process.Id -eq $daemonProcess.Id) {
+                        if ($birth -ne $daemonProcess.StartTime.ToFileTimeUtc()) { throw 'daemon ancestry birth changed' }
+                        foreach ($retained in $held) { if ($retained.HasExited) { throw 'sampled descendant exited during observation' } }
+                        $facts += [ordered]@{ native_identity_revalidated=$true; ancestry_source='bounded CIM snapshot correlated with retained native handles and births'; chain=$chain }
+                        break
+                    }
+                    $childBirth = $birth
+                    if (-not $byID.ContainsKey([int]$current.ParentProcessId)) { break }
+                    $current = $byID[[int]$current.ParentProcessId]
+                }
+            } catch { Write-Warning "startup process sample omitted: $_" } finally { foreach ($retained in $held) { $retained.Dispose() } }
+        }
+        ConvertTo-Json -InputObject @($facts) -Depth 8 | Set-Content (Join-Path $EvidenceDirectory ($Name + '-processes.json')) -Encoding UTF8
+    } catch { Write-Warning "startup process diagnostics failed: $_" }
+}
 function Await-ProjectState([string]$Expected) {
+    $diagnostics = @{ next_capture=[DateTime]::MinValue; sample=0 }
     Wait-Until "project state $Expected" {
         $project = Get-Project
+        if ($Expected -ceq 'ready' -and [DateTime]::UtcNow -ge $diagnostics.next_capture) {
+            Save-StartupDiagnostics ('startup-' + $diagnostics.sample.ToString('D2'))
+            $diagnostics.sample++
+            $diagnostics.next_capture = [DateTime]::UtcNow.AddSeconds(15)
+        }
         if ($null -eq $project) { return $false }
-        if ($project.state -in @('failed', 'quarantined')) { throw "project entered $($project.state)" }
+        if ($project.state -in @('failed', 'quarantined')) {
+            if ($Expected -ceq 'ready') { Save-StartupDiagnostics 'startup-terminal' }
+            throw "project entered $($project.state)"
+        }
         return $project.state -ceq $Expected
     } 240
 }
@@ -305,8 +372,10 @@ try {
         if ($remaining.Count -ne 0) { throw 'an unrecorded desktop process prevents host cleanup' }
         $registered = Get-Project
         if ($null -ne $registered -and $registered.state -cne 'stopped') {
-            & $cliPath stop $registered.id
-            if ($LASTEXITCODE -ne 0) { throw 'fixture stop was not admitted' }
+            & $cliPath stop $registered.id 1> (Join-Path $EvidenceDirectory 'cleanup-stop-stdout.txt') 2> (Join-Path $EvidenceDirectory 'cleanup-stop-stderr.txt')
+            $stopExit = $LASTEXITCODE
+            try { Get-Snapshot | ConvertTo-Json -Depth 30 | Set-Content (Join-Path $EvidenceDirectory 'cleanup-stop-snapshot.json') -Encoding UTF8 } catch { Write-Warning "stop-state diagnostics failed: $_" }
+            if ($stopExit -ne 0) { throw 'fixture stop was not admitted' }
             Wait-Until 'stopped cleanup fixture' { (Get-Project).state -ceq 'stopped' } 120
         }
         $cleanup.fixtures_stopped = $true
