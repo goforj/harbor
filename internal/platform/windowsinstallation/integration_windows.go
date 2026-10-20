@@ -265,7 +265,8 @@ func admitProgramDataAnchor(handle windows.Handle) error {
 			continue
 		}
 		if ace.Mask&(windows.GENERIC_ALL|windows.WRITE_DAC|windows.WRITE_OWNER|windows.DELETE|0x40) != 0 {
-			return errors.New("Windows ProgramData anchor permits foreign child replacement")
+			path, _ := finalIntegrationPath(handle)
+			return fmt.Errorf("Windows machine anchor %s permits foreign child replacement: SID=%s mask=%#x flags=%#x descriptor=%s", path, sid, ace.Mask, ace.Header.AceFlags, descriptor.String())
 		}
 	}
 	return nil

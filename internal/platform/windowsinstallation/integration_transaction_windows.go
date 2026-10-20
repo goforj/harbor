@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -62,7 +63,7 @@ func (installation *Installation) InstallMachineIntegration(ctx context.Context)
 	}
 	spool, err := preparePrivilegedSpool(programData, installation.selection.UserSID)
 	if err != nil {
-		return err
+		return fmt.Errorf("install helper spool: %w", err)
 	}
 	owned := &machineIntegration{Spool: spool}
 	committed := false
@@ -80,11 +81,11 @@ func (installation *Installation) InstallMachineIntegration(ctx context.Context)
 	}()
 	owned.Registry, err = integrationCreateRegistry(values)
 	if err != nil {
-		return err
+		return fmt.Errorf("install uninstall registration: %w", err)
 	}
 	owned.Shortcut, err = integrationCreateShortcut(spec)
 	if err != nil {
-		return err
+		return fmt.Errorf("install Start Menu shortcut: %w", err)
 	}
 	receipt := integrationReceipt{SchemaVersion: 1, InstallationID: installation.selection.InstallationID, UserSID: installation.selection.UserSID, BundleDigest: installation.selection.BundleDigest, Shortcut: owned.Shortcut.Receipt}
 	for _, directory := range spool.Directories {
