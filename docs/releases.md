@@ -4,13 +4,17 @@ Harbor uses short-lived feature branches, pull requests into `main`, and immutab
 
 ## Current installed-platform evidence
 
-The installed native lifecycle is still in progress. The latest full macOS GUI proof is [39381799231](https://github.com/goforj/harbor/actions/runs/39381799231), using package run [39373153230](https://github.com/goforj/harbor/actions/runs/39373153230). The latest full Ubuntu GUI proof is [39367877717](https://github.com/goforj/harbor/actions/runs/39367877717), using package run [39363377263](https://github.com/goforj/harbor/actions/runs/39363377263). Each passed its tested GUI and cleanup lifecycle, but both packages predate the final combined source. Their hosted profiles and explicit limits are recorded in [Current implementation state](./current-state.md#installed-platform-evidence-2026-10-20).
+The final Unix package producer [39394942316](https://github.com/goforj/harbor/actions/runs/39394942316) passed at source `c808886`; publication was skipped. The exact PKG SHA-256 is `5e4313ddc44067de1d72edf84fd353a3f4f10adc06863f93f493f83e0a43e8ad`, and the DEB SHA-256 is `d396e2dcea982bd7f738bd462e479f97cbe253071fe60f22cedb4d4634336139`. The exact-source product guard excludes documentation and test-harness changes while keeping product changes matched to the package source.
 
-The exact fresh Windows package now installs, and native component gate [39389556850](https://github.com/goforj/harbor/actions/runs/39389556850) passes at source `739e9fb`. The original bootstrap parent exits before the copied uninstall continuation finishes authenticating the parent image and token. Change `1cae93e` adds a typed acknowledgement, now under native verification. Windows installed GUI and uninstall acceptance therefore remain open. Public Windows signing is also gated. The Windows Server 2025 fixture does not establish supported Windows client/UAC behavior. The protected signed maintenance copy and receipt are intentionally retained as an audit cache after uninstall.
+macOS installed GUI run [39396200673](https://github.com/goforj/harbor/actions/runs/39396200673) passed on the exact PKG, including cold creation, Ready/trusted HTTPS, hide/reopen, duplicate-instance behavior, Quit/relaunch, Stop, fixture unregister, networking release, uninstall, and three nonempty data hashes. The fixture started with a foreign administrator root; its separate removal timed out. Genuine consent, final trust-root removal, full trust-store restoration, and failure recovery remain unproved.
 
-Full root CI [39388769856](https://github.com/goforj/harbor/actions/runs/39388769856) passed 14 of 15 checks. Its outstanding Docker-project readiness timeout has a separate pending diagnostic [39391099494](https://github.com/goforj/harbor/actions/runs/39391099494). Do not treat package or component checks as a substitute for the installed GUI gate or full CI.
+Ubuntu installed GUI run [39398129238](https://github.com/goforj/harbor/actions/runs/39398129238) is still running after two harness fixes, one for a networking-state race and one for native keyboard activation. It is not a passing result. Earlier baseline [39367877717](https://github.com/goforj/harbor/actions/runs/39367877717) applies to its earlier package/source only. The XFCE/X11-on-Xvfb profile does not prove GNOME Wayland or genuine PolicyKit consent.
 
-No public release or tag is authorized by the current work. The final combined source still needs fresh matching package and GUI evidence on macOS, Ubuntu, and Windows.
+Windows native component gate [39393903198](https://github.com/goforj/harbor/actions/runs/39393903198) and package producer [39394186110](https://github.com/goforj/harbor/actions/runs/39394186110) passed on exact source `9d704e05d0eab64d58520a9dad40604ff01d109e`. The package installs and has a correct uninstall receipt; the handoff and `SystemDrive` environment issues are fixed. The installed GUI opens a window and starts an elevation-zero daemon. Native UAC approval remains pending while a preauthorized high-controller fixture is prepared with the unchanged installed signed-helper protocol. This does not prove genuine GUI consent. Hosted Server 2025 does not establish Windows client/UAC behavior. Public Windows signing remains gated.
+
+Full root CI [39397089966](https://github.com/goforj/harbor/actions/runs/39397089966) passed all 15 checks at `9023875`. The Docker lifecycle evidence and its unreleased GoForj test candidate are detailed under [Docker project lifecycle and diagnostics](#docker-project-lifecycle-and-diagnostics).
+
+Do not claim all three installed platform lifecycles complete. No merge, tag, or public release is authorized by this work.
 
 ## Rehearse without publishing
 
@@ -24,7 +28,8 @@ After approval, merge, and successful main CI, a maintainer can create and push 
 
 ```sh
 git fetch origin main
-git tag -a v0.1.0-beta.1 <tested-main-commit> -m "Harbor 0.1.0-beta.1"
+TESTED_MAIN_COMMIT="$(git rev-parse origin/main)"
+git tag -a v0.1.0-beta.1 "$TESTED_MAIN_COMMIT" -m "Harbor 0.1.0-beta.1"
 git push origin v0.1.0-beta.1
 ```
 
@@ -36,12 +41,12 @@ This path publishes development previews, not a signed product release or automa
 
 The GUI workflows admit exact package bytes from successful package runs, verify checksums and provenance, and require product source to match the package source. Harness and documentation changes may differ. Product changes require a fresh package rehearsal.
 
-The macOS gate drives the installed Wails window through XCTest in a GitHub-hosted macOS 26 Apple-silicon graphical session. The Ubuntu gate drives the installed GTK/WebKit executable through AT-SPI and native input in Ubuntu 24.04 XFCE/X11 on Xvfb. Its passing quit action is the native menu; the pinned GTK runtime does not implement Ctrl+Q. These runs do not prove genuine consent or failure recovery. macOS final trust-root removal and full trust-store restoration remain unproved. Ubuntu X11 evidence does not establish GNOME Wayland behavior.
+The macOS workflow drives the installed Wails window through XCTest in a GitHub-hosted macOS 26 Apple-silicon graphical session. The Ubuntu workflow drives the installed GTK/WebKit executable through AT-SPI and native input in Ubuntu 24.04 XFCE/X11 on Xvfb. Its passing quit action is the native menu; the pinned GTK runtime does not implement Ctrl+Q. These profiles do not prove genuine consent or failure recovery. macOS final trust-root removal and full trust-store restoration remain unproved. Ubuntu X11 evidence does not establish GNOME Wayland behavior.
 
-The Windows gate accepts only the exact package from the Windows development package workflow. Its hosted Server 2025 profile is a functional fixture, not a supported Windows client/UAC or genuine secure-desktop consent profile. The original bootstrap parent exits while the copied continuation is authenticating the parent image and token. Change `1cae93e` adds a typed acknowledgement that is still under native verification. Do not report Windows installed GUI acceptance until a fresh exact package passes the complete lifecycle and cleanup checks.
+The Windows gate uses the exact package from the Windows development package workflow. Its hosted Server 2025 profile is a functional fixture, not a supported Windows client/UAC or genuine secure-desktop consent profile. The installed GUI opens a window and starts an elevation-zero daemon; native UAC approval remains pending. A preauthorized high-controller fixture is being prepared with the unchanged installed signed-helper protocol. Actual product-token facts and protected machine/IPC probes remain mandatory. The extra cross-high observer is limited to the standalone profile; the product receipt explicitly records it as skipped and makes no containment claim. Do not report GUI-consent evidence from the preauthorized fixture.
 
-## Isolated Docker diagnostics
+## Docker project lifecycle and diagnostics
 
-Windows product admission measures primary-token facts from retained actual process handles. Protected-machine denials and private file/IPC positives impersonate a duplicate of that exact token. The separate standalone profile additionally runs a native helper for informational cross-high process/token observations. Product-token receipts explicitly mark that observer skipped because its token origin does not meet the hosted controller's process-creation privilege exemption; they do not claim actual-product cross-high observations or containment. All mandatory machine-access checks remain enforced.
+The all-three-project MySQL lifecycle and cleanup passed in [run 39396134671](https://github.com/goforj/harbor/actions/runs/39396134671). The unreleased GoForj candidate in [PR #253](https://github.com/goforj/goforj/pull/253) addresses the true first-boot race by waiting for authenticated permanent-server readiness. Three fresh native containers passed in [run 39395622504](https://github.com/goforj/goforj/actions/runs/39395622504). Candidate [`7e38e5f041cc2f449f5ec33baaaa2139ac4b6b50`](https://github.com/goforj/goforj/commit/7e38e5f041cc2f449f5ec33baaaa2139ac4b6b50) is unreleased and pinned only in this CI acceptance path.
 
 Use `docker-project-diagnostics.yml` to exercise the generated MySQL project acceptance job without rebuilding the desktop matrix. Its canonical source is the `docker-adapter` job in `ci.yml`; regenerate the diagnostic workflow with `python3 scripts/packageui/render_docker_workflow.py` after changing that job. A failed run retains bounded disposable-fixture traces and state/output snapshots under `failure-diagnostics`; these files are diagnostic evidence, not a successful product proof.
