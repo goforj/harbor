@@ -35,6 +35,9 @@ try {
     $null = [HarborUIProfile]::Launch($application, (Join-Path $env:SystemRoot 'System32'))
     if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -cne $fileHash) { throw 'profile altered protected fixture bytes' }
     $receipt.complete = $true
+} catch {
+    $receipt.error = $_.Exception.ToString()
+    throw
 } finally {
     $receipt.child_token = [HarborUIProfile]::LastLaunchFacts
     $receipt.access_receipts = @([HarborUIProfile]::AccessReceipts)

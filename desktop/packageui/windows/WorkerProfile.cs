@@ -176,7 +176,7 @@ public static class HarborUIProfile {
             StartupInfo startup=new StartupInfo(); startup.cb=Marshal.SizeOf(typeof(StartupInfo));
             if (!CreateProcess(systemProbe, new StringBuilder("\""+systemProbe+"\""), IntPtr.Zero, IntPtr.Zero, false, 4, IntPtr.Zero, systemRoot, ref startup, out highFixture)) throw new Win32Exception();
             IntPtr highFixtureToken;
-            if (!OpenProcessToken(highFixture.process, 8, out highFixtureToken)) throw new Win32Exception();
+            if (!OpenProcessToken(highFixture.process, 10, out highFixtureToken)) throw new Win32Exception();
             try {
                 using (WindowsIdentity identity=new WindowsIdentity(highFixtureToken)) {
                     if (identity.User.Value != sid || !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator) || TokenIntegrity(highFixtureToken) <= 8192 || TokenInteger(highFixtureToken, 12) != Process.GetCurrentProcess().SessionId) throw new Exception("high fixture does not have ordinary same-user interactive administrator authority");
