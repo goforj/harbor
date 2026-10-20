@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // TestIntegrationShellLinkBounds rejects caller-shaped aliases before touching machine state.
@@ -104,8 +106,8 @@ func integrationTestShellParser(t *testing.T, path string, spec integrationShort
 	linkID, _ := windows.GUIDFromString("{000214F9-0000-0000-C000-000000000046}")
 	persistID, _ := windows.GUIDFromString("{0000010B-0000-0000-C000-000000000046}")
 	var factory, link, persist uintptr
-	// DllGetClassObject is resolved from System32 shell32.dll, bypassing HKCU class registration.
-	status, _, _ = windows.NewLazySystemDLL("shell32.dll").NewProc("DllGetClassObject").Call(uintptr(unsafe.Pointer(&class)), uintptr(unsafe.Pointer(&factoryID)), uintptr(unsafe.Pointer(&factory)))
+	factoryProcedure := integrationTestShellFactory(t)
+	status, _, _ = syscall.SyscallN(factoryProcedure, uintptr(unsafe.Pointer(&class)), uintptr(unsafe.Pointer(&factoryID)), uintptr(unsafe.Pointer(&factory)))
 	if int32(status) < 0 {
 		t.Fatalf("system Shell Link factory: %#x", status)
 	}
@@ -206,4 +208,97 @@ func TestNativeIntegrationShortcutRejectsDrift(t *testing.T) {
 	if err := admitted.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// integrationTestShellFactory admits the machine-registered system server before bypassing COM registration lookup.
+func integrationTestShellFactory(t *testing.T) uintptr {
+	t.Helper()
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Classes\CLSID\{00021401-0000-0000-C000-000000000046}\InprocServer32`, registry.QUERY_VALUE|registry.WOW64_64KEY)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer key.Close()
+	registered, kind, err := key.GetStringValue("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != registry.SZ && kind != registry.EXPAND_SZ {
+		t.Fatalf("unexpected Shell Link registration type %d", kind)
+	}
+	systemDirectory, err := windows.GetSystemDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowsDirectory, err := windows.GetWindowsDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Expand only the OS-defined root, never process environment values.
+	if strings.HasPrefix(strings.ToLower(registered), `%systemroot%\`) {
+		registered = windowsDirectory + registered[len("%systemroot%"):]
+	}
+	var server string
+	for _, name := range []string{"shell32.dll", "windows.storage.dll"} {
+		candidate := filepath.Join(systemDirectory, name)
+		if strings.EqualFold(registered, candidate) {
+			server = candidate
+			break
+		}
+	}
+	if server == "" {
+		t.Fatalf("Shell Link registration is not an allowlisted System32 server: %q", registered)
+	}
+	retained := &Installation{}
+	if err := retained.retainDirectoryChain(systemDirectory); err != nil {
+		retained.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := retained.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	pointer, err := windows.UTF16PtrFromString(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(pointer, windows.GENERIC_READ|windows.READ_CONTROL, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(handle), server)
+	retained.handles = append(retained.handles, file)
+	var information windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &information); err != nil {
+		t.Fatal(err)
+	}
+	// Windows servicing intentionally hardlinks system DLLs into WinSxS; trusted ACLs bind those aliases.
+	if information.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
+		t.Fatal("Shell Link server has a reparse or type conflict")
+	}
+	final, err := finalIntegrationPath(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(final, `\\?\`+server) {
+		t.Fatal("Shell Link server native path differs")
+	}
+	if err := admitSecurity(handle, false); err != nil {
+		t.Fatal(err)
+	}
+	module, err := windows.LoadLibraryEx(server, 0, windows.LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|windows.LOAD_LIBRARY_SEARCH_SYSTEM32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := windows.FreeLibrary(module); err != nil {
+			t.Error(err)
+		}
+	})
+	procedure, err := windows.GetProcAddress(module, "DllGetClassObject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("admitted native Shell Link parser server: %s", server)
+	return procedure
 }
