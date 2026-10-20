@@ -41,7 +41,7 @@ type maintenanceOperations struct {
 	complete  func(context.Context) error
 	remove    func(context.Context) error
 	bootstrap func(context.Context) error
-	finish    func(context.Context, windows.Handle) error
+	finish    func(context.Context, windows.Handle, windows.Handle) error
 	guard     func(windows.Handle, windows.Handle) error
 }
 
@@ -76,15 +76,22 @@ func runMaintenance(ctx context.Context, arguments []string, operations maintena
 		}
 		return operations.guard(ready, release)
 	}
-	var parent windows.Handle
+	var parent, ready windows.Handle
 	if action == "--finish-uninstall" {
-		if len(arguments) != 2 {
+		if len(arguments) != 3 {
 			return errors.New("finish-uninstall requires its inherited parent receipt")
 		}
 		var err error
 		parent, err = parseMaintenanceParent(arguments[1])
 		if err != nil {
 			return err
+		}
+		ready, err = parseMaintenanceHandle(arguments[2], "--ready-handle=")
+		if err != nil {
+			return err
+		}
+		if parent == ready {
+			return errors.New("uninstall parent and ready capabilities must differ")
 		}
 	} else if len(arguments) != 1 || (action != "--register-task" && action != "--complete-install" && action != "--remove-task" && action != "--uninstall") {
 		return errors.New("Windows maintenance operation or arguments are not admitted")
@@ -102,14 +109,19 @@ func runMaintenance(ctx context.Context, arguments []string, operations maintena
 	case "--uninstall":
 		return operations.bootstrap(ctx)
 	case "--finish-uninstall":
-		return operations.finish(ctx, parent)
+		return operations.finish(ctx, parent, ready)
 	}
 	return errors.New("Windows maintenance operation is not admitted")
 }
 
 // parseMaintenanceParent accepts one canonical native handle value only for the internal finishing role.
 func parseMaintenanceParent(argument string) (windows.Handle, error) {
-	text, ok := strings.CutPrefix(argument, "--parent-handle=")
+	return parseMaintenanceHandle(argument, "--parent-handle=")
+}
+
+// parseMaintenanceHandle accepts only one canonical native capability value under the fixed role argument name.
+func parseMaintenanceHandle(argument, prefix string) (windows.Handle, error) {
+	text, ok := strings.CutPrefix(argument, prefix)
 	if !ok {
 		return 0, errors.New("missing inherited uninstall parent handle")
 	}
@@ -228,11 +240,12 @@ func bootstrapUninstall(ctx context.Context) (result error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := launchMaintenanceCopy(path); err != nil {
+	if err := launchMaintenanceCopy(ctx, path); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(os.Stdout, "Harbor uninstall continues; protected maintenance audit cache is retained at: %s\n", path)
-	return err
+	// A GUI uninstall has no standard output handle; reporting cannot reverse the acknowledged handoff.
+	_, _ = fmt.Fprintf(os.Stdout, "Harbor uninstall continues; protected maintenance audit cache is retained at: %s\n", path)
+	return nil
 }
 
 // createMaintenanceStage creates only one random protected vendor audit-cache child and its exact admitted agent copy.
@@ -301,23 +314,34 @@ func createMaintenanceStage(installation *windowsinstallation.Installation, sour
 }
 
 // launchMaintenanceCopy inherits only a restricted original-process receipt and never selects a shell or mutable executable.
-func launchMaintenanceCopy(path string) (result error) {
+func launchMaintenanceCopy(ctx context.Context, path string) (result error) {
 	var parent windows.Handle
 	if err := windows.DuplicateHandle(windows.CurrentProcess(), windows.CurrentProcess(), windows.CurrentProcess(), &parent, maintenanceParentRights, true, 0); err != nil {
 		return err
 	}
 	defer func() { result = errors.Join(result, windows.CloseHandle(parent)) }()
+	ready, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, windows.CloseHandle(ready)) }()
+	var signal windows.Handle
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), ready, windows.CurrentProcess(), &signal, windows.EVENT_MODIFY_STATE, true, 0); err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, windows.CloseHandle(signal)) }()
+	inherited := []windows.Handle{parent, signal}
 	attributes, err := windows.NewProcThreadAttributeList(1)
 	if err != nil {
 		return err
 	}
 	defer attributes.Delete()
-	if err := attributes.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&parent), unsafe.Sizeof(parent)); err != nil {
+	if err := attributes.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&inherited[0]), uintptr(len(inherited))*unsafe.Sizeof(parent)); err != nil {
 		return err
 	}
 	startup := windows.StartupInfoEx{StartupInfo: windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{}))}, ProcThreadAttributeList: attributes.List()}
 	argument := "--parent-handle=" + strconv.FormatUint(uint64(parent), 10)
-	command, err := windows.UTF16FromString(windows.ComposeCommandLine([]string{path, "--finish-uninstall", argument}))
+	command, err := windows.UTF16FromString(windows.ComposeCommandLine([]string{path, "--finish-uninstall", argument, "--ready-handle=" + strconv.FormatUint(uint64(signal), 10)}))
 	if err != nil {
 		return err
 	}
@@ -336,12 +360,70 @@ func launchMaintenanceCopy(path string) (result error) {
 	}
 	runtime.KeepAlive(command)
 	runtime.KeepAlive(environment)
-	return errors.Join(windows.CloseHandle(process.Thread), windows.CloseHandle(process.Process))
+	runtime.KeepAlive(inherited)
+	defer func() {
+		result = errors.Join(result, windows.CloseHandle(process.Thread), windows.CloseHandle(process.Process))
+	}()
+	if err := waitMaintenanceReady(ctx, ready, process.Process); err != nil {
+		return errors.Join(err, retireMaintenanceCopy(process.Process))
+	}
+	return nil
+}
+
+// retireMaintenanceCopy settles only the exact spawned continuation before a failed handoff lets the original process exit.
+func retireMaintenanceCopy(child windows.Handle) error {
+	state, err := windows.WaitForSingleObject(child, 0)
+	if err != nil {
+		return err
+	}
+	if state == windows.WAIT_OBJECT_0 {
+		return nil
+	}
+	if state != uint32(windows.WAIT_TIMEOUT) {
+		return errors.New("copied uninstall returned an unexpected retirement state")
+	}
+	terminateErr := windows.TerminateProcess(child, 1)
+	state, waitErr := windows.WaitForSingleObject(child, 5000)
+	if waitErr != nil {
+		return errors.Join(terminateErr, waitErr)
+	}
+	if state != windows.WAIT_OBJECT_0 {
+		return errors.Join(terminateErr, errors.New("copied uninstall did not settle after failed handoff"))
+	}
+	return nil
+}
+
+// waitMaintenanceReady keeps the original image and token alive until its exact copied child admits the native parent receipt.
+func waitMaintenanceReady(ctx context.Context, ready, child windows.Handle) error {
+	deadline, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	for {
+		if err := deadline.Err(); err != nil {
+			return fmt.Errorf("wait for copied uninstall parent admission: %w", err)
+		}
+		state, err := windows.WaitForMultipleObjects([]windows.Handle{ready, child}, false, 50)
+		if err != nil {
+			return err
+		}
+		switch state {
+		case windows.WAIT_OBJECT_0:
+			return nil
+		case windows.WAIT_OBJECT_0 + 1:
+			var code uint32
+			if err := windows.GetExitCodeProcess(child, &code); err != nil {
+				return err
+			}
+			return fmt.Errorf("copied uninstall exited before admitting its parent (exit %#x)", code)
+		case uint32(windows.WAIT_TIMEOUT):
+		default:
+			return errors.New("copied uninstall returned an unexpected ready state")
+		}
+	}
 }
 
 // finishUninstall authenticates both its protected copied image and the original inherited process before fixed product removal.
-func finishUninstall(ctx context.Context, parent windows.Handle) (result error) {
-	defer func() { result = errors.Join(result, windows.CloseHandle(parent)) }()
+func finishUninstall(ctx context.Context, parent, ready windows.Handle) (result error) {
+	defer func() { result = errors.Join(result, windows.CloseHandle(parent), windows.CloseHandle(ready)) }()
 	installation, err := admitMaintenance()
 	if err != nil {
 		return err
@@ -366,6 +448,9 @@ func finishUninstall(ctx context.Context, parent windows.Handle) (result error) 
 	}
 	if err == nil {
 		originalIdentity, err = inspectMaintenanceProcess(parent)
+	}
+	if err == nil {
+		err = windowsinstallation.SignalUninstallParentReady(ready)
 	}
 	if err == nil {
 		err = waitMaintenanceParent(ctx, parent)
@@ -601,14 +686,14 @@ func admitMaintenanceParent(parent windows.Handle, original, userSID string) err
 	image := make([]uint16, 32768)
 	size := uint32(len(image))
 	if err := windows.QueryFullProcessImageName(parent, 0, &image[0], &size); err != nil {
-		return err
+		return fmt.Errorf("query live uninstall parent image: %w", err)
 	}
 	if !strings.EqualFold(windows.UTF16ToString(image[:size]), original) {
 		return errors.New("uninstall parent is not the fixed admitted Uninstall.exe")
 	}
 	var token windows.Token
 	if err := windows.OpenProcessToken(parent, windows.TOKEN_QUERY, &token); err != nil {
-		return err
+		return fmt.Errorf("query live uninstall parent token: %w", err)
 	}
 	parentUser, userErr := token.GetTokenUser()
 	var parentSession, currentSession uint32

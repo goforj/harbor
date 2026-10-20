@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -24,9 +23,15 @@ import (
 // maintenanceParentChild selects only the owned native parent-receipt subprocess in tests.
 var maintenanceParentChild = flag.Uint64("harbor-maintenance-parent", 0, "inherited native parent receipt test handle")
 
+// maintenanceReadyChild supplies only the owned native roundtrip acknowledgement in tests.
+var maintenanceReadyChild = flag.Uint64("harbor-maintenance-ready", 0, "inherited native acknowledgement test handle")
+
+// maintenanceHoldChild keeps only the owned cancellation-test subprocess waiting before acknowledgement.
+var maintenanceHoldChild = flag.Bool("harbor-maintenance-hold", false, "wait before the owned test acknowledgement")
+
 // TestWindowsMaintenanceDispatch rejects additional authority arguments before session admission.
 func TestWindowsMaintenanceDispatch(t *testing.T) {
-	for _, arguments := range [][]string{{"--unknown"}, {"--register-task", "--sid=S-1-5-18"}, {"--remove-task", "extra"}, {"--uninstall", "C:\\foreign"}, {"--finish-uninstall"}, {"--finish-uninstall", "--parent-handle=0"}, {"--finish-uninstall", "--parent-handle=04"}, {"--finish-uninstall", "--parent-handle=4", "extra"}} {
+	for _, arguments := range [][]string{{"--unknown"}, {"--register-task", "--sid=S-1-5-18"}, {"--remove-task", "extra"}, {"--uninstall", "C:\\foreign"}, {"--finish-uninstall"}, {"--finish-uninstall", "--parent-handle=0"}, {"--finish-uninstall", "--parent-handle=04"}, {"--finish-uninstall", "--parent-handle=4", "extra"}, {"--finish-uninstall", "--parent-handle=4", "--ready-handle=4"}, {"--finish-uninstall", "--parent-handle=4", "--ready-handle=0"}, {"--finish-uninstall", "--parent-handle=4", "--ready-handle=8", "extra"}} {
 		if err := runMaintenance(context.Background(), arguments, maintenanceOperations{}); err == nil {
 			t.Fatalf("admitted arguments %q", arguments)
 		}
@@ -40,8 +45,8 @@ func TestWindowsMaintenanceDispatch(t *testing.T) {
 				complete:  func(context.Context) error { events = append(events, "complete"); return nil },
 				remove:    func(context.Context) error { events = append(events, "remove"); return nil },
 				bootstrap: func(context.Context) error { events = append(events, "bootstrap"); return nil },
-				finish: func(_ context.Context, parent windows.Handle) error {
-					if parent != 4 {
+				finish: func(_ context.Context, parent, ready windows.Handle) error {
+					if parent != 4 || ready != 8 {
 						t.Fatalf("parent=%d", parent)
 					}
 					events = append(events, "finish")
@@ -60,7 +65,7 @@ func TestWindowsMaintenanceDispatch(t *testing.T) {
 			case "--uninstall":
 				expected = "bootstrap"
 			case "--finish-uninstall":
-				arguments = append(arguments, "--parent-handle=4")
+				arguments = append(arguments, "--parent-handle=4", "--ready-handle=8")
 				expected = "finish"
 			}
 			if err := runMaintenance(context.Background(), arguments, operations); err != nil {
@@ -377,20 +382,73 @@ func TestNativeMaintenanceParentRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var parent windows.Handle
-	if err := windows.DuplicateHandle(windows.CurrentProcess(), windows.CurrentProcess(), windows.CurrentProcess(), &parent, maintenanceParentRights, true, 0); err != nil {
-		t.Fatal(err)
+	for _, mode := range []string{"acknowledged", "early-exit", "canceled"} {
+		t.Run(mode, func(t *testing.T) {
+			acknowledged := mode == "acknowledged"
+			var parent windows.Handle
+			if err := windows.DuplicateHandle(windows.CurrentProcess(), windows.CurrentProcess(), windows.CurrentProcess(), &parent, maintenanceParentRights, true, 0); err != nil {
+				t.Fatal(err)
+			}
+			defer windows.CloseHandle(parent)
+			ready, err := windows.CreateEvent(nil, 1, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer windows.CloseHandle(ready)
+			var signal windows.Handle
+			if err := windows.DuplicateHandle(windows.CurrentProcess(), ready, windows.CurrentProcess(), &signal, windows.EVENT_MODIFY_STATE, true, 0); err != nil {
+				t.Fatal(err)
+			}
+			defer windows.CloseHandle(signal)
+			arguments := []string{path, "-test.run=^TestWindowsMaintenanceParentSyntax$", "-test.v"}
+			if mode != "early-exit" {
+				arguments = []string{path, "-test.run=^TestNativeMaintenanceParentChild$", "-test.v", "-harbor-maintenance-parent=" + strconv.FormatUint(uint64(parent), 10), "-harbor-maintenance-ready=" + strconv.FormatUint(uint64(signal), 10)}
+				if mode == "canceled" {
+					arguments = append(arguments, "-harbor-maintenance-hold")
+				}
+			}
+			_, handle, err := syscall.StartProcess(path, arguments, &syscall.ProcAttr{Env: os.Environ(), Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()}, Sys: &syscall.SysProcAttr{AdditionalInheritedHandles: []syscall.Handle{syscall.Handle(parent), syscall.Handle(signal)}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			child := windows.Handle(handle)
+			defer windows.CloseHandle(child)
+			defer func() {
+				if err := retireMaintenanceCopy(child); err != nil {
+					t.Error(err)
+				}
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if mode == "canceled" {
+				cancel()
+			}
+			err = waitMaintenanceReady(ctx, ready, child)
+			if (err == nil) != acknowledged {
+				t.Fatalf("native copied-child acknowledgement=%v expected %t", err, acknowledged)
+			}
+			if mode == "canceled" {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancellation cause was lost: %v", err)
+				}
+				if err := retireMaintenanceCopy(child); err != nil {
+					t.Fatal(err)
+				}
+				if state, err := windows.WaitForSingleObject(child, 0); err != nil || state != windows.WAIT_OBJECT_0 {
+					t.Fatalf("canceled owned child is not quiescent: %d %v", state, err)
+				}
+			}
+			if acknowledged {
+				if state, err := windows.WaitForSingleObject(child, 5000); err != nil || state != windows.WAIT_OBJECT_0 {
+					t.Fatalf("acknowledged child did not settle: %d %v", state, err)
+				}
+				var code uint32
+				if err := windows.GetExitCodeProcess(child, &code); err != nil || code != 0 {
+					t.Fatalf("acknowledged child failed: %d %v", code, err)
+				}
+			}
+		})
 	}
-	defer windows.CloseHandle(parent)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, path, "-test.run=^TestNativeMaintenanceParentChild$", "-test.v", "-harbor-maintenance-parent="+strconv.FormatUint(uint64(parent), 10))
-	command.SysProcAttr = &syscall.SysProcAttr{AdditionalInheritedHandles: []syscall.Handle{syscall.Handle(parent)}}
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("exact inherited parent receipt refused: %v\n%s", err, output)
-	}
-	t.Logf("exact native child parent receipt: %s", output)
 }
 
 // TestNativeMaintenanceParentChild admits only its real earlier-born parent and prevents onward receipt inheritance.
@@ -418,5 +476,13 @@ func TestNativeMaintenanceParentChild(t *testing.T) {
 	}
 	if flags&windows.HANDLE_FLAG_INHERIT != 0 {
 		t.Fatal("admitted parent receipt can be inherited again")
+	}
+	if *maintenanceHoldChild {
+		time.Sleep(time.Minute)
+	}
+	ready := windows.Handle(*maintenanceReadyChild)
+	defer windows.CloseHandle(ready)
+	if err := windowsinstallation.SignalUninstallParentReady(ready); err != nil {
+		t.Fatal(err)
 	}
 }
