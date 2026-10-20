@@ -86,8 +86,7 @@ final class HarborPackageUITests: XCTestCase {
         XCTAssertEqual(try installedProcess(), originalProcess, "ordinary macOS reopen must restore the existing window")
         try assertProject(identifier, state: "ready")
         attach("window-reopened-original-process")
-        try launchInstalledApplication("second-launch")
-        try awaitWindow()
+        try launchInstalledApplication("second-launch", nativePresentation: true)
         try waitUntil("single-instance handoff completes") {
             let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.goforj.harbor")
             return running.count == 1 && running.first?.processIdentifier == originalProcess
@@ -96,7 +95,7 @@ final class HarborPackageUITests: XCTestCase {
         try assertProject(identifier, state: "ready")
         attach("visible-second-launch-original-process")
 
-        try quitInstalledApplication()
+        try quitNativeInstalledApplication(originalProcess)
         try assertProject(identifier, state: "ready")
         try launchInstalledApplication("relaunch")
         try awaitWindow()
@@ -124,11 +123,12 @@ final class HarborPackageUITests: XCTestCase {
             "start": "ready with system-trusted HTTPS 200",
             "window_close": "project remains ready",
             "window_reopen": "ordinary macOS open restores the original process and visible window",
-            "second_launch": "forced new instance while visible exits and retains original foreground process",
+            "second_launch": "forced new instance while visible retains original active process and native on-screen window",
             "launch_commands": launchCommands,
-            "ui_quit": "daemon and project remain ready",
+            "ui_quit": "normal native Quit AppleEvent; daemon and project remain ready",
             "ui_reopen": "registration retained and HTTPS 200",
             "final_project_state": "stopped",
+            "final_ui_quit": "Command-Q and native process absence",
         ]
         try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
             .write(to: URL(fileURLWithPath: "/tmp/harbor-package-ui-evidence.json"), options: .withoutOverwriting)
@@ -139,7 +139,7 @@ final class HarborPackageUITests: XCTestCase {
     }
 
     // launchInstalledApplication retains native stderr even if startup exits before a window appears.
-    private func launchInstalledApplication(_ stage: String, newInstance: Bool = true) throws {
+    private func launchInstalledApplication(_ stage: String, newInstance: Bool = true, nativePresentation: Bool = false) throws {
         let evidence = URL(fileURLWithPath: "/tmp/harbor-package-ui-native-logs", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         let arguments = (newInstance ? ["-n"] : []) + ["--stdout", evidence.appendingPathComponent(stage + "-stdout.log").path,
@@ -154,6 +154,13 @@ final class HarborPackageUITests: XCTestCase {
         let process = try installedProcess()
         let running = try XCTUnwrap(NSRunningApplication(processIdentifier: process))
         XCTAssertTrue(running.activate(options: []), "activate only the admitted installed application")
+        if nativePresentation {
+            try waitUntil(stage + " native foreground window", timeout: 20) {
+                running.isActive && !running.isHidden && !self.nativeWindows(for: process).isEmpty
+            }
+            XCTAssertEqual(try installedProcess(), process, "native activation must preserve the installed application process")
+            return
+        }
         // A forced duplicate can leave XCTest associated with the exited process for this bundle identifier.
         application = XCUIApplication(bundleIdentifier: "com.goforj.harbor")
         application.activate()
@@ -172,6 +179,28 @@ final class HarborPackageUITests: XCTestCase {
         XCTAssertTrue(application.wait(for: .notRunning, timeout: 20))
         try waitUntil("native installed application exit", timeout: 20) {
             NSRunningApplication.runningApplications(withBundleIdentifier: "com.goforj.harbor").isEmpty
+        }
+    }
+
+    private func quitNativeInstalledApplication(_ process: pid_t) throws {
+        try assertInstalledBundle()
+        let running = try XCTUnwrap(NSRunningApplication(processIdentifier: process))
+        XCTAssertEqual(try installedProcess(), process)
+        XCTAssertTrue(running.terminate(), "normal native Quit AppleEvent must be accepted")
+        try waitUntil("native Quit AppleEvent process exit", timeout: 20) {
+            NSRunningApplication.runningApplications(withBundleIdentifier: "com.goforj.harbor").isEmpty
+        }
+    }
+
+    private func nativeWindows(for process: pid_t) -> [[String: Any]] {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.compactMap { window in
+            guard (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == process,
+                  (window[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let rectangle = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  rectangle.width >= 420, rectangle.height >= 520 else { return nil }
+            return ["pid": process, "layer": 0, "bounds": bounds]
         }
     }
 
@@ -313,7 +342,9 @@ final class HarborPackageUITests: XCTestCase {
         add(attachment)
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.goforj.harbor")
         let processes = running.map { "pid=\($0.processIdentifier) active=\($0.isActive) hidden=\($0.isHidden) terminated=\($0.isTerminated) bundle=\($0.bundleURL?.path ?? "unknown")" }
-        let state = XCTAttachment(string: "application_state=\(application.state.rawValue)\n" + processes.joined(separator: "\n") + "\nwindows:\n" + application.windows.debugDescription)
+        let native = running.flatMap { nativeWindows(for: $0.processIdentifier) }
+        let nativeDescription = String(data: (try? JSONSerialization.data(withJSONObject: native, options: [.prettyPrinted, .sortedKeys])) ?? Data(), encoding: .utf8) ?? "unavailable"
+        let state = XCTAttachment(string: "application_state=\(application.state.rawValue)\n" + processes.joined(separator: "\n") + "\nnative_on_screen_windows:\n" + nativeDescription + "\nXCTest windows:\n" + application.windows.debugDescription)
         state.name = name + "-native-state"
         state.lifetime = .keepAlways
         add(state)
