@@ -51,7 +51,7 @@ func (store windowsRootStore) snapshot(ctx context.Context, request Request) ([]
 	if err := validateWindowsTrustRequest(request, store.mechanism); err != nil {
 		return nil, err
 	}
-	defaultStore, err := store.open()
+	defaultStore, err := store.openObservation()
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +254,14 @@ func openWindowsCurrentUserRootStore() (windows.Handle, error) {
 	return store, nil
 }
 
+// openObservation avoids requesting machine mutation authority when the unprivileged daemon only inspects trust.
+func (store windowsRootStore) openObservation() (windows.Handle, error) {
+	if store.mechanism == networkpolicy.WindowsMachineTrust {
+		return openWindowsMachineRootStoreWithFlags(windows.CERT_STORE_READONLY_FLAG | windows.CERT_STORE_OPEN_EXISTING_FLAG)
+	}
+	return store.open()
+}
+
 // open returns only the physical Root store selected by the backend's reviewed trust scope.
 func (store windowsRootStore) open() (windows.Handle, error) {
 	switch store.mechanism {
@@ -268,6 +276,11 @@ func (store windowsRootStore) open() (windows.Handle, error) {
 
 // openWindowsMachineRootStore opens only the machine registry Root store used by the elevated helper.
 func openWindowsMachineRootStore() (windows.Handle, error) {
+	return openWindowsMachineRootStoreWithFlags(0)
+}
+
+// openWindowsMachineRootStoreWithFlags keeps machine observation separate from the helper's existing write-capable store access.
+func openWindowsMachineRootStoreWithFlags(flags uint32) (windows.Handle, error) {
 	name, err := windows.UTF16PtrFromString(windowsRootStoreName)
 	if err != nil {
 		return 0, fmt.Errorf("encode LocalMachine Root store name: %w", err)
@@ -276,7 +289,7 @@ func openWindowsMachineRootStore() (windows.Handle, error) {
 		uintptr(windows.CERT_STORE_PROV_SYSTEM_REGISTRY),
 		0,
 		0,
-		uint32(windows.CERT_SYSTEM_STORE_LOCAL_MACHINE),
+		uint32(windows.CERT_SYSTEM_STORE_LOCAL_MACHINE)|flags,
 		uintptr(unsafe.Pointer(name)),
 	)
 	if err != nil {
