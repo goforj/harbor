@@ -12,7 +12,7 @@ import verify
 
 
 def verify_assets(directory, run):
-    """verify_assets binds one sealed native setup package to its successful native acceptance workflow."""
+    """verify_assets binds one sealed native development package to its successful native acceptance workflow."""
     if (run.get("repository", {}).get("full_name") != verify.REPOSITORY
             or run.get("status") != "completed" or run.get("conclusion") != "success"
             or run.get("path", "").split("@", 1)[0] != ".github/workflows/windows-development-package.yml"):

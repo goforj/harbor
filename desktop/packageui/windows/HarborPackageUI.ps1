@@ -147,6 +147,11 @@ function Save-Observation([string]$Name) {
 }
 
 . (Join-Path $PSScriptRoot 'WorkerProfile.ps1')
+[HarborUIProfile]::ProtectedDirectories = [string[]]@($InstallRoot, (Join-Path $InstallRoot $releaseRelative),
+    (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) 'GoForj\Harbor\Privileged'))
+[HarborUIProfile]::ProtectedFiles = [string[]]@($launcherPath, $desktopPath, $daemonPath, $cliPath,
+    (Join-Path $InstallRoot 'harbor-helper.exe'))
+[HarborUIProfile]::ProtectedRegistryKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor'
 Assert-InteractiveWorker
 try {
     $originalProcess = Open-Harbor
