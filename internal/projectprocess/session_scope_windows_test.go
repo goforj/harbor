@@ -7,6 +7,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/platform/windowsjob"
 	"golang.org/x/sys/windows"
 )
 
@@ -28,7 +29,7 @@ func TestSessionScopeRefusesExistingJobWithoutMutatingIt(t *testing.T) {
 		t.Fatal("launch accepted a pre-existing job")
 	}
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-	if err := windows.QueryInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits)), nil); err != nil {
+	if err := windowsjob.Query(job, windows.JobObjectExtendedLimitInformation, unsafe.Pointer(&limits), uint32(unsafe.Sizeof(limits))); err != nil {
 		t.Fatal(err)
 	}
 	if limits.BasicLimitInformation.LimitFlags != 0 {
@@ -46,7 +47,7 @@ func TestSessionScopeRejectsUncontainedDescendantPolicy(t *testing.T) {
 	defer platform.close()
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK
-	if _, err := windows.SetInformationJobObject(platform.job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+	if err := windowsjob.Set(platform.job, windows.JobObjectExtendedLimitInformation, unsafe.Pointer(&limits), uint32(unsafe.Sizeof(limits))); err != nil {
 		t.Fatal(err)
 	}
 	job, err := openOwnedSessionJob("project-policy", "session-policy", directory, sessionJobQuery)

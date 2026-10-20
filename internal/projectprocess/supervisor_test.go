@@ -42,6 +42,10 @@ func init() {
 			os.Exit(89)
 		}
 	}
+	if len(os.Args) == 4 && os.Args[1] == "dev:status" && os.Args[2] == "--json" && os.Args[3] == "--resources-only" {
+		fmt.Fprintf(os.Stdout, `{"schema_version":1,"supported":true,"services":[],"resources":[{"id":"mailpit","name":"Mailpit","kind":"web","url":"http://%s:8025","service":"mailpit"}]}`, os.Getenv("IP_ADDRESS"))
+		os.Exit(0)
+	}
 	if len(os.Args) != 2 || (os.Args[1] != "dev" && os.Args[1] != "down") {
 		os.Exit(90)
 	}

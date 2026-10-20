@@ -99,8 +99,10 @@ func (supervisor *Supervisor) AdoptSession(ctx context.Context, session domain.P
 	readers.Add(1)
 	go func() { defer readers.Done(); <-output.done }()
 	process := &managedProcess{
-		adopted: true, detachDone: make(chan struct{}), brokerAttachment: output.attachment,
-		command: &exec.Cmd{Process: child}, platform: platform, relay: output.relay, pipeReaders: readers,
+		adopted: true, detachDone: make(chan struct{}), monitorDone: make(chan struct{}), brokerAttachment: output.attachment,
+		command: &exec.Cmd{Process: child, Path: session.Process.ExecutableIdentity, Args: handle.info.Arguments, Dir: canonical,
+			Env: withoutStartupProgressEnvironment(withDevelopmentEnvironment(supervisor.environment, EnvironmentOverrides{}))},
+		platform: platform, relay: output.relay, pipeReaders: readers,
 		handle: handle, gracePeriod: supervisor.gracePeriod, acceptingStop: true,
 		forced: make(chan struct{}), signalsDone: make(chan struct{}), stopComplete: make(chan struct{}),
 	}
@@ -115,6 +117,8 @@ func (supervisor *Supervisor) AdoptSession(ctx context.Context, session domain.P
 
 // waitAdoptedSession observes the native scope without trying to reap a process created by the previous daemon.
 func (supervisor *Supervisor) waitAdoptedSession(process *managedProcess) {
+	defer close(process.monitorDone)
+	defer process.command.Process.Release()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -129,7 +133,6 @@ func (supervisor *Supervisor) waitAdoptedSession(process *managedProcess) {
 					process.closeOutputReaders()
 				}
 				supervisor.finishProcess(process, err, -1)
-				_ = process.command.Process.Release()
 				return
 			}
 		}
@@ -177,10 +180,11 @@ func (supervisor *Supervisor) DetachSession(ctx context.Context, projectID domai
 	process.closeOutputReaders()
 	process.pipeReaders.Wait()
 	process.relay.finish()
-	process.platform.close()
 	if process.adopted {
-		_ = process.command.Process.Release()
+		// The monitor owns Release because it still reads the process PID while checking native liveness.
+		<-process.monitorDone
 	}
+	process.platform.close()
 	return nil
 }
 

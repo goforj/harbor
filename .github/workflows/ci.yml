@@ -18,7 +18,7 @@ jobs:
       - name: Repeat native handoff with retained exit observations
         shell: pwsh
         run: |
-          go test -race ./internal/projectprocess -run '^TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption$' -count=100 -timeout=10m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\restart-diagnostic.log"
+          go test -race ./internal/projectprocess ./internal/platform/windowsjob -run '^(TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption|TestInformation)' -count=100 -timeout=10m -v 2>&1 | Tee-Object "$env:RUNNER_TEMP\restart-diagnostic.log"
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v7
         if: always()
