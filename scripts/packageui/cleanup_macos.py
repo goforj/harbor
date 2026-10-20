@@ -196,6 +196,32 @@ def installed_executable(path, setuid=False):
     return str(expected)
 
 
+def read_admitted_helper_facts(initial, pid):
+    """read_admitted_helper_facts exposes no root-child metadata until exact CLI and package scope match."""
+    current = daemon_process_facts(initial["pid"])
+    expected_cli = installed_executable(CLI)
+    if current != initial or current["uid"] == 0 or current["real_uid"] != current["uid"] or current["executable"] != expected_cli:
+        raise RuntimeError("release CLI identity changed or is outside the installed user scope")
+    helper = installed_executable("/Library/PrivilegedHelperTools/com.goforj.harbor.helper", setuid=True)
+    child = daemon_process_facts(pid)
+    birth = (child["birth_seconds"], child["birth_microseconds"])
+    initial_birth = (initial["birth_seconds"], initial["birth_microseconds"])
+    # Administrator trust deliberately makes both real and effective helper identities root.
+    if child["parent_pid"] != initial["pid"] or child["executable"] != helper or child["real_uid"] not in (initial["uid"], 0) or child["uid"] != 0 or birth < initial_birth:
+        raise RuntimeError("preserved non-matching release CLI child")
+    if daemon_process_facts(initial["pid"]) != initial:
+        raise RuntimeError("release CLI changed during helper admission")
+    return child
+
+
+def helper_process_facts(initial, pid):
+    """helper_process_facts reads protected setuid-child facts through the fixed isolated CI diagnostic entrypoint."""
+    command = ["/usr/bin/sudo", "-n", "/usr/bin/python3", "-I", str(Path(__file__).resolve()), "helper-facts", str(pid)]
+    result = subprocess.run(command, input=json.dumps(initial), capture_output=True, text=True, timeout=5)
+    result.check_returncode()
+    return json.loads(result.stdout)
+
+
 def collect_live_release_diagnostics(directory, initial):
     """collect_live_release_diagnostics samples only the retained CLI birth and its exact package helper children."""
     diagnostics = {"cli": initial, "samples": [], "errors": []}
@@ -208,14 +234,16 @@ def collect_live_release_diagnostics(directory, initial):
         target = directory / name
         try:
             require_cli()
-            if daemon_process_facts(before["pid"]) != before:
+            current = helper_process_facts(initial, before["pid"]) if privileged else daemon_process_facts(before["pid"])
+            if current != before:
                 raise RuntimeError("admitted release process changed before sampling")
             command = ["/usr/bin/sample", str(before["pid"]), "1", "1", "-file", str(target)]
             if privileged:
                 command = ["/usr/bin/sudo", "-n"] + command
             result = subprocess.run(command, text=True, capture_output=True, timeout=5)
             require_cli()
-            if daemon_process_facts(before["pid"]) != before:
+            current = helper_process_facts(initial, before["pid"]) if privileged else daemon_process_facts(before["pid"])
+            if current != before:
                 raise RuntimeError("admitted release process changed during sampling")
             result.check_returncode()
             diagnostics["samples"].append({"process": before, "file": name,
@@ -232,17 +260,10 @@ def collect_live_release_diagnostics(directory, initial):
         pids = children.stdout.split()
         if len(pids) > 16 or any(not pid.isdecimal() for pid in pids):
             raise RuntimeError("release CLI child projection is malformed or exceeds its bound")
-        helper = installed_executable("/Library/PrivilegedHelperTools/com.goforj.harbor.helper", setuid=True)
         for value in pids:
             try:
                 require_cli()
-                child = daemon_process_facts(int(value))
-                birth = (child["birth_seconds"], child["birth_microseconds"])
-                initial_birth = (initial["birth_seconds"], initial["birth_microseconds"])
-                # Administrator trust deliberately makes both real and effective helper identities root.
-                if child["parent_pid"] != initial["pid"] or child["executable"] != helper or child["real_uid"] not in (initial["uid"], 0) or child["uid"] != 0 or birth < initial_birth:
-                    diagnostics["errors"].append("preserved non-matching release CLI child")
-                    continue
+                child = helper_process_facts(initial, int(value))
                 sample(child, f"release-helper-{child['pid']}.sample.txt", privileged=True)
             except Exception as error:
                 diagnostics["errors"].append(str(error))
@@ -392,6 +413,13 @@ def recover(directory):
 if __name__ == "__main__":
     if not sys.argv[1:]:
         recover(Path("harbor-package-ui-evidence"))
+    elif len(sys.argv) == 3 and sys.argv[1] == "helper-facts":
+        if os.geteuid() != 0 or not sys.argv[2].isdecimal() or int(sys.argv[2]) <= 0:
+            raise ValueError("helper facts require the CI root diagnostic and one positive PID")
+        payload = sys.stdin.read(8193)
+        if len(payload) > 8192:
+            raise ValueError("helper diagnostic scope exceeds its bound")
+        print(json.dumps(read_admitted_helper_facts(json.loads(payload), int(sys.argv[2]))))
     elif sys.argv[1:] == ["release"]:
         release_network(Path("harbor-package-ui-evidence"))
     elif sys.argv[1:] == ["absence"]:
