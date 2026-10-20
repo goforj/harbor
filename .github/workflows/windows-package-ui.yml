@@ -14,6 +14,11 @@ on:
         description: Successful Windows packaged-product gate run whose exact tested sealed native installer will be installed
         required: false
         type: string
+      window_only:
+        description: Prove only installed native window hide, reopen and normal Quit without setup or project actions
+        required: false
+        type: boolean
+        default: false
       profile_only:
         description: Validate only the actual restricted child token and protected access fixture
         required: false
@@ -122,13 +127,16 @@ jobs:
           python scripts/packageui/verify.py source $env:PACKAGE_SOURCE
           if ($LASTEXITCODE -ne 0) { throw 'packaged product source differs from this GUI harness' }
       - uses: actions/setup-go@v7
+        if: inputs.window_only != true
         with:
           go-version-file: go.mod
           cache: false
       - uses: actions/setup-node@v6
+        if: inputs.window_only != true
         with:
           node-version: '22'
       - name: Install released creation prerequisites
+        if: inputs.window_only != true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -147,6 +155,7 @@ jobs:
           "GOMODCACHE=$env:GOMODCACHE" | Out-File $env:GITHUB_ENV -Append
           "HARBOR_UI_TOOLS=$env:GOBIN;$env:PATH" | Out-File $env:GITHUB_ENV -Append
       - name: Register disposable user toolchain environment
+        if: inputs.window_only != true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -186,6 +195,7 @@ jobs:
           if ($selection.signer_thumbprint -cne $thumbprint) { throw 'installed selected publisher differs from admitted package signer' }
           "HARBOR_INSTALL_ROOT=$installRoot" | Out-File $env:GITHUB_ENV -Append
       - name: Build the preauthorized exact-operation networking fixture
+        if: inputs.window_only != true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -198,6 +208,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'networking fixture client build failed' }
           "HARBOR_PACKAGE_UI_WINDOWS_APPROVAL_TOOL=$path" | Out-File $env:GITHUB_ENV -Append
       - name: Release hosted runner canonical ingress sockets
+        if: inputs.window_only != true
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -217,14 +228,22 @@ jobs:
           }
 
       - name: Drive installed graphical project lifecycle
+        if: inputs.window_only != true
         shell: powershell
         run: |
           & .\desktop\packageui\windows\HarborPackageUI.ps1 `
             -InstallRoot $env:HARBOR_INSTALL_ROOT `
             -EvidenceDirectory "$env:RUNNER_TEMP\harbor-installed-ui-evidence" `
             -ToolsPath $env:HARBOR_UI_TOOLS
+      - name: Probe installed native window only
+        if: inputs.window_only == true
+        shell: powershell
+        run: |
+          & .\desktop\packageui\windows\HarborWindowProbe.ps1 `
+            -InstallRoot $env:HARBOR_INSTALL_ROOT `
+            -EvidenceDirectory "$env:RUNNER_TEMP\harbor-installed-ui-evidence"
       - name: Observe native approval boundary after graphical failure
-        if: failure() && env.HARBOR_INSTALL_ROOT != ''
+        if: failure() && env.HARBOR_INSTALL_ROOT != '' && inputs.window_only != true
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -265,6 +284,8 @@ jobs:
       - name: Require complete ownership-aware cleanup
         if: always() && env.HARBOR_INSTALL_ROOT != ''
         id: cleanup
+        env:
+          WINDOW_ONLY: ${{ inputs.window_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -272,8 +293,19 @@ jobs:
           if (-not (Test-Path $path -PathType Leaf)) { throw 'installed UI cleanup receipt is missing' }
           $cleanup = Get-Content $path -Raw | ConvertFrom-Json
           if ($cleanup.approval_indeterminate -ne $false) { throw 'unproved elevated helper settlement prevents further machine cleanup or uninstall' }
-          foreach ($fact in @('gui_quiescent','fixtures_stopped','fixture_unregistered','network_released','daemon_absent')) {
-            if ($cleanup.$fact -ne $true) { throw "partial installed cleanup: $fact was not verified" }
+          if ($env:WINDOW_ONLY -ceq 'true') {
+            if ($cleanup.scope -cne 'installed-native-window-only' -or $cleanup.schema_version -ne 1) { throw 'window-only cleanup receipt has foreign scope' }
+            foreach ($fact in @('gui_quiescent','daemon_absent','authority_absent','untouched_snapshot_verified')) {
+              if ($cleanup.$fact -ne $true) { throw "partial window-only cleanup: $fact was not verified" }
+            }
+            $database = Join-Path $env:LOCALAPPDATA 'GoForj\Harbor\harbor.db'
+            if (@($cleanup.retained_files.PSObject.Properties).Count -ne 1 -or $cleanup.missing_files.Count -ne 0 -or
+                -not $cleanup.retained_files.PSObject.Properties[$database] -or
+                (Get-FileHash -LiteralPath $database -Algorithm SHA256).Hash -cne $cleanup.retained_files.$database) { throw 'window-only cleanup lacks the exact retained user database' }
+          } else {
+            foreach ($fact in @('gui_quiescent','fixtures_stopped','fixture_unregistered','network_released','daemon_absent')) {
+              if ($cleanup.$fact -ne $true) { throw "partial installed cleanup: $fact was not verified" }
+            }
           }
           if ($cleanup.error) { throw "partial installed cleanup: $($cleanup.error)" }
           if ((Test-Path "$env:RUNNER_TEMP\harbor-installed-ui-evidence\installed-ui.json") -and (@($cleanup.retained_files.PSObject.Properties).Count -ne 3 -or $cleanup.missing_files.Count -ne 0)) { throw 'successful UI lifecycle lacks all three retained user files' }
