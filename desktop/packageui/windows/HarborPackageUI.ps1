@@ -245,8 +245,10 @@ try {
     } | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'installed-ui.json') -Encoding utf8
 } catch {
     $originalFailure = $_
-    ($originalFailure.Exception.ToString() + "`n" + $originalFailure.ScriptStackTrace) |
-        Set-Content (Join-Path $EvidenceDirectory 'failure-exception.txt') -Encoding utf8
+    try {
+        ($originalFailure.Exception.ToString() + "`n" + $originalFailure.ScriptStackTrace) |
+            Set-Content (Join-Path $EvidenceDirectory 'failure-exception.txt') -Encoding utf8
+    } catch { Write-Warning "exception diagnostics failed: $_" }
     Save-Observation 'failure'
     try { [HarborUIProfile]::QuiesceLaunchedUIs() } catch { Write-Warning "failed to quiesce exact launched UI handles: $_" }
     throw $originalFailure
