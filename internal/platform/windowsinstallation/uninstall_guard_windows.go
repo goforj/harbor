@@ -450,7 +450,7 @@ func admitUninstallGuardStageDescriptor(descriptor *windows.SECURITY_DESCRIPTOR)
 		return err
 	}
 	if label.Header.AceType != 0x11 || label.Header.AceFlags != windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE || label.Mask != 1 || (*windows.SID)(unsafe.Pointer(&label.SidStart)).String() != "S-1-16-12288" {
-		return errors.New("uninstall guard stage high mandatory label differs")
+		return fmt.Errorf("uninstall guard stage high mandatory label differs: type=%#x flags=%#x mask=%#x sid=%s descriptor=%s", label.Header.AceType, label.Header.AceFlags, label.Mask, (*windows.SID)(unsafe.Pointer(&label.SidStart)).String(), descriptor.String())
 	}
 	return nil
 }

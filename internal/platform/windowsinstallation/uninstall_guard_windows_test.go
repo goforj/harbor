@@ -186,6 +186,8 @@ func TestNativeUninstallGuardWorker(t *testing.T) {
 	if root == "" || agent == "" {
 		t.Skip("signed native maintenance agent fixture was not configured")
 	}
+	facts, factsErr := inspectRuntimeToken(windows.GetCurrentProcessToken())
+	t.Logf("native guard staging creator facts %+v (inspection error %v)", facts, factsErr)
 	publisher := os.Getenv("HARBOR_ADMISSION_PUBLISHER")
 	payloads := map[string][]byte{".txt": []byte(publisher)}
 	for extension, path := range map[string]string{".exe": agent, ".ps1": os.Getenv("HARBOR_ADMISSION_SIGNED_SCRIPT"), ".cer": os.Getenv("HARBOR_ADMISSION_CERTIFICATE")} {
@@ -276,20 +278,20 @@ func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 	t.Helper()
 	system, err := windows.GetWindowsDirectory()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("resolve native guard Windows directory: %v", err)
 	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
-		t.Fatal(err)
+		t.Fatalf("generate native guard stage nonce: %v", err)
 	}
 	root := filepath.Join(system, "Temp", "HarborUninstall-"+hex.EncodeToString(nonce[:]))
 	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(uninstallGuardStageSDDL, "S:")[0])
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("construct native guard creation DACL: %v", err)
 	}
 	attributes := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
 	if err := windows.CreateDirectory(windows.StringToUTF16Ptr(root), attributes); err != nil {
-		t.Fatal(err)
+		t.Fatalf("create native guard stage directory %q: %v", root, err)
 	}
 	labelNativeGuardStage(t, root, true)
 	t.Cleanup(func() {
@@ -300,12 +302,12 @@ func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 	path := filepath.Join(root, "HarborUninstall.exe")
 	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_WRITE, 0, attributes, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create native guard stage file %q: %v", path, err)
 	}
 	file := os.NewFile(uintptr(handle), path)
 	_, writeErr := file.Write(payload)
 	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write/sync/close native guard stage file %q: %v", path, err)
 	}
 	labelNativeGuardStage(t, path, false)
 	t.Cleanup(func() {
@@ -315,7 +317,7 @@ func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 	})
 	retained, err := openUninstallGuardObject(path, false)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("retain native guard stage file %q: %v", path, err)
 	}
 	t.Cleanup(func() {
 		if err := retained.Close(); err != nil {
@@ -334,18 +336,18 @@ func labelNativeGuardStage(t *testing.T, path string, directory bool) {
 	}
 	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.WRITE_OWNER, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open native guard label target %q (directory=%t): %v", path, directory, err)
 	}
 	defer windows.CloseHandle(handle)
 	descriptor, err := windows.SecurityDescriptorFromString(uninstallGuardStageSDDL)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("construct native guard mandatory label: %v", err)
 	}
 	label, _, err := descriptor.SACL()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("extract native guard mandatory label: %v", err)
 	}
 	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.LABEL_SECURITY_INFORMATION, nil, nil, nil, label); err != nil {
-		t.Fatal(err)
+		t.Fatalf("set native guard mandatory label %q: %v", path, err)
 	}
 }
