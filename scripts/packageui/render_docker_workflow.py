@@ -16,6 +16,7 @@ name: Docker project diagnostics
 
 on:
   workflow_dispatch:
+  # Register feature-branch dispatches without running Docker during pull requests.
   pull_request:
     paths:
       - .github/workflows/docker-project-diagnostics.yml
