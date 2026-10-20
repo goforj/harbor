@@ -464,8 +464,17 @@ func receivePayload(ctx context.Context, address netip.Addr, port uint16) (signe
 
 	reader := bufio.NewReader(io.LimitReader(connection, maximumPayloadBytes))
 	var payload signedPayload
-	if err := json.NewDecoder(reader).Decode(&payload); err != nil {
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(&payload); err != nil {
 		return signedPayload{}, fmt.Errorf("read proof payload from %s: %w", endpoint, err)
+	}
+	// Observe the server's FIN before closing so repeated proof clients do not race to enter TIME_WAIT.
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = fmt.Errorf("unexpected additional payload")
+		}
+		return signedPayload{}, fmt.Errorf("finish proof payload from %s: %w", endpoint, err)
 	}
 	return payload, nil
 }

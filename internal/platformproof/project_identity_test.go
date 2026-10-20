@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
 	"testing"
+	"time"
 )
 
 // TestValidateProjectIdentityRequestRejectsInvalidRequests exercises every request boundary before host mutation.
@@ -220,5 +222,48 @@ func TestObserveInterfaceAssignments(t *testing.T) {
 	}
 	if !foundLoopback {
 		t.Fatal("expected an explicit IPv4 loopback interface assignment")
+	}
+}
+
+// TestReceivePayloadRequiresOneResponseAndServerEOF keeps client closure behind the server's FIN.
+func TestReceivePayloadRequiresOneResponseAndServerEOF(t *testing.T) {
+	tests := []struct {
+		name, response    string
+		holdOpen, wantErr bool
+	}{
+		{name: "one response and EOF", response: "{}\n"},
+		{name: "second response", response: "{}\n{}\n", wantErr: true},
+		{name: "trailing invalid bytes", response: "{}\ninvalid", wantErr: true},
+		{name: "server never sends EOF", response: "{}\n", holdOpen: true, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+			defer cancel()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				connection, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer connection.Close()
+				_, _ = io.WriteString(connection, test.response)
+				if test.holdOpen {
+					<-ctx.Done()
+				}
+			}()
+			_, err = receivePayload(ctx, netip.MustParseAddr("127.0.0.1"), uint16(listener.Addr().(*net.TCPAddr).Port))
+			if (err != nil) != test.wantErr {
+				t.Fatalf("receivePayload err=%v wantError=%v", err, test.wantErr)
+			}
+			cancel()
+			<-done
+		})
 	}
 }
