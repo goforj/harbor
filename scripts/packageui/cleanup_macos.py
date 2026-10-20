@@ -232,7 +232,8 @@ def collect_live_release_diagnostics(directory, initial):
                 child = daemon_process_facts(int(value))
                 birth = (child["birth_seconds"], child["birth_microseconds"])
                 initial_birth = (initial["birth_seconds"], initial["birth_microseconds"])
-                if child["parent_pid"] != initial["pid"] or child["executable"] != helper or child["real_uid"] != initial["uid"] or child["uid"] != 0 or birth < initial_birth:
+                # Administrator trust deliberately makes both real and effective helper identities root.
+                if child["parent_pid"] != initial["pid"] or child["executable"] != helper or child["real_uid"] not in (initial["uid"], 0) or child["uid"] != 0 or birth < initial_birth:
                     diagnostics["errors"].append("preserved non-matching release CLI child")
                     continue
                 sample(child, f"release-helper-{child['pid']}.sample.txt", privileged=True)

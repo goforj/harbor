@@ -410,7 +410,7 @@ class LiveReleaseDiagnosticsTests(unittest.TestCase):
         initial = self.cli_facts()
         helper = dict(initial, pid=456, parent_pid=123, uid=0, real_uid=os.getuid(),
                       executable="/admitted/helper", birth_seconds=101)
-        cases = [("matching", {}, False), ("effective uid", {"uid": 1}, False),
+        cases = [("matching", {}, False), ("real root", {"real_uid": 0}, False), ("effective uid", {"uid": 1}, False),
                  ("real uid", {"real_uid": os.getuid() + 1}, False),
                  ("parent", {"parent_pid": 999}, False), ("path", {"executable": "/foreign"}, False),
                  ("old birth", {"birth_seconds": 99}, False), ("replacement during sample", {}, True)]
@@ -437,9 +437,9 @@ class LiveReleaseDiagnosticsTests(unittest.TestCase):
                     cleanup_macos.collect_live_release_diagnostics(evidence, initial)
                 receipt = json.loads((evidence / "release-live-diagnostics.json").read_text())
                 self.assertIn("123", sampled)
-                self.assertEqual("456" in sampled, name in ("matching", "replacement during sample"))
-                self.assertEqual((evidence / "release-helper-456.sample.txt").exists(), name == "matching")
-                self.assertEqual(any(item["process"]["pid"] == 456 for item in receipt["samples"]), name == "matching")
+                self.assertEqual("456" in sampled, name in ("matching", "real root", "replacement during sample"))
+                self.assertEqual((evidence / "release-helper-456.sample.txt").exists(), name in ("matching", "real root"))
+                self.assertEqual(any(item["process"]["pid"] == 456 for item in receipt["samples"]), name in ("matching", "real root"))
 
     def test_cli_process_success_returns_without_sampling(self):
         process = MagicMock(pid=123, returncode=0)
