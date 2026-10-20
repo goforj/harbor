@@ -95,7 +95,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
           cache-dependency-path: |
             go.sum
             .ci/goforj/go.sum
@@ -451,6 +451,21 @@ jobs:
             } | Remove-Item -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Record tested Windows package provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $packageName = [IO.Path]::GetFileName($env:HARBOR_PACKAGE_PATH)
+          $digest = (Get-FileHash -LiteralPath $env:HARBOR_PACKAGE_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+          $provenance = [ordered]@{
+            schema_version = 1
+            source_commit = $env:GITHUB_SHA
+            workflow_run = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            version = $env:HARBOR_RELEASE_VERSION
+            packages = @{ $packageName = $digest }
+          }
+          $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath "$env:HARBOR_PACKAGE_PATH.provenance.json" -Encoding utf8NoBOM
+
       - name: Upload exact tested unsigned Windows installer
         uses: actions/upload-artifact@v7
         with:
@@ -458,6 +473,7 @@ jobs:
           path: |
             ${{ env.HARBOR_PACKAGE_PATH }}
             ${{ env.HARBOR_PACKAGE_PATH }}.sha256
+            ${{ env.HARBOR_PACKAGE_PATH }}.provenance.json
           if-no-files-found: error
           retention-days: 14
 
