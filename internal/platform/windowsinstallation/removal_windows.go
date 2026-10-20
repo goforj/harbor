@@ -39,7 +39,7 @@ func Uninstall(ctx context.Context) (result error) {
 	}
 	installation, err := Admit()
 	if err != nil {
-		return err
+		return fmt.Errorf("admit installation for removal: %w", err)
 	}
 	defer func() { result = errors.Join(result, installation.Close()) }()
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
@@ -73,7 +73,7 @@ func Uninstall(ctx context.Context) (result error) {
 	}
 	guard, err := installation.HoldUninstallGuard(ctx, self)
 	if err != nil {
-		return err
+		return fmt.Errorf("acquire stopped-runtime removal lease: %w", err)
 	}
 	defer func() { result = errors.Join(result, guard.Close()) }()
 	ctx = guard.Context()
@@ -88,28 +88,31 @@ func removeInstallation(ctx context.Context, installation *Installation, guard *
 		return err
 	}
 	if err := installation.Task(ctx, "absent"); err != nil {
-		return err
+		return fmt.Errorf("observe owned task absence: %w", err)
 	}
 	if err := validateUninstallNetworking(ctx, installation); err != nil {
-		return err
+		return fmt.Errorf("observe released networking: %w", err)
 	}
 	if err := installation.ValidateMachineIntegration(ctx); err != nil {
-		return err
+		return fmt.Errorf("admit machine projections before removal: %w", err)
 	}
 	objects, err := snapshotDeletion(installation)
 	if err != nil {
-		return err
+		return fmt.Errorf("snapshot admitted payload before deletion: %w", err)
 	}
 	if err := guard.Check(); err != nil {
 		return err
 	}
 	if err := installation.RemoveMachineIntegration(ctx, guard.Check); err != nil {
-		return err
+		return fmt.Errorf("remove admitted machine projections: %w", err)
 	}
 	if err := installation.Close(); err != nil {
-		return err
+		return fmt.Errorf("release payload admission before deletion: %w", err)
 	}
-	return deletePayload(ctx, objects, guard.Check)
+	if err := deletePayload(ctx, objects, guard.Check); err != nil {
+		return fmt.Errorf("remove admitted payload: %w", err)
+	}
+	return nil
 }
 
 // deletePayload checks every exact object before effects and checks the owned worker before each deletion.
@@ -205,7 +208,7 @@ func retainDeletion(objects []deletionObject) (_ []*os.File, result error) {
 		}
 		handle, err := windows.CreateFile(windows.StringToUTF16Ptr(object.path), access, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, flags, 0)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reopen exact payload for deletion %q: %w", object.path, err)
 		}
 		file := os.NewFile(uintptr(handle), object.path)
 		files = append(files, file)

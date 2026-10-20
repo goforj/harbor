@@ -266,11 +266,11 @@ func admitRoleArguments(role string, arguments []string) error {
 func runtimeEnvironment(token windows.Token) ([]uint16, error) {
 	environment, err := token.Environ(false)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build selected user runtime environment: %w", err)
 	}
 	local, err := windows.KnownFolderPath(windows.FOLDERID_LocalAppData, windows.KF_FLAG_DEFAULT)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve selected user LocalAppData: %w", err)
 	}
 	filtered := environment[:0]
 	for _, entry := range environment {

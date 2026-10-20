@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -180,5 +182,14 @@ func TestNativePayloadRemovalKeepsPinnedSharedVendor(t *testing.T) {
 	}
 	if _, err := os.Stat(vendor); err != nil {
 		t.Fatal("shared protected vendor ancestor was removed")
+	}
+}
+
+// TestNativePayloadRemovalMissingPathContext preserves the native cause while naming the exact failed reopen.
+func TestNativePayloadRemovalMissingPathContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "absent-parent", "owned.exe")
+	_, err := retainDeletion([]deletionObject{{path: path}})
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), strconv.Quote(path)) || !strings.Contains(err.Error(), "reopen exact payload") {
+		t.Fatalf("missing path diagnostic lost identity or cause: %v", err)
 	}
 }
