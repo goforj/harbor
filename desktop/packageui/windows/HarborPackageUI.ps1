@@ -96,6 +96,32 @@ function Set-Selection([string]$Name, [string]$Value) {
     $control.SetFocus()
     [System.Windows.Forms.SendKeys]::SendWait($Value + '{ENTER}')
 }
+function Invoke-PreauthorizedNetworking([string]$Action) {
+    if ($Action -notin @('setup', 'release')) { throw 'fixture networking action is not allowed' }
+    $tool = $env:HARBOR_PACKAGE_UI_WINDOWS_APPROVAL_TOOL
+    if (-not $tool -or -not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw 'preauthorized networking fixture is missing' }
+    if ($null -eq $daemonProcess -or $daemonProcess.HasExited) { throw 'exact installed daemon is unavailable for fixture approval' }
+    $birth = $daemonProcess.StartTime.ToFileTimeUtc().ToString()
+    $path = Join-Path $EvidenceDirectory ("preauthorized-networking-" + $Action + '.json')
+    $arguments = @('--action', $Action, '--installation-id', $selection.installation_id, '--daemon-pid', [string]$daemonProcess.Id, '--daemon-birth', $birth)
+    $process = Start-Process -FilePath $tool -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $path -RedirectStandardError ($path + '.stderr')
+    try {
+        $null = $process.Handle
+        if (-not $process.WaitForExit(190000)) {
+            $process.Kill()
+            if (-not $process.WaitForExit(5000)) { throw 'owned preauthorized fixture process did not settle after its deadline' }
+            throw 'preauthorized networking fixture exceeded its native deadline'
+        }
+        $exit = $process.ExitCode
+    } finally { $process.Dispose() }
+    $output = Get-Content -LiteralPath $path -Raw
+    if ($exit -ne 0) { throw "preauthorized exact-operation networking $Action failed: $output" }
+    $receipt = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    if ($receipt.profile -cne 'preauthorized-hosted-functional' -or $receipt.gui_consent_proved -ne $false -or
+        $receipt.complete -ne $true -or $receipt.selection.installation_id -cne $selection.installation_id -or
+        $receipt.selection.daemon_pid -ne $daemonProcess.Id -or [string]$receipt.selection.daemon_birth -cne $birth -or
+        $receipt.user_sid -cne $selection.user_sid -or $receipt.selection.action -cne $Action) { throw 'networking fixture receipt crossed selected process or authorization scope' }
+}
 function Open-Harbor {
     $launched = [HarborUIProfile]::Launch($launcherPath, $InstallRoot)
     Wait-Until 'one installed desktop process' { @(Get-Process -Name harbor-desktop -ErrorAction SilentlyContinue).Count -eq 1 } 60
@@ -182,11 +208,10 @@ try {
     [HarborUIProfile]::AssertProductProcess($daemonProcess.Id)
     if ($daemonProcess.Path -cne $daemonPath) { throw 'daemon process is outside admitted installation' }
     Save-Observation 'installed-first-launch'
-    Wait-Until 'setup action or configured networking' {
-        $null -ne (Find-Control 'Set up secure networking' ([System.Windows.Automation.ControlType]::Button)) -or (Get-Snapshot).network_setup.configured -eq $true
+    Wait-Until 'fresh setup action' {
+        $null -ne (Find-Control 'Set up secure networking' ([System.Windows.Automation.ControlType]::Button))
     } 30
-    $setup = Find-Control 'Set up secure networking' ([System.Windows.Automation.ControlType]::Button)
-    if ($null -ne $setup) { Invoke-Button 'Set up secure networking' }
+    Invoke-PreauthorizedNetworking 'setup'
     Wait-Until 'secure networking configured' { (Get-Snapshot).network_setup.configured -eq $true } 120
     Invoke-Button 'New project'
     Set-Field 'Project name' 'Harbor Installed Windows UI'
@@ -271,8 +296,7 @@ try {
             if ($null -ne (Get-Project)) { throw 'removed fixture registration remains' }
         }
         $cleanup.fixture_unregistered = $true
-        & $cliPath daemon release
-        if ($LASTEXITCODE -ne 0) { throw 'network release did not complete' }
+        Invoke-PreauthorizedNetworking 'release'
         $cleanup.network_released = $true
         & $cliPath daemon stop
         if ($LASTEXITCODE -ne 0) { throw 'daemon shutdown was not acknowledged' }
