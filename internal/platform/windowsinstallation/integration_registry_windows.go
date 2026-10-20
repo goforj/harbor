@@ -278,6 +278,10 @@ func integrationRegistryAdmitParent(descriptor *windows.SECURITY_DESCRIPTOR) err
 		if grant.SID == administratorsSID || grant.SID == systemSID || grant.SID == "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" {
 			continue
 		}
+		// Windows grants Terminal Server Users compatibility writes on this shared namespace. The create-only protected leaf excludes inherited grants and subtree deletion.
+		if grant.SID == "S-1-5-13" && grant.Mask == 0x3001f && grant.Flags == 0 {
+			continue
+		}
 		if grant.Mask&(windows.GENERIC_ALL|windows.GENERIC_WRITE|windows.WRITE_DAC|windows.WRITE_OWNER|windows.DELETE|registry.SET_VALUE|registry.CREATE_SUB_KEY|registry.CREATE_LINK) != 0 {
 			return fmt.Errorf("Windows uninstall parent allows foreign mutation: SID=%s mask=%#x flags=%#x descriptor=%s", grant.SID, grant.Mask, grant.Flags, descriptor.String())
 		}
