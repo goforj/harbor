@@ -103,16 +103,17 @@ final class HarborPackageUITests: XCTestCase {
         XCTAssertNotEqual(try installedProcess(), originalProcess, "relaunch must create a new native UI process")
         try assertProject(identifier, state: "ready")
         try assertHTTPS(slug)
-        attach("reopened-running-project")
-
         if !application.buttons["Stop project"].waitForExistence(timeout: 5) {
             try click("Projects")
-            let row = application.links.matching(NSPredicate(format: "label CONTAINS %@", projectName)).firstMatch
+            let row = application.links.matching(NSPredicate(format: "title CONTAINS %@", projectName)).firstMatch
             XCTAssertTrue(row.waitForExistence(timeout: 20))
             row.click()
         }
+        try waitUntil("reopened project Stop control", timeout: 30) { self.application.buttons["Stop project"].exists }
+        attach("reopened-running-project")
         try click("Stop project", timeout: 30)
         try awaitProject(identifier, state: "stopped")
+        attach("project-stopped-registration-retained")
         try quitInstalledApplication()
         try assertProject(identifier, state: "stopped")
         let evidence: [String: Any] = [
