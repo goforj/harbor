@@ -1,0 +1,229 @@
+name: Installed Linux GUI workflows
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/linux-package-ui.yml
+      - scripts/packageui/**
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: Successful Prerelease artifacts run whose exact tested DEB will be installed
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: installed-linux-ui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installed-ui:
+    name: Installed GTK UI on Ubuntu XFCE X11 fixture
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      DISPLAY: ':99'
+      GTK_MODULES: gail:atk-bridge
+      NO_AT_BRIDGE: '0'
+      GDK_BACKEND: x11
+      XDG_CURRENT_DESKTOP: XFCE
+      XDG_SESSION_TYPE: x11
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Admit clean hosted worker
+        env:
+          WORKER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "$WORKER_ENVIRONMENT" = github-hosted
+          test "$(uname -m)" = x86_64
+          test "$(id -u)" != 0
+          . /etc/os-release
+          test "$ID:$VERSION_ID" = ubuntu:24.04
+          test ! -e /usr/lib/goforj-harbor
+          test ! -e /var/lib/goforj/harbor
+          test ! -e "$HOME/.local/share/goforj/harbor"
+          test -z "$(git status --porcelain)"
+          printf 'GOCACHE=%s\nGOMODCACHE=%s\n' "$RUNNER_TEMP/ui-gocache" "$RUNNER_TEMP/ui-gomodcache" >> "$GITHUB_ENV"
+
+      - name: Download exact native-tested packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PACKAGE_RUN_ID" ]]; then
+            PACKAGE_RUN_ID="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].id // empty')"
+          fi
+          [[ "$PACKAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          printf 'Selected package rehearsal: %s\n' "$PACKAGE_RUN_ID"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID" > package-run.json
+          gh run download "$PACKAGE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name Harbor-prerelease-publication --dir package-assets
+
+      - name: Verify provenance and package digests
+        id: package
+        run: |
+          python3 -m unittest discover -s scripts/packageui -v
+          python3 scripts/packageui/verify.py assets
+
+      - name: Verify identical immutable product source
+        env:
+          PACKAGE_SOURCE: ${{ steps.package.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$PACKAGE_SOURCE"
+          python3 scripts/packageui/verify.py source "$PACKAGE_SOURCE"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install released project prerequisites
+        run: |
+          set -euo pipefail
+          binary_directory="$RUNNER_TEMP/harbor-ui-tools"
+          mkdir -p "$binary_directory"
+          GOWORK=off GOBIN="$binary_directory" go install github.com/goforj/goforj/cmd/forj@v0.34.1
+          GOBIN="$binary_directory" go install github.com/goforj/wire/cmd/wire@v1.2.0
+          test "$("$binary_directory/forj" --version)" = v0.34.1
+          printf '%s\n' "$binary_directory" >> "$GITHUB_PATH"
+
+      - name: Install virtual X11 desktop and native accessibility prerequisites
+        run: |
+          set -euo pipefail
+          sudo -n apt-get update
+          sudo -n apt-get install --yes xfce4 xfce4-notifyd xvfb xdotool scrot python3-pyatspi \
+            at-spi2-core libatk-adaptor dbus-user-session libcap2-bin libgtk-3-0 \
+            libwebkit2gtk-4.1-0 nftables policykit-1 systemd-resolved
+          sudo -n systemctl enable --now systemd-resolved.service
+          sudo -n ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+          sudo -n setcap cap_net_admin=ep /usr/sbin/nft
+          test "$(getcap /usr/sbin/nft)" = '/usr/sbin/nft cap_net_admin=ep'
+          printf 'XDG_RUNTIME_DIR=/run/user/%s\n' "$(id -u)" >> "$GITHUB_ENV"
+          printf 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" >> "$GITHUB_ENV"
+          sudo -n systemctl start "user@$(id -u).service"
+          mkdir -p harbor-package-ui-evidence
+          dpkg-query -W xfce4-session xfwm4 libgtk-3-0t64 libwebkit2gtk-4.1-0 at-spi2-core xvfb > harbor-package-ui-evidence/runtime-versions.txt
+          cat /etc/os-release >> harbor-package-ui-evidence/runtime-versions.txt
+          uname -a >> harbor-package-ui-evidence/runtime-versions.txt
+          printf 'ImageOS=%s\nImageVersion=%s\n' "$ImageOS" "$ImageVersion" >> harbor-package-ui-evidence/runtime-versions.txt
+
+      - name: Install verified retained DEB and admit packaged helper
+        env:
+          VERIFIED_DEB: ${{ steps.package.outputs.linux_package }}
+        run: |
+          set -euo pipefail
+          test -n "$VERIFIED_DEB"
+          sudo -n dpkg --install "package-assets/$VERIFIED_DEB"
+          test -z "$(sudo -n dpkg --verify goforj-harbor)"
+          sha256sum /usr/lib/goforj-harbor/harbor-desktop > "$RUNNER_TEMP/ui-installed.sha256"
+          sudo -n /usr/lib/goforj-harbor/harbor-installer --helper /usr/lib/goforj-harbor/harbor-helper --user-id "$(id -u)" --group-id "$(id -g)"
+          rule=/etc/polkit-1/rules.d/49-goforj-harbor-package-ui-ci.rules
+          test ! -e "$rule"
+          printf '%s\n' \
+            'polkit.addRule(function(action, subject) {' \
+            '  if (action.id == "org.freedesktop.policykit.exec" &&' \
+            '      action.lookup("program") == "/usr/libexec/harbor-helper" &&' \
+            "      subject.user == \"$(id -un)\") return polkit.Result.YES;" \
+            '});' | sudo -n tee "$rule" >/dev/null
+          sudo -n chmod 0644 "$rule"
+          sudo -n systemctl restart polkit.service
+
+      - name: Drive installed native creation, Start, close, quit, relaunch, and Stop
+        run: |
+          set -euo pipefail
+          test -S "$XDG_RUNTIME_DIR/bus"
+          systemctl --user import-environment PATH DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GTK_MODULES NO_AT_BRIDGE GDK_BACKEND
+          gsettings set org.gnome.desktop.interface toolkit-accessibility true
+          Xvfb "$DISPLAY" -screen 0 1600x1000x24 -nolisten tcp > harbor-package-ui-evidence/xvfb.log 2>&1 &
+          for attempt in $(seq 1 50); do
+            if xdpyinfo >/dev/null 2>&1; then break; fi
+            sleep 0.2
+          done
+          xdpyinfo >/dev/null
+          xfce4-session > harbor-package-ui-evidence/xfce-session.log 2>&1 &
+          /usr/bin/python3 scripts/packageui/linux/acceptance.py
+          sha256sum --check "$RUNNER_TEMP/ui-installed.sha256"
+
+      - name: Release owned networking and preserve user data
+        run: |
+          set -euo pipefail
+          /usr/bin/harbor daemon release
+          /usr/bin/harbor daemon stop
+          for attempt in $(seq 1 100); do
+            if test "$(systemctl --user show harbord.service --property=MainPID --value)" = 0; then break; fi
+            sleep 0.2
+          done
+          test "$(systemctl --user show harbord.service --property=MainPID --value)" = 0
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          data = json.loads(Path('harbor-package-ui-evidence/installed-ui.json').read_text())
+          project = Path(data['project_directory']).resolve()
+          assert project.is_relative_to('/tmp') and project.parent.name.startswith('harbor-package-ui-')
+          files = [Path.home() / '.local/share/goforj/harbor/harbor.db', project / '.goforj.yml', project / 'go.mod']
+          hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
+          Path('harbor-package-ui-evidence/retained-files.json').write_text(json.dumps(hashes, indent=2))
+          PY
+
+      - name: Uninstall admitted package and verify retained state
+        run: |
+          set -euo pipefail
+          sudo -n dpkg --purge goforj-harbor
+          test ! -e /usr/lib/goforj-harbor/harbor-desktop
+          test ! -e /usr/libexec/harbor-helper
+          test ! -e /usr/lib/systemd/user/harbord.service
+          test ! -e /var/lib/goforj/harbor
+          test ! -e /etc/systemd/resolved.conf.d/90-goforj-harbor.conf
+          test ! -e /usr/local/share/ca-certificates/goforj-harbor.crt
+          systemctl --user daemon-reload
+          test "$(systemctl --user show harbord.service --property=LoadState --value)" = not-found
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          hashes = json.loads(Path('harbor-package-ui-evidence/retained-files.json').read_text())
+          for name, digest in hashes.items():
+              assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest, name
+          Path('harbor-package-ui-evidence/uninstall-preservation.txt').write_text('Installed UI, helper, user service, and owned host projection absent. User database and project files preserved.\n')
+          PY
+
+      - name: Retain failed daemon and service diagnostics
+        if: failure()
+        run: |
+          mkdir -p harbor-package-ui-evidence
+          /usr/bin/harbor daemon snapshot > harbor-package-ui-evidence/final-snapshot.json 2>&1 || true
+          journalctl --user -u harbord.service --no-pager > harbor-package-ui-evidence/daemon-journal.txt 2>&1 || true
+
+      - name: Remove disposable-worker authorization
+        if: always()
+        run: |
+          sudo -n rm -f /etc/polkit-1/rules.d/49-goforj-harbor-package-ui-ci.rules
+          sudo -n systemctl restart polkit.service
+          sudo -n setcap -r /usr/sbin/nft 2>/dev/null || true
+
+      - name: Retain native screenshots, lifecycle results, and provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Harbor-installed-linux-ui-${{ github.run_number }}
+          path: |
+            harbor-package-ui-evidence/
+            package-run.json
+            package-assets/provenance.json
+            package-assets/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
