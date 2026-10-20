@@ -12,6 +12,10 @@ public static class HarborUIProfile {
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern uint GetProcessId(IntPtr process);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll", SetLastError=true)] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr data, int length, out int needed);
     [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
@@ -195,6 +199,18 @@ public static class HarborUIProfile {
         } finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
     }
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder path, ref uint size);
+    public static bool IsRetainedProductWindowVisible(int pid, IntPtr window) {
+        bool live=false;
+        foreach (IntPtr process in launches) {
+            if (GetProcessId(process) == (uint)pid && WaitForSingleObject(process, 0) == 258) { live=true; break; }
+        }
+        if (!live) throw new Exception("window observation has no exact live retained product process");
+        if (window == IntPtr.Zero || !IsWindow(window)) throw new Exception("the admitted product window was destroyed instead of hidden");
+        uint owner;
+        if (GetWindowThreadProcessId(window, out owner) == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "identify retained product window");
+        if (owner != (uint)pid) throw new Exception("native product window belongs to another process");
+        return IsWindowVisible(window);
+    }
     public static void RetainProductProcess(int pid, string expectedImage) {
         IntPtr process = OpenProcess(0x101001, false, pid);
         if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "retain actual installed process");

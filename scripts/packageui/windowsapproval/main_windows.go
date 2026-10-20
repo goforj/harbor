@@ -403,8 +403,8 @@ func release(ctx context.Context, client *control.Client, native *launcher.Launc
 		default:
 			return errors.New("unsupported release checkpoint")
 		}
-		if operation.Operation.ID != previous.Operation.ID || operation.Revision <= previous.Revision {
-			return errors.New("release did not advance exact selected checkpoint")
+		if err := releaseAdvanced(previous, operation); err != nil {
+			return err
 		}
 	}
 	return errors.New("release exceeded bounded checkpoint count " + strconv.Itoa(12))

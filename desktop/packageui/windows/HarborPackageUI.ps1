@@ -137,6 +137,8 @@ function Open-Harbor {
         $script:window = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
         return $null -ne $script:window -and -not $script:window.Current.IsOffscreen
     } 60
+    $script:windowHandle = $process.MainWindowHandle
+    if (-not [HarborUIProfile]::IsRetainedProductWindowVisible($process.Id, $script:windowHandle)) { throw 'reopened installed window is not natively visible' }
     return $process.Id
 }
 function Await-ProjectState([string]$Expected) {
@@ -235,8 +237,12 @@ try {
     Await-ProjectState 'ready'
     Assert-HTTPS
     Save-Observation 'project-ready'
+    $originalWindowHandle = $script:windowHandle
+    if (-not [HarborUIProfile]::IsRetainedProductWindowVisible($originalProcess, $originalWindowHandle)) { throw 'original installed window is not natively visible before close' }
     $script:window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
-    Wait-Until 'close hides the installed window' { $script:window.Current.IsOffscreen }
+    Wait-Until 'close hides the installed window' { -not [HarborUIProfile]::IsRetainedProductWindowVisible($originalProcess, $originalWindowHandle) }
+    @{ pid=$originalProcess; native_window=$originalWindowHandle.ToInt64().ToString(); process_alive=$true; native_visible_before=$true; native_visible_after=$false } |
+        ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'native-window-close.json') -Encoding UTF8
     if ((Get-Project).state -cne 'ready') { throw 'closing the UI stopped the project' }
     if ((Open-Harbor) -ne $originalProcess) { throw 'reopening did not restore the original desktop process' }
     $script:window.SetFocus()
