@@ -15,6 +15,15 @@ final class HarborPackageUITests: XCTestCase {
         application = XCUIApplication(bundleIdentifier: "com.goforj.harbor")
     }
 
+    override func tearDownWithError() throws {
+        if let application, application.state != .notRunning {
+            try assertInstalledBundle()
+            application.activate()
+            application.typeKey("q", modifierFlags: .command)
+            XCTAssertTrue(application.wait(for: .notRunning, timeout: 20), "failure cleanup requires the installed UI to quit")
+        }
+    }
+
     func testInstalledCreationStartAndReopen() throws {
         let root = URL(fileURLWithPath: "/tmp/harbor-package-ui-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
