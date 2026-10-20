@@ -94,6 +94,8 @@ func TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption(t *testing.T) 
 	if session.OutputBroker == nil {
 		t.Fatalf("durable broker handoff failed: %v", launcher.launchErr)
 	}
+	describe, release := sessionTestProcessDiagnostics(session)
+	t.Cleanup(release)
 	waitForOutput(t, output, "stream=")
 	for replacement := 0; replacement < 2; replacement++ {
 		if err := owner.DetachSession(t.Context(), session.ProjectID, session.ID); err != nil {
@@ -108,7 +110,10 @@ func TestSessionSurvivesRepeatedSupervisorDetachAndNativeAdoption(t *testing.T) 
 		owner = newTestSupervisor(options)
 		handle, err = owner.AdoptSession(t.Context(), session, checkout)
 		if err != nil {
-			t.Fatal(err)
+			root, rootErr := owner.ObservePriorProcess(t.Context(), *session.Process)
+			_, brokerErr := ObservePersistedOutputBrokerProcessEvidence(session.OutputBroker.Process)
+			chunk := owner.ReadOutput(session.ProjectID, session.ID, 0)
+			t.Fatalf("adoption %d: %v; %s; root=%#v rootErr=%v brokerErr=%v; retained=%q", replacement, err, describe(), root, rootErr, brokerErr, chunk.Text)
 		}
 		if info := handle.Info(); info.Evidence.PID != session.Process.PID || info.Evidence.BirthToken != session.Process.BirthToken || info.SessionID != session.ID {
 			t.Fatalf("adoption changed the process or session: %#v", info)
