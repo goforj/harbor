@@ -20,6 +20,10 @@ def retain_traces(temporary, evidence):
             continue
         evidence.mkdir(parents=True, exist_ok=True)
         (evidence / (root.name + "-live-launch.log")).write_bytes(data)
+        for name in (".goforj.yml", "go.mod", "app/frontend/package.json"):
+            source = root / "project" / name
+            if source.is_file() and not source.is_symlink() and source.resolve().is_relative_to(root.resolve()):
+                (evidence / (root.name + "-" + name.replace("/", "-").lstrip("."))).write_bytes(source.read_bytes())
 
 
 def main():
