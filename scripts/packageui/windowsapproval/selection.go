@@ -82,3 +82,29 @@ func planeCheckpoint(plane control.NetworkDataPlaneSetupOperation) (bool, error)
 	}
 	return false, errors.New("trust approval did not select completed ingress or the exact low-port checkpoint")
 }
+
+// releaseAdvanced follows the product's separate durable operation and helper checkpoint sequences.
+func releaseAdvanced(previous, next control.NetworkReleaseOperation) error {
+	if err := previous.Validate(); err != nil {
+		return err
+	}
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	if _, err := fence(next.Operation, next.Revision, previous.Operation.IntentID, domain.OperationKindNetworkRelease); err != nil {
+		return err
+	}
+	if next.Operation.ID != previous.Operation.ID || next.Revision < previous.Revision || next.NetworkRevision < previous.NetworkRevision || next.CheckpointRevision < previous.CheckpointRevision {
+		return errors.New("release crossed or regressed the selected checkpoint")
+	}
+	if next.Operation.State == domain.OperationSucceeded {
+		if next.Revision <= previous.Revision {
+			return errors.New("terminal release did not advance its overall revision")
+		}
+		return nil
+	}
+	if next.CheckpointRevision <= previous.CheckpointRevision {
+		return errors.New("running release did not advance its exact helper checkpoint")
+	}
+	return nil
+}

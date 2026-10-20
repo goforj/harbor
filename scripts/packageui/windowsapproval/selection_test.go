@@ -152,3 +152,52 @@ func TestNativeBirthReceiptRetainsDecimalIdentity(t *testing.T) {
 		t.Fatalf("native birth lost exact string encoding: %s", data)
 	}
 }
+
+// TestReleaseProgressUsesCheckpointSequence preserves the production distinction between checkpoint confirmation and terminal operation advancement.
+func TestReleaseProgressUsesCheckpointSequence(t *testing.T) {
+	now := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	operation, err := domain.NewOperation("operation-release", "intent-release", domain.OperationKindNetworkRelease, "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, err = operation.Transition(domain.OperationRunning, "releasing network runtime", now.Add(time.Second), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := control.NetworkReleaseOperation{Operation: operation, Revision: 3, CheckpointRevision: 4, NetworkRevision: 2, Phase: control.NetworkReleasePhaseResolver}
+	next := previous
+	next.CheckpointRevision = 5
+	next.Phase = control.NetworkReleasePhaseTrust
+	if err := releaseAdvanced(previous, next); err != nil {
+		t.Fatalf("valid helper checkpoint with unchanged overall revision: %v", err)
+	}
+	for _, mutate := range []func(*control.NetworkReleaseOperation){
+		func(v *control.NetworkReleaseOperation) { v.Operation.ID = "operation-other" },
+		func(v *control.NetworkReleaseOperation) { v.Operation.IntentID = "intent-other" },
+		func(v *control.NetworkReleaseOperation) { v.Operation.Kind = domain.OperationKindNetworkSetup },
+		func(v *control.NetworkReleaseOperation) { v.Revision = 2 },
+		func(v *control.NetworkReleaseOperation) { v.NetworkRevision = 1 },
+		func(v *control.NetworkReleaseOperation) { v.CheckpointRevision = 3 },
+		func(v *control.NetworkReleaseOperation) { v.CheckpointRevision = 4 },
+	} {
+		candidate := next
+		mutate(&candidate)
+		if err := releaseAdvanced(previous, candidate); err == nil {
+			t.Fatalf("accepted crossed or stale release: %+v", candidate)
+		}
+	}
+	terminal := previous
+	terminal.Operation, err = operation.Transition(domain.OperationSucceeded, "network released", now.Add(2*time.Second), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal.Revision = 6
+	terminal.Phase = control.NetworkReleasePhaseProjection
+	if err := releaseAdvanced(previous, terminal); err != nil {
+		t.Fatalf("valid terminal fence with unchanged checkpoint: %v", err)
+	}
+	terminal.Revision = 3
+	if err := releaseAdvanced(previous, terminal); err == nil {
+		t.Fatal("accepted stale terminal revision")
+	}
+}
