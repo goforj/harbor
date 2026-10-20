@@ -1,6 +1,6 @@
 # Development Handoff
 
-Status: completing all installed platform gates; Linux GUI lifecycle passes, fresh macOS package and Windows foundation/native corrections are in progress
+Status: macOS and Linux installed GUI lifecycles pass on their exact earlier packages; Windows native loader failure blocks its first complete installed GUI run
 
 ## Native installer completion checkpoint (2026-10-20)
 
@@ -11,6 +11,8 @@ The final Windows component and native setup/GUI runs are pending. First produce
 Latest: macOS full GUI run `39381799231` passed, including ownership release/uninstall, three retained user hashes, exact foreign certificate/trust preservation, and no failure recovery. Separate last-root fixture cleanup timed out honestly; interactive/last-root consent remains unproven. Artifact is `/tmp/harbor-installed-ui-results-39381799231`. Native Windows `39382931718` passed exact shell-link target parsing, actual E0 adversarial registry ancestor checks and per-deletion guard-loss checks. Remaining Windows native failures are a filesystem ancestor admission predicate and low stage-image loading; next batch at `3eb9995` adds exact ancestor facts and independently approved selected-UserSID read/execute on protected staging. Windows root integration worktree `/tmp/harbor-windows-machine-integration` has commits through `05a0f6a`; parent native branch owns integration, dispatch, embedded setup producer and full GUI workflow. Root Windows UI worktree `/tmp/harbor-windows-ui-selection` delivered `aa4af9d`, adding exact fenced fixture unregister before release; parent must compile/export the fixture approval tool and require its cleanup receipt flag. Current final product still needs accepted Windows package/GUI and a fresh combined-source Unix package/GUI rerun.
 
 Current implementation/evidence details live at the top of `docs/current-state.md`. Continue until native install, graphical create/Start/HTTPS, hide/reopen, UI Quit/relaunch with daemon retained, Stop, release, uninstall and retained-file receipts pass. Keep package-only, component-only and actual GUI claims separate.
+
+Latest integrated source is `cf006c0`, including the protected-vendor stage relocation, atomic CommonPrograms projection and direct adversarial native regressions. Native [39384746640](https://github.com/goforj/harbor/actions/runs/39384746640) passes the full machine integration transaction and every other selected component except the actual restricted uninstall guard, which exits before Go entry with `0xC0000142` (DLL initialization failed). Parent `windows_native` and its task child own diagnosis. Do not weaken actual E0 admission or staging ACLs. Producer stays paused until this gate passes, then run a fresh complete installer and its installed GUI workflow. Root focused portable Go tests and 57 shared/Windows Python checks pass. The signed maintenance copy/result stay in the protected vendor audit cache by explicit development-channel decision, separate from removed app/task/host components. Final combined-source macOS/Ubuntu package and GUI reruns remain required.
 
 ## Completion continuation (2026-10-20)
 
