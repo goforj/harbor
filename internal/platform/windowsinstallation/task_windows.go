@@ -42,6 +42,11 @@ func (installation *Installation) Task(ctx context.Context, action string) error
 	if err := admitTaskUser(installation.selection.UserSID, user.User.Sid.String(), session); err != nil {
 		return err
 	}
+	shell, err := retainInteractiveShell(user.User.Sid.String(), session)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(shell)
 	if action == "register" || action == "remove" {
 		installer, err := installation.Path("installer")
 		if err != nil {

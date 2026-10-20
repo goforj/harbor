@@ -82,45 +82,15 @@ function Get-OwnedTask($Folder, [string]$Name, $Definition, [string]$SDDL) {
     return $task
 }
 
-# Assert-InteractiveSession rejects a different administrator's elevation and headless service logons.
-function Assert-InteractiveSession([string]$SID, [int]$Session, [bool]$Mutation, [string]$Installer) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class HarborTaskNative {
-    [DllImport("user32.dll")] public static extern IntPtr GetShellWindow();
-    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
-    [DllImport("advapi32.dll", SetLastError=true)] public static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
-    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
-    [StructLayout(LayoutKind.Sequential)] public struct BasicInformation {
-        public IntPtr Reserved1, PebBaseAddress, Reserved2, Reserved3, ProcessId, ParentId;
-    }
-    [DllImport("ntdll.dll")] public static extern int NtQueryInformationProcess(IntPtr process, int information, out BasicInformation value, int size, out int length);
-}
-'@
-    $window = [HarborTaskNative]::GetShellWindow()
-    [uint32]$shellID = 0
-    if ($window -eq [IntPtr]::Zero -or [HarborTaskNative]::GetWindowThreadProcessId($window, [ref]$shellID) -eq 0) { throw 'interactive Explorer shell is unavailable' }
-    $shell = [Diagnostics.Process]::GetProcessById($shellID)
-    try {
-        $expected = [IO.Path]::Combine([Environment]::GetFolderPath([Environment+SpecialFolder]::Windows), 'explorer.exe')
-        if ($shell.SessionId -ne $Session -or -not [string]::Equals($shell.MainModule.FileName, $expected, [StringComparison]::OrdinalIgnoreCase)) { throw 'interactive shell identity or session differs' }
-        [IntPtr]$token = [IntPtr]::Zero
-        if (-not [HarborTaskNative]::OpenProcessToken($shell.Handle, 8, [ref]$token)) { throw 'cannot inspect interactive shell user' }
-        try {
-            $identity = [Security.Principal.WindowsIdentity]::new($token)
-            try { if ($identity.User.Value -cne $SID) { throw 'installer and interactive shell users differ' } } finally { $identity.Dispose() }
-        } finally { $null = [HarborTaskNative]::CloseHandle($token) }
-    } finally { $shell.Dispose() }
-    if ($Mutation) {
-        $basic = [HarborTaskNative+BasicInformation]::new()
-        [int]$length = 0
-        if ([HarborTaskNative]::NtQueryInformationProcess([Diagnostics.Process]::GetCurrentProcess().Handle, 0, [ref]$basic, [Runtime.InteropServices.Marshal]::SizeOf($basic), [ref]$length) -ne 0) { throw 'cannot inspect installer parent' }
-        $parent = [Diagnostics.Process]::GetProcessById($basic.ParentId.ToInt32())
-        try {
-            if ($parent.SessionId -ne $Session -or -not [string]::Equals($parent.MainModule.FileName, $Installer, [StringComparison]::OrdinalIgnoreCase)) { throw 'task mutation requires the admitted installer parent' }
-        } finally { $parent.Dispose() }
-    }
+# Assert-InstallerParent permits mutation only through the selected same-user maintenance executable.
+function Assert-InstallerParent([string]$SID, [int]$Session, [string]$Installer) {
+    Import-Module -Name ([IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\Modules\CimCmdlets\CimCmdlets.psd1'))
+    $current = @(Get-CimInstance -Namespace 'root/cimv2' -ClassName Win32_Process -Filter ('ProcessId=' + $PID))
+    if ($current.Count -ne 1) { throw 'cannot inspect task policy process' }
+    $parent = @(Get-CimInstance -Namespace 'root/cimv2' -ClassName Win32_Process -Filter ('ProcessId=' + $current[0].ParentProcessId))
+    if ($parent.Count -ne 1 -or $parent[0].SessionId -ne $Session -or $parent[0].CreationDate -gt $current[0].CreationDate -or -not [string]::Equals($parent[0].ExecutablePath, $Installer, [StringComparison]::OrdinalIgnoreCase)) { throw 'task mutation requires the admitted installer parent' }
+    $owner = Invoke-CimMethod -InputObject $parent[0] -MethodName GetOwnerSid
+    if ($owner.ReturnValue -ne 0 -or $owner.Sid -cne $SID) { throw 'task installer parent user differs' }
 }
 
 # Enter-OwnedTaskLock serializes cooperating launchers across sessions and rejects precreated foreign objects.
@@ -166,7 +136,7 @@ $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
 if ($sid -cne $selection.user_sid -or $sid -eq 'S-1-5-18' -or $session -le 0) { throw 'Harbor requires the intended interactive user session' }
 if (($Action -eq 'register' -or $Action -eq 'remove') -and -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'task mutation requires the elevated same-user installer' }
-Assert-InteractiveSession $sid $session ($Action -eq 'register' -or $Action -eq 'remove') ([IO.Path]::Combine($root, 'releases', [string]$selection.release_sequence, 'harbor-installer.exe'))
+if ($Action -eq 'register' -or $Action -eq 'remove') { Assert-InstallerParent $sid $session ([IO.Path]::Combine($root, 'releases', [string]$selection.release_sequence, 'harbor-installer.exe')) }
 $name = "GoForjHarborDaemon-$sid"
 $sddl = "O:BAG:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;$sid)"
 $service = [Activator]::CreateInstance([Type]::GetTypeFromProgID('Schedule.Service'))
