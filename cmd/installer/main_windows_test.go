@@ -87,13 +87,13 @@ func TestWindowsMaintenanceParentSyntax(t *testing.T) {
 
 // TestWindowsMaintenanceStagePaths refuses mutable caller Temp paths and noncanonical continuation names.
 func TestWindowsMaintenanceStagePaths(t *testing.T) {
-	system := `C:\Windows`
-	stage := `C:\Windows\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`
-	if err := admitMaintenanceStagePath(stage, system); err != nil {
+	vendor := `C:\Program Files\GoForj`
+	stage := `C:\Program Files\GoForj\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`
+	if err := admitMaintenanceStagePath(stage, vendor); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{`C:\Users\runner\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, strings.Replace(stage, "HarborUninstall.exe", "foreign.exe", 1), strings.Replace(stage, "HarborUninstall-", "foreign-", 1), strings.Replace(stage, strings.Repeat("a", 32), strings.Repeat("A", 32), 1), strings.Replace(stage, `Temp\`, `Temp\..\Temp\`, 1), `relative\HarborUninstall.exe`, stage + `:alternate`} {
-		if err := admitMaintenanceStagePath(path, system); err == nil {
+	for _, path := range []string{`C:\Windows\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, `C:\Users\runner\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, strings.Replace(stage, "HarborUninstall.exe", "foreign.exe", 1), strings.Replace(stage, "HarborUninstall-", "foreign-", 1), strings.Replace(stage, strings.Repeat("a", 32), strings.Repeat("A", 32), 1), strings.Replace(stage, `GoForj\`, `GoForj\..\GoForj\`, 1), `relative\HarborUninstall.exe`, stage + `:alternate`} {
+		if err := admitMaintenanceStagePath(path, vendor); err == nil {
 			t.Fatalf("admitted staging path %q", path)
 		}
 	}
@@ -205,7 +205,7 @@ func TestNativeMaintenanceParentRefusal(t *testing.T) {
 	}
 }
 
-// TestNativeMaintenanceProtectedStage verifies the actual Windows Temp ACL, label, and replacement-denying handles in disposable CI.
+// TestNativeMaintenanceProtectedStage verifies the actual protected vendor ACL, label, and replacement-denying handles in disposable CI.
 func TestNativeMaintenanceProtectedStage(t *testing.T) {
 	if os.Getenv("HARBOR_ADMISSION_FIXTURE_ROOT") == "" {
 		t.Skip("disposable native CI fixture was not configured")
@@ -216,11 +216,13 @@ func TestNativeMaintenanceProtectedStage(t *testing.T) {
 	}
 	userSID := user.User.Sid.String()
 	maintenanceStageSDDL := maintenanceStagePolicy(userSID)
-	system, err := windows.GetWindowsDirectory()
+	parents, err := windowsinstallation.RetainUninstallStageParent()
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.MkdirTemp(filepath.Join(system, "Temp"), "HarborMaintenanceFixture-")
+	defer closeMaintenanceFiles(parents)
+	vendor := parents[len(parents)-1].Name()
+	root, err := os.MkdirTemp(vendor, "HarborMaintenanceFixture-")
 	if err != nil {
 		t.Fatal(err)
 	}

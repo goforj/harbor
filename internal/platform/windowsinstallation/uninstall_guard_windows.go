@@ -317,6 +317,39 @@ func admitUninstallGuardEvent(handle windows.Handle, rights uint32) error {
 	return nil
 }
 
+// RetainUninstallStageParent pins the OS-derived protected vendor namespace used for retained maintenance audit copies.
+// It creates only the fixed vendor directory when absent and never rewrites an existing parent's permissions.
+// Callers retain these handles throughout stage use, then close them in reverse order without removing the vendor directory.
+func RetainUninstallStageParent() (files []*os.File, result error) {
+	parents := &Installation{}
+	defer func() {
+		if result != nil {
+			result = errors.Join(result, parents.Close())
+			files = nil
+		}
+	}()
+	root, err := MachineRoot()
+	if err != nil {
+		return nil, err
+	}
+	vendor := filepath.Dir(root)
+	if err := parents.retainDirectoryChain(filepath.Dir(vendor)); err != nil {
+		return nil, err
+	}
+	if err := createMachineDirectory(vendor); err != nil {
+		return nil, err
+	}
+	file, err := openRetained(vendor, true)
+	if err != nil {
+		return nil, err
+	}
+	parents.handles = append(parents.handles, file)
+	if err := admitSecurity(windows.Handle(file.Fd()), true); err != nil {
+		return nil, err
+	}
+	return parents.handles, nil
+}
+
 // retainUninstallGuardStage pins the only admitted copy layout before signature verification and restricted process creation.
 func (installation *Installation) retainUninstallGuardStage(staged *os.File) (files []*os.File, result error) {
 	defer func() {
@@ -330,15 +363,16 @@ func (installation *Installation) retainUninstallGuardStage(staged *os.File) (fi
 	if _, err := installation.Path("uninstaller"); err != nil {
 		return nil, err
 	}
-	system, err := windows.GetWindowsDirectory()
+	files, err := RetainUninstallStageParent()
 	if err != nil {
 		return nil, err
 	}
+	vendor := files[len(files)-1].Name()
 	path := staged.Name()
-	if err := admitUninstallGuardStagePath(path, system); err != nil {
-		return nil, err
+	if err := admitUninstallGuardStagePath(path, vendor); err != nil {
+		return files, err
 	}
-	for _, current := range []string{system, filepath.Join(system, "Temp"), filepath.Dir(path), path} {
+	for _, current := range []string{filepath.Dir(path), path} {
 		directory := current != path
 		file, err := openUninstallGuardObject(current, directory)
 		if err != nil {
@@ -370,10 +404,10 @@ func (installation *Installation) retainUninstallGuardStage(staged *os.File) (fi
 }
 
 // admitUninstallGuardStagePath rejects caller temp paths and any unreviewed executable or directory spelling.
-func admitUninstallGuardStagePath(path, system string) error {
+func admitUninstallGuardStagePath(path, vendor string) error {
 	stage := filepath.Base(filepath.Dir(path))
 	suffix, ok := strings.CutPrefix(stage, "HarborUninstall-")
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || !strings.EqualFold(filepath.Base(path), "HarborUninstall.exe") || !ok || !identityPattern.MatchString(suffix) || !strings.EqualFold(filepath.Dir(filepath.Dir(path)), filepath.Join(system, "Temp")) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || !strings.EqualFold(filepath.Base(path), "HarborUninstall.exe") || !ok || !identityPattern.MatchString(suffix) || !strings.EqualFold(filepath.Dir(filepath.Dir(path)), vendor) {
 		return errors.New("uninstall guard copy is outside protected Windows staging")
 	}
 	return nil

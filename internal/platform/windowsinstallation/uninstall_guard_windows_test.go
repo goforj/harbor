@@ -31,12 +31,12 @@ func TestUninstallGuardAdmission(t *testing.T) {
 	if _, err := installation.HoldUninstallGuard(ctx, os.Stdin); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	for _, path := range []string{`C:\Users\runner\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, `C:\Windows\Temp\foreign\HarborUninstall.exe`, `C:\Windows\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\foreign.exe`, `C:\Windows\Temp\HarborUninstall-` + strings.Repeat("A", 32) + `\HarborUninstall.exe`, `C:\Windows\Temp\..\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`} {
-		if err := admitUninstallGuardStagePath(path, `C:\Windows`); err == nil {
+	for _, path := range []string{`C:\Windows\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, `C:\Users\runner\Temp\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`, `C:\Program Files\GoForj\foreign\HarborUninstall.exe`, `C:\Program Files\GoForj\HarborUninstall-` + strings.Repeat("a", 32) + `\foreign.exe`, `C:\Program Files\GoForj\HarborUninstall-` + strings.Repeat("A", 32) + `\HarborUninstall.exe`, `C:\Program Files\GoForj\..\GoForj\HarborUninstall-` + strings.Repeat("a", 32) + `\HarborUninstall.exe`} {
+		if err := admitUninstallGuardStagePath(path, `C:\Program Files\GoForj`); err == nil {
 			t.Fatalf("admitted guard stage %q", path)
 		}
 	}
-	if err := admitUninstallGuardStagePath(`C:\Windows\Temp\HarborUninstall-`+strings.Repeat("a", 32)+`\HarborUninstall.exe`, `C:\Windows`); err != nil {
+	if err := admitUninstallGuardStagePath(`C:\Program Files\GoForj\HarborUninstall-`+strings.Repeat("a", 32)+`\HarborUninstall.exe`, `C:\Program Files\GoForj`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -298,7 +298,7 @@ func TestNativeUninstallGuardWorker(t *testing.T) {
 	}
 }
 
-// writeNativeGuardStage creates only a unique protected Windows Temp fixture and preserves any unknown contents during cleanup.
+// writeNativeGuardStage creates only a unique protected vendor audit-cache fixture and preserves any unknown contents during cleanup.
 func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 	t.Helper()
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
@@ -306,15 +306,23 @@ func writeNativeGuardStage(t *testing.T, payload []byte) *os.File {
 		t.Fatal(err)
 	}
 	uninstallGuardStageSDDL := uninstallGuardStagePolicy(user.User.Sid.String())
-	system, err := windows.GetWindowsDirectory()
+	parents, err := RetainUninstallStageParent()
 	if err != nil {
-		t.Fatalf("resolve native guard Windows directory: %v", err)
+		t.Fatalf("retain native guard protected vendor: %v", err)
 	}
+	t.Cleanup(func() {
+		for index := len(parents) - 1; index >= 0; index-- {
+			if err := parents[index].Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	vendor := parents[len(parents)-1].Name()
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		t.Fatalf("generate native guard stage nonce: %v", err)
 	}
-	root := filepath.Join(system, "Temp", "HarborUninstall-"+hex.EncodeToString(nonce[:]))
+	root := filepath.Join(vendor, "HarborUninstall-"+hex.EncodeToString(nonce[:]))
 	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(uninstallGuardStageSDDL, "S:")[0])
 	if err != nil {
 		t.Fatalf("construct native guard creation DACL: %v", err)

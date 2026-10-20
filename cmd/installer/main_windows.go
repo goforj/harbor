@@ -231,11 +231,11 @@ func bootstrapUninstall(ctx context.Context) (result error) {
 	if err := launchMaintenanceCopy(path); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(os.Stdout, "Harbor uninstall continues in protected staging: %s\n", path)
+	_, err = fmt.Fprintf(os.Stdout, "Harbor uninstall continues; protected maintenance audit cache is retained at: %s\n", path)
 	return err
 }
 
-// createMaintenanceStage creates only one random protected Windows Temp child and its exact admitted agent copy.
+// createMaintenanceStage creates only one random protected vendor audit-cache child and its exact admitted agent copy.
 func createMaintenanceStage(installation *windowsinstallation.Installation, source *os.File) (files []*os.File, result error) {
 	defer func() {
 		if result != nil {
@@ -243,22 +243,16 @@ func createMaintenanceStage(installation *windowsinstallation.Installation, sour
 			files = nil
 		}
 	}()
-	system, err := windows.GetWindowsDirectory()
+	files, err := windowsinstallation.RetainUninstallStageParent()
 	if err != nil {
 		return nil, err
 	}
-	for _, path := range []string{system, filepath.Join(system, "Temp")} {
-		file, err := openMaintenanceObject(path, true)
-		if err != nil {
-			return files, err
-		}
-		files = append(files, file)
-	}
+	vendor := files[len(files)-1].Name()
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return files, err
 	}
-	root := filepath.Join(system, "Temp", "HarborUninstall-"+hex.EncodeToString(random[:]))
+	root := filepath.Join(vendor, "HarborUninstall-"+hex.EncodeToString(random[:]))
 	descriptor, err := windows.SecurityDescriptorFromString(strings.Split(maintenanceStagePolicy(installation.Selection().UserSID), "S:")[0])
 	if err != nil {
 		return files, err
@@ -382,7 +376,7 @@ func finishUninstall(ctx context.Context, parent windows.Handle) (result error) 
 	return windowsinstallation.Uninstall(ctx)
 }
 
-// retainMaintenanceStage admits only this exact fixed copy name beneath a canonical protected Windows Temp staging directory.
+// retainMaintenanceStage admits only this exact fixed copy name beneath a canonical protected vendor audit-cache directory.
 func retainMaintenanceStage(installation *windowsinstallation.Installation) (files []*os.File, result error) {
 	defer func() {
 		if result != nil {
@@ -394,14 +388,15 @@ func retainMaintenanceStage(installation *windowsinstallation.Installation) (fil
 	if err != nil {
 		return nil, err
 	}
-	system, err := windows.GetWindowsDirectory()
+	files, err = windowsinstallation.RetainUninstallStageParent()
 	if err != nil {
 		return nil, err
 	}
-	if err := admitMaintenanceStagePath(current, system); err != nil {
-		return nil, err
+	vendor := files[len(files)-1].Name()
+	if err := admitMaintenanceStagePath(current, vendor); err != nil {
+		return files, err
 	}
-	for _, path := range []string{system, filepath.Join(system, "Temp"), filepath.Dir(current), current} {
+	for _, path := range []string{filepath.Dir(current), current} {
 		directory := path != current
 		file, err := openMaintenanceObject(path, directory)
 		if err != nil {
@@ -424,8 +419,8 @@ func retainMaintenanceStage(installation *windowsinstallation.Installation) (fil
 }
 
 // admitMaintenanceStagePath rejects caller Temp overrides, traversal, alternate file names, and copied agents outside protected staging.
-func admitMaintenanceStagePath(current, system string) error {
-	if !filepath.IsAbs(current) || filepath.Clean(current) != current || !strings.EqualFold(filepath.Base(current), "HarborUninstall.exe") || !maintenanceStageName.MatchString(filepath.Base(filepath.Dir(current))) || !strings.EqualFold(filepath.Dir(filepath.Dir(current)), filepath.Join(system, "Temp")) {
+func admitMaintenanceStagePath(current, vendor string) error {
+	if !filepath.IsAbs(current) || filepath.Clean(current) != current || !strings.EqualFold(filepath.Base(current), "HarborUninstall.exe") || !maintenanceStageName.MatchString(filepath.Base(filepath.Dir(current))) || !strings.EqualFold(filepath.Dir(filepath.Dir(current)), vendor) {
 		return errors.New("uninstall continuation is outside canonical protected Windows staging")
 	}
 	return nil
