@@ -37,6 +37,7 @@ public static class HarborUIProfile {
     [DllImport("advapi32.dll")] static extern uint GetLengthSid(IntPtr sid);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
     [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr token, string application, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string directory, ref StartupInfo startup, out ProcessInfo process);
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcess(string application, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string directory, ref StartupInfo startup, out ProcessInfo process);
     static int TokenInteger(IntPtr token, int kind) {
         IntPtr data = Marshal.AllocHGlobal(4);
         try { int needed; if (!GetTokenInformation(token, kind, data, 4, out needed)) throw new System.ComponentModel.Win32Exception(); return Marshal.ReadInt32(data); }
@@ -165,10 +166,22 @@ public static class HarborUIProfile {
         string privateRoot=null;
         NamedPipeServerStream server=null;
         IAsyncResult connection=null;
+        ProcessInfo highFixture=new ProcessInfo();
         try {
             if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 8, out ownToken)) throw new Win32Exception();
             if (TokenIntegrity(ownToken) <= 8192) throw new Exception("hosted fixture requires an independently high parent for direct authority probes");
             string sid=WindowsIdentity.GetCurrent().User.Value;
+            string systemRoot=Environment.GetFolderPath(Environment.SpecialFolder.System);
+            string systemProbe=Path.Combine(systemRoot, "whoami.exe");
+            StartupInfo startup=new StartupInfo(); startup.cb=Marshal.SizeOf(typeof(StartupInfo));
+            if (!CreateProcess(systemProbe, new StringBuilder("\""+systemProbe+"\""), IntPtr.Zero, IntPtr.Zero, false, 4, IntPtr.Zero, systemRoot, ref startup, out highFixture)) throw new Win32Exception();
+            IntPtr highFixtureToken;
+            if (!OpenProcessToken(highFixture.process, 8, out highFixtureToken)) throw new Win32Exception();
+            try {
+                using (WindowsIdentity identity=new WindowsIdentity(highFixtureToken)) {
+                    if (identity.User.Value != sid || !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator) || TokenIntegrity(highFixtureToken) <= 8192 || TokenInteger(highFixtureToken, 12) != Process.GetCurrentProcess().SessionId) throw new Exception("high fixture does not have ordinary same-user interactive administrator authority");
+                }
+            } finally { CloseHandle(highFixtureToken); }
             privateRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "harbor-ui-token-"+Guid.NewGuid().ToString("N"));
             DirectorySecurity security=new DirectorySecurity();
             security.SetSecurityDescriptorSddlForm("O:"+sid+"D:P(A;OICI;FA;;;"+sid+")");
@@ -177,7 +190,7 @@ public static class HarborUIProfile {
             string pipeName="harbor-ui-token-"+Guid.NewGuid().ToString("N");
             if (!DuplicateTokenEx(token, 0xC, IntPtr.Zero, 2, 2, out impersonation)) throw new Win32Exception();
             using (WindowsImpersonationContext context=WindowsIdentity.Impersonate(impersonation)) {
-                foreach (string path in ProtectedDirectories) foreach (uint right in new uint[] { 2, 4, 0x10000, 0x40000, 0x80000 }) RequireDeniedFile(path, right, true);
+                foreach (string path in ProtectedDirectories) foreach (uint right in new uint[] { 2, 4, 0x40, 0x10000, 0x40000, 0x80000 }) RequireDeniedFile(path, right, true);
                 foreach (string path in ProtectedFiles) foreach (uint right in new uint[] { 2, 4, 0x10000, 0x40000, 0x80000 }) RequireDeniedFile(path, right, false);
                 foreach (uint right in new uint[] { 2, 4, 0x10000, 0x40000, 0x80000 }) {
                     IntPtr key;
@@ -186,8 +199,8 @@ public static class HarborUIProfile {
                     if (error != 5) throw new Win32Exception(error, "protected registry denial was not access denied");
                     AccessReceipts.Add("registry:denied:"+right);
                 }
-                int highPID=Process.GetCurrentProcess().Id;
-                foreach (uint right in new uint[] { 1, 2, 0x20, 0x40, 0x40000 }) RequireDeniedProcess(highPID, right);
+                int highPID=(int)highFixture.pid;
+                foreach (uint right in new uint[] { 1, 2, 0x20, 0x40, 0x40000, 0x80000 }) RequireDeniedProcess(highPID, right);
                 IntPtr highProcess=OpenProcess(0x1000, false, highPID);
                 if (highProcess == IntPtr.Zero) throw new Win32Exception();
                 try {
@@ -216,6 +229,13 @@ public static class HarborUIProfile {
             if (!connection.AsyncWaitHandle.WaitOne(5000)) throw new Exception("private IPC connection did not complete");
             server.EndWaitForConnection(connection);
         } finally {
+            if (highFixture.thread != IntPtr.Zero) CloseHandle(highFixture.thread);
+            if (highFixture.process != IntPtr.Zero) {
+                bool retired=TerminateProcess(highFixture.process, 1) && WaitForSingleObject(highFixture.process, 10000) == 0;
+                CloseHandle(highFixture.process);
+                if (!retired) throw new Exception("never-resumed high fixture did not retire through its exact retained handle");
+                AccessReceipts.Add("high-fixture:never-resumed:quiescent");
+            }
             if (impersonation != IntPtr.Zero) CloseHandle(impersonation);
             if (ownToken != IntPtr.Zero) CloseHandle(ownToken);
             if (server != null) server.Dispose();
