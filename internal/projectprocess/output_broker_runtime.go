@@ -188,7 +188,6 @@ func RunOutputBroker(ctx context.Context, config OutputBrokerRuntimeConfig) erro
 		case input, open := <-inputs:
 			if !open {
 				inputs = nil
-				cancel()
 				continue
 			}
 			frame, appendErr := journal.Append(input.stream, cursor, input.bytes)
