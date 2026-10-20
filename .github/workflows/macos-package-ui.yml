@@ -140,6 +140,26 @@ jobs:
           mkdir -p harbor-package-ui-evidence
           cp /tmp/harbor-package-ui-evidence.json harbor-package-ui-evidence/installed-ui.json
 
+      - name: Retain failed project startup diagnostics
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p harbor-package-ui-evidence
+          if ! /usr/local/bin/harbor daemon snapshot > harbor-package-ui-evidence/failure-snapshot.json; then exit 0; fi
+          python3 - <<'PY'
+          import json, shutil
+          from pathlib import Path
+          directory = Path('harbor-package-ui-evidence')
+          snapshot = json.loads((directory / 'failure-snapshot.json').read_text())
+          for project in snapshot.get('projects', []):
+              root = Path(project['path']).resolve()
+              if not str(root).startswith('/private/tmp/harbor-package-ui-'):
+                  raise RuntimeError('unexpected project outside disposable GUI fixture')
+              trace = root / '_data/harbor/forj-dev.log'
+              if trace.is_file() and not trace.is_symlink():
+                  shutil.copyfile(trace, directory / (project['id'] + '-launch.log'))
+          PY
+
       - name: Release owned networking and record retained user files
         run: |
           set -euo pipefail

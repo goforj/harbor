@@ -48,7 +48,11 @@ final class HarborPackageUITests: XCTestCase {
         attach("creation-review")
         try click("Create project")
         try waitUntil("created project registration", timeout: 240) {
-            (try? self.project(at: projectDirectory.path)) != nil
+            if self.application.buttons["Review choices"].exists || self.application.buttons["Retry registration"].exists {
+                throw NSError(domain: "HarborPackageUI.Creation", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: self.application.debugDescription])
+            }
+            return (try? self.project(at: projectDirectory.path)) != nil
         }
         let registration = try XCTUnwrap(try project(at: projectDirectory.path))
         let identifier = try XCTUnwrap(registration["id"] as? String)
@@ -86,13 +90,13 @@ final class HarborPackageUITests: XCTestCase {
         try assertHTTPS(slug)
         attach("reopened-running-project")
 
-        if !application.buttons["Stop"].waitForExistence(timeout: 5) {
+        if !application.buttons["Stop project"].waitForExistence(timeout: 5) {
             try click("Projects")
-            let row = application.descendants(matching: .any).matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+            let row = application.links.matching(NSPredicate(format: "label CONTAINS %@", projectName)).firstMatch
             XCTAssertTrue(row.waitForExistence(timeout: 20))
             row.click()
         }
-        try click("Stop", timeout: 30)
+        try click("Stop project", timeout: 30)
         try awaitProject(identifier, state: "stopped")
         application.typeKey("q", modifierFlags: .command)
         XCTAssertTrue(application.wait(for: .notRunning, timeout: 20))
@@ -206,7 +210,17 @@ final class HarborPackageUITests: XCTestCase {
     private func awaitProject(_ identifier: String, state: String) throws {
         try waitUntil("project \(identifier) reaches \(state)", timeout: 180) {
             guard let projects = try? self.snapshot()["projects"] as? [[String: Any]] else { return false }
-            return projects.first { $0["id"] as? String == identifier }?["state"] as? String == state
+            guard let project = projects.first(where: { $0["id"] as? String == identifier }) else { return false }
+            if let observed = project["state"] as? String, ["failed", "quarantined", "unavailable"].contains(observed) {
+                let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: project, options: [.prettyPrinted, .sortedKeys]), uniformTypeIdentifier: "public.json")
+                attachment.name = "failed-project-state"
+                attachment.lifetime = .keepAlways
+                self.add(attachment)
+                self.attach("failed-project-window")
+                throw NSError(domain: "HarborPackageUI.Project", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "project entered \(observed) while waiting for \(state)"])
+            }
+            return project["state"] as? String == state
         }
     }
 
