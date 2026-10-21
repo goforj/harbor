@@ -117,6 +117,7 @@ class PackageVerificationTests(unittest.TestCase):
         verify.verify_product(expected, dict(expected, **{"docs/current-state.md": "new", "desktop/packageui/test.swift": "new"}))
         verify.verify_product(expected, dict(expected, **{".github/workflows/linux-package-ui.yml": "new"}))
         verify.verify_product(expected, dict(expected, **{"desktop/frontend/e2e/harbor.spec.ts": "new assertions"}))
+        verify.verify_product(expected, dict(expected, **{"desktop/project_prerequisites_test.go": "native path fixture"}))
         for name in ("windows-package-ui.yml", "windows-native-capacity.yml", "windows-installation-admission.yml", "ci.yml", "docker-project-diagnostics.yml"):
             verify.verify_product(expected, dict(expected, **{f".github/workflows/{name}": "new"}))
         verify.verify_product(expected, dict(expected, **{"internal/platform/loopback/backend_windows_diagnostic_integration_test.go": "new"}))
@@ -125,6 +126,7 @@ class PackageVerificationTests(unittest.TestCase):
                      "internal/platformproof/project_identity_test.go"):
             verify.verify_product(expected, dict(expected, **{path: "diagnostics"}))
         for current in ({}, {"desktop/main.go": ("file", "changed")},
+                        dict(expected, **{"desktop/project_prerequisites.go": "changed"}),
                         dict(expected, **{"desktop/frontend/src/components/harbor/LogViewer.vue": "changed"}),
                         dict(expected, **{"cmd/harbord/main.go": "new"}),
                         dict(expected, **{"internal/platform/loopback/backend_windows.go": "changed"}),

@@ -16,6 +16,7 @@ import (
 // TestProjectPrerequisitesUsesAuthenticatedRegistration proves frontend IDs cannot introduce arbitrary checkout paths.
 func TestProjectPrerequisitesUsesAuthenticatedRegistration(t *testing.T) {
 	app, client := connectedTestApp()
+	client.snapshot.Projects[0].Path = t.TempDir()
 	project := client.snapshot.Projects[0]
 	called := false
 	adapter := app.projectCreators[projectcreation.GoForj.ID]
