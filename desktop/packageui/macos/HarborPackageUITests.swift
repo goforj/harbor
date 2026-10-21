@@ -84,8 +84,14 @@ final class HarborPackageUITests: XCTestCase {
             self.hasText("4 of 4 steps complete")
         }
         attach("guide-complete")
+        application.activate()
+        try waitUntil("Harbor foreground after external App opening") {
+            self.application.state == .runningForeground && self.application.buttons["Finish setup"].isHittable
+        }
         try click("Finish setup")
-        XCTAssertFalse(application.buttons["Dismiss getting started guide"].exists)
+        try waitUntil("guide dismissed after completion") {
+            !self.application.buttons["Dismiss getting started guide"].exists
+        }
         attach("project-ready")
 
         let originalProcess = try installedProcess()
