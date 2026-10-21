@@ -29,9 +29,10 @@ func TestRuntimeServesExactSyntheticGeneration(t *testing.T) {
 	betaNative := newNativeMarkerServer(t, "beta")
 	defer betaNative.close()
 
-	ports := reserveTCPPorts(t, 4)
+	dnsEndpoint := reserveDNSPort(t)
+	ports := reserveDistinctTCPPorts(t, 4, dnsEndpoint)
 	listeners := ListenerPlan{
-		DNS:   reserveDNSPort(t),
+		DNS:   dnsEndpoint,
 		HTTP:  ports[0],
 		HTTPS: ports[1],
 	}
