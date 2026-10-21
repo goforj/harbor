@@ -51,12 +51,20 @@ class ReleaseAdmissionTests(unittest.TestCase):
     def test_seals_exact_tested_bytes(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
-            names = self.create_packages(directory)
+            self.create_packages(directory)
             prepare.seal_assets(directory, "0.1.0-beta.1", "abc", "https://github.com/example/run")
             provenance = json.loads((directory / "provenance.json").read_text())
+            names = ["GoForj-Harbor-macos-arm64-0.1.0-beta.1.pkg", "goforj-harbor_0.1.0.beta.1-1_amd64.deb"]
             self.assertEqual(set(provenance["packages"]), set(names))
             self.assertEqual(provenance["source_commit"], "abc")
             self.assertEqual(len((directory / "SHA256SUMS").read_text().splitlines()), 2)
+            self.assertFalse((directory / "goforj-harbor_0.1.0~beta.1-1_amd64.deb").exists())
+            for line in (directory / "SHA256SUMS").read_text().splitlines():
+                digest, name = line.split("  ", 1)
+                self.assertEqual((directory / name).read_bytes(), b"tested installer")
+                self.assertEqual(hashlib.sha256((directory / name).read_bytes()).hexdigest(), digest)
+                self.assertEqual(provenance["packages"][name], digest)
+                self.assertEqual((directory / (name + ".sha256")).read_text(), line + "\n")
 
     def test_rejects_missing_extra_changed_empty_and_linked_packages(self):
         for failure in ("missing", "extra", "changed", "empty", "linked", "bad-checksum"):

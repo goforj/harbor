@@ -1,10 +1,14 @@
 # GoForj Harbor
 
-Status: active development; not ready for release or daily use
+Status: unsigned development preview; not yet a stable release
 
 GoForj Harbor is the local development control plane for GoForj projects. It is designed to give every project stable `.test` domains, trusted HTTPS, and native service ports without making projects compete for the same host bindings.
 
 Harbor keeps project ownership intact: each project retains its own GoForj Apps, Compose services, versions, credentials, containers, and volumes. A per-user daemon owns Harbor state and reconciliation; the CLI and Wails desktop are clients; narrowly scoped privileged helpers apply only reviewed machine-level networking changes.
+
+## Preview downloads
+
+[Harbor v0.1.0-beta.1](https://github.com/goforj/harbor/releases/tag/v0.1.0-beta.1) includes an Apple-silicon macOS PKG and an Ubuntu 24.04 amd64 DEB, with checksums and package provenance. The macOS package is unsigned and unnotarized. Windows passed its hosted installed-app checks, but public installers remain gated on production code signing. See the release notes for the exact tested profiles and preview limits.
 
 ## Target
 
@@ -21,7 +25,7 @@ The approved design and its complete release gates are indexed in [Harbor design
 
 ## Current state
 
-Harbor currently has a working macOS vertical slice: a real GoForj project can be registered in the desktop, receive a dedicated loopback address, start through `forj dev`, report readiness, and stream its current development output. This is meaningful implementation progress, not a cross-platform support claim.
+Harbor provides guided GoForj project creation, dedicated project loopback addresses, trusted HTTPS, development output, terminals, and service inspection. Supported running environments survive daemon restarts and reconnect without rebuilding or restarting Compose. Native installed-app acceptance passes on the named hosted macOS, Ubuntu, and Windows profiles; the preview does not establish every desktop or consent profile.
 
 [Current implementation state](./docs/current-state.md) is the source of truth for what works, temporary compatibility bridges, known gaps, and validation. [Development handoff](./docs/handoff.md) records the exact continuation point and local worktree boundary.
 

@@ -2,7 +2,11 @@
 
 ## Current continuation (2026-10-20)
 
-Transparent daemon restart continuity is merged in [PR #18](https://github.com/goforj/harbor/pull/18) at `dfaae107a9d1a73ba40bb30ae6653d6cf1221f12`. The merge tree exactly matches tested product source `9700f89e398b025a1f525c882f9875e043d07273`. This follow-up records acceptance only; it does not change product code. The clean documentation worktree is `/tmp/harbor-package-ui-20261019` on `docs/transparent-restart-acceptance`, based on the merge. Active developer checkouts, running user projects, and installations remain untouched.
+The user authorized a preview release using hosted-runner acceptance. [Harbor v0.1.0-beta.1](https://github.com/goforj/harbor/releases/tag/v0.1.0-beta.1) is published at tag source `1e71ce47e5aaa07eeeb0f615a822dd49ca46770b`, after successful exact-source [main CI](https://github.com/goforj/harbor/actions/runs/39519520985) and [release run 39520200187](https://github.com/goforj/harbor/actions/runs/39520200187). The macOS Apple-silicon PKG and Ubuntu amd64 DEB are unsigned previews; Windows publication remains gated on production signing. No active developer installation was changed.
+
+The public PKG digest is `455bbd6721cd4e16cf36cf0d727e5ecda4274eea95decdaf2f51981a7d51e3e0`; the DEB digest is `b4f5ffad30cf6fd5696fa386a4611f7cc782c0fd0fe8c70b5a73ac3ed3039344`. Both downloaded installers match the sealed tested bytes. GitHub changed the Debian asset's tilde to a period; only checksum/provenance filename references were corrected publicly. The release helper now makes that normalization before sealing, and its four focused tests pass. Local release receipts and downloads are under `/tmp/harbor-preview-v0.1.0-beta.1`. The immutable tag and installer payloads were not changed.
+
+Transparent daemon restart continuity is merged in [PR #18](https://github.com/goforj/harbor/pull/18) at `dfaae107a9d1a73ba40bb30ae6653d6cf1221f12`. The merge tree exactly matches tested product source `9700f89e398b025a1f525c882f9875e043d07273`. Its earlier documentation follow-up records acceptance without changing product code. The release worktree is `/tmp/harbor-package-ui-20261019` on `docs/transparent-restart-acceptance`, based on the tagged main commit. Active developer checkouts, running user projects, and installations remain untouched.
 
 Ready/Degraded sessions reconnect through separately authenticated output brokers and exact native process scope. Clean daemon shutdown detaches supported environments instead of stopping them. Windows broker query handles retain separately owned named jobs; root birth and membership remain mandatory for restored Stop authority. Unix retains its dedicated native session. Interrupted starts settle retryably, explicit Stop still settles the full scope, and ambiguous ownership quarantines only that project. No GoForj CLI integration is restored and no new CLI release is required.
 
@@ -20,7 +24,7 @@ All three downloaded receipts were checked for two real daemon crashes, unchange
 
 Earlier receipts and producers are superseded. Failures exposed recovered-command checkout/executable omissions, a process-wrapper release race, unsafe native job-buffer lifetime, and full-duplex broker acknowledgement blocking. Those defects were corrected rather than disabled. Fresh exact-source acceptance passed before the user authorized merge.
 
-The next step is updating the user's local Harbor and performing one bounded daemon-restart smoke check when requested. Merge is complete; no tag, public release, or active installation change was authorized by the merge request. New main-branch CI may run automatically after integration; the pre-merge evidence above applies to the identical product tree.
+Preview publication is complete. The next release goal is production signing before enabling Windows public downloads. Any local installation update requires its own user request. The release follow-up changes only publication filename handling, its focused test, and release documentation in `/tmp/harbor-package-ui-20261019`; it does not change product binaries. Automatic CI for that follow-up is separate from the successful exact-tag release evidence above.
 
 ## Important boundaries
 

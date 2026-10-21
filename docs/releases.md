@@ -2,13 +2,26 @@
 
 Harbor uses short-lived feature branches, pull requests into `main`, and immutable version tags. A release rehearsal builds and verifies native packages without publication. A rehearsal does not create a tag or GitHub release.
 
-## Current installed-platform evidence
+## Published preview
+
+[v0.1.0-beta.1](https://github.com/goforj/harbor/releases/tag/v0.1.0-beta.1) is Harbor's first public unsigned development preview. Its immutable tag points to `1e71ce47e5aaa07eeeb0f615a822dd49ca46770b`, which passed [main push CI](https://github.com/goforj/harbor/actions/runs/39519520985). [Release run 39520200187](https://github.com/goforj/harbor/actions/runs/39520200187) passed preflight, both native package gates, assembly, and publication.
+
+| Download | Tested SHA-256 |
+| --- | --- |
+| `GoForj-Harbor-macos-arm64-0.1.0-beta.1.pkg` | `455bbd6721cd4e16cf36cf0d727e5ecda4274eea95decdaf2f51981a7d51e3e0` |
+| `goforj-harbor_0.1.0.beta.1-1_amd64.deb` | `b4f5ffad30cf6fd5696fa386a4611f7cc782c0fd0fe8c70b5a73ac3ed3039344` |
+
+The published downloads match the exact tested runner packages byte-for-byte. Both native gates prove package installation, three-project trusted HTTPS, desktop daemon activation/reopen, ownership-aware uninstall, and preserved user data. The same product source passed the full installed GUI and daemon-crash continuity profiles on macOS, Ubuntu, and Windows listed in [current state](./current-state.md#transparent-daemon-restart). Public Windows installers remain gated on production signing; no disposable-signed Windows artifact was published.
+
+GitHub replaces `~` in release asset names with `.`. The Debian package's internal version retains its Debian prerelease ordering, while its public download uses the period spelling above. First-publication verification caught stale filename references in the checksum sidecar, `SHA256SUMS`, and provenance. Those metadata files were corrected without changing package bytes or moving the tag. The release helper now normalizes publication filenames before sealing, and the regression test resolves every checksum and provenance entry against the actual downloaded filename.
+
+## Earlier installed-platform evidence
 
 At product source `a537b52`, full CI passed all 15 jobs, the exact-source Unix package producer passed with publication skipped, and hosted GUI lifecycle plus normal cleanup receipts passed for macOS, Ubuntu, and Windows. The Windows GUI completed normal cleanup and preserved three nonempty data hashes in [run 39412874662](https://github.com/goforj/harbor/actions/runs/39412874662). HTTP readiness took about 102.85 seconds in [39412874662](https://github.com/goforj/harbor/actions/runs/39412874662), 103.23 seconds in [39414837174](https://github.com/goforj/harbor/actions/runs/39414837174), and 109.30 seconds in [39414837212](https://github.com/goforj/harbor/actions/runs/39414837212). All three GUI lifecycles and cleanup receipts passed. An earlier attempt timed out at about 128 seconds; it did not recur, but its exact cause remains unknown. No npm logs met the attribution rules for retention. No product timing, configuration, or cache warmup was changed. See [current state](./current-state.md) for exact artifact provenance and profile limits.
 
 The source includes read-only machine Root-store snapshots, Windows-only Wails application-menu registration, and tray status updates serialized on the native main queue without destructive `Menu.Update`. Hosted Server 2025 evidence does not prove genuine Windows GUI consent or supported client/UAC behavior, and public signing remains gated. macOS genuine consent and full trust-store restoration remain unproved; Ubuntu evidence uses XFCE/X11 on Xvfb, not GNOME Wayland or genuine PolicyKit consent. Failure recovery and update proof remain separate gates. Docker acceptance now selects released [GoForj v0.35.1](https://github.com/goforj/goforj/releases/tag/v0.35.1), which includes the first-boot readiness fix. Fresh full CI, native platform smoke, Docker lifecycle, and installed GUI lifecycle plus normal cleanup/uninstall pass against that release; exact runs and package digests are recorded in current state. The installed GUI receipts above retain their original CLI baseline. Details are under [Docker project lifecycle and diagnostics](#docker-project-lifecycle-and-diagnostics).
 
-The user separately authorized integration, and [PR #13](https://github.com/goforj/harbor/pull/13) is merged into `main` at `e82e189`. PR #16 was included; PRs #14 and #15 were closed as superseded with their work preserved. No Harbor tag or public release was requested or created. See [current state](./current-state.md#main-integration-2026-10-20) for the main-branch checks.
+The user separately authorized integration, and [PR #13](https://github.com/goforj/harbor/pull/13) is merged into `main` at `e82e189`. PR #16 was included; PRs #14 and #15 were closed as superseded with their work preserved. No Harbor tag or public release was requested or created at that integration step. See [current state](./current-state.md#main-integration-2026-10-20) for the main-branch checks.
 
 ## Rehearse without publishing
 

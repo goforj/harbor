@@ -46,7 +46,7 @@ def identity():
 
 
 def seal_assets(directory, version, revision, run_url):
-    """seal_assets admits exactly the expected platform packages and their matching hashes."""
+    """seal_assets verifies tested packages and seals GitHub-safe download filenames."""
     validate_version(version)
     base, channel = version.split("-", 1)
     names = [f"GoForj-Harbor-macos-arm64-{version}.pkg", f"goforj-harbor_{base}~{channel}-1_amd64.deb"]
@@ -66,6 +66,16 @@ def seal_assets(directory, version, revision, run_url):
         if checksum.read_text().strip() != f"{digest}  {name}":
             raise ValueError(f"package checksum mismatch: {name}")
         digests[name] = digest
+    # GitHub rewrites tildes in download names, but Debian keeps them in package versions.
+    public_digests = {}
+    for name, digest in digests.items():
+        public_name = name.replace("~", ".")
+        if public_name != name:
+            (directory / name).rename(directory / public_name)
+            (directory / (name + ".sha256")).rename(directory / (public_name + ".sha256"))
+            (directory / (public_name + ".sha256")).write_text(f"{digest}  {public_name}\n")
+        public_digests[public_name] = digest
+    digests = public_digests
     (directory / "SHA256SUMS").write_text("".join(f"{digests[name]}  {name}\n" for name in sorted(digests)))
     (directory / "provenance.json").write_text(json.dumps({
         "schema_version": 1, "version": version, "source_commit": revision,
