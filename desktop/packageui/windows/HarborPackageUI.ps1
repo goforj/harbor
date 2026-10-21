@@ -86,6 +86,74 @@ function Set-Field([string]$Name, [string]$Value) {
     $control.SetFocus()
     $control.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($Value)
 }
+# Find-FolderDialog admits only the native chooser owned by the selected installed desktop process.
+function Find-FolderDialog {
+    $conditions = [System.Windows.Automation.Condition[]]@(
+        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$script:window.Current.ProcessId),
+        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, 'Choose a location for the new project'),
+        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
+    )
+    $matches = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+        [System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.AndCondition]::new($conditions))
+    if ($matches.Count -gt 1) { throw 'multiple native folder dialogs match the selected product' }
+    if ($matches.Count -eq 1 -and -not $matches[0].Current.IsOffscreen) { return $matches[0] }
+    return $null
+}
+# Find-DialogControl keeps native control IDs scoped to the admitted chooser rather than the web form.
+function Find-DialogControl($Dialog, [string]$Identifier, [System.Windows.Automation.ControlType]$Type) {
+    $conditions = [System.Windows.Automation.Condition[]]@(
+        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $Identifier),
+        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $Type)
+    )
+    $control = $Dialog.FindFirst([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.AndCondition]::new($conditions))
+    if ($null -eq $control -or -not $control.Current.IsEnabled) {
+        $rows = @($Dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | Select-Object -First 150 | ForEach-Object {
+            @{ name=$_.Current.Name; id=$_.Current.AutomationId; type=$_.Current.ControlType.ProgrammaticName }
+        })
+        ConvertTo-Json -InputObject $rows | Set-Content (Join-Path $EvidenceDirectory 'native-folder-controls.json') -Encoding UTF8
+        throw "native folder control $Identifier is missing or disabled"
+    }
+    return $control
+}
+# Select-ProjectLocation checks Cancel and Select using the native folder dialog before graphical creation.
+function Select-ProjectLocation {
+    $previous = Join-Path $projectRoot 'unchanged-before-picker'
+    Set-Field 'Project directory' $previous
+    Invoke-Button 'Choose project location'
+    Wait-Until 'native folder chooser' { $null -ne (Find-FolderDialog) }
+    $dialog = Find-FolderDialog
+    $cancel = Find-DialogControl $dialog '2' ([System.Windows.Automation.ControlType]::Button)
+    $cancel.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    Wait-Until 'native picker cancellation' { $null -eq (Find-FolderDialog) }
+    $field = Await-Control 'Project directory' ([System.Windows.Automation.ControlType]::Edit)
+    if ($field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -cne $previous) { throw 'native picker cancellation changed the entered directory' }
+    Invoke-Button 'Choose project location'
+    Wait-Until 'native folder chooser reopened' { $null -ne (Find-FolderDialog) }
+    $dialog = Find-FolderDialog
+    $location = Find-DialogControl $dialog '1152' ([System.Windows.Automation.ControlType]::Edit)
+    $location.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($projectRoot)
+    $accept = Find-DialogControl $dialog '1' ([System.Windows.Automation.ControlType]::Button)
+    $accept.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    Wait-Until 'selected parent returned to creation' {
+        $null -eq (Find-FolderDialog) -and [string]::Equals(
+            $field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value,
+            $projectDirectory, [StringComparison]::OrdinalIgnoreCase)
+    }
+    Save-Observation 'native-directory-picker-selected'
+}
+# Assert-ProjectURLClipboard records only an exact match to the ready project's published URL.
+function Assert-ProjectURLClipboard {
+    $selected = Get-Project
+    $resources = @($selected.resources | Where-Object { $_.kind -ceq 'application' })
+    if ($selected.state -cne 'ready' -or $resources.Count -ne 1) { throw 'copy requires one ready published application URL' }
+    if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne [Threading.ApartmentState]::STA) { throw 'native clipboard observation requires the admitted STA controller' }
+    [System.Windows.Forms.Clipboard]::SetText('Harbor clipboard probe cleared')
+    Invoke-Button 'Copy project URL'
+    Wait-Until 'native clipboard receives the published project URL' { [System.Windows.Forms.Clipboard]::GetText() -ceq $resources[0].url }
+    $null = Await-Control 'Project URL copied' ([System.Windows.Automation.ControlType]::Button)
+    @{ project_id=$selected.id; expected_url=$resources[0].url; native_clipboard_exact_match=$true; copied_feedback_visible=$true } |
+        ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'project-url-clipboard.json') -Encoding UTF8
+}
 function Set-Checkbox([string]$Name, [bool]$Selected) {
     $control = Await-Control $Name ([System.Windows.Automation.ControlType]::CheckBox)
     $pattern = $control.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
@@ -362,9 +430,10 @@ try {
         # Exercise the offered repair action after preserving the first cold-tool observation.
         Invoke-Button 'Recheck'
     }
+    Set-Field 'Project name' 'Project'
+    Select-ProjectLocation
     Set-Field 'Project name' 'Harbor Installed Windows UI'
     Set-Field 'Go module' 'example.com/harbor-installed-windows-ui'
-    Set-Field 'Project directory' $projectDirectory
     Invoke-Button 'Continue'
     foreach ($name in @('CLI','Docker','Mail','Auth','OAuth','Web API','Web UI','Metrics','Observability','Grafana','Database (MySQL)','Database (Postgres)','Database (SQLite)','Scheduler','Cache','Events','File Storage','Background Jobs')) {
         Set-Checkbox $name ($name -in @('CLI','Web API','Web UI'))
@@ -445,6 +514,7 @@ try {
     }
     $null = Await-Control 'Stop project' ([System.Windows.Automation.ControlType]::Button)
     Save-Observation 'reconnected-after-crash-recovery'
+    Assert-ProjectURLClipboard
     Invoke-Button 'Stop project'
     Await-ProjectState 'stopped'
     Invoke-NativeUIQuit $reopenedProcess 'final'
@@ -452,6 +522,8 @@ try {
         native_quit_first=$script:nativeQuitReceipts['first']; native_quit_final=$script:nativeQuitReceipts['final']
         application=$desktopPath; launcher=$launcherPath; daemon=$daemonPath; bundle_digest=$selection.bundle_digest; project_directory=$projectDirectory; project_id=(Get-Project).id
         creation='production graphical wizard through native UIAutomation'; start='ready and system-trusted HTTPS 200'
+        directory_picker='native cancellation preserves choices; selected parent produces the registered destination'
+        clipboard='native clipboard exactly matches the daemon-published application URL'
         onboarding='installed first-project guide, native tool recheck, and published App opening completed'
         window_close='project remains ready'; second_launch='original process restored'
         crash_recovery='installed authenticated daemon crashes, safe retry, healthy peer and live GUI reconnect'; ui_quit='daemon and project remain ready'; ui_reopen='registration retained and HTTPS 200'; final_project_state='stopped'
