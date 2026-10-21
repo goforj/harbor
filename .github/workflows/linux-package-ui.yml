@@ -170,8 +170,23 @@ jobs:
           done
           xdpyinfo >/dev/null
           xfce4-session > harbor-package-ui-evidence/xfce-session.log 2>&1 &
+          gsettings get org.gnome.Epiphany ask-for-default > "$RUNNER_TEMP/harbor-browser-prompt.original"
+          gsettings set org.gnome.Epiphany ask-for-default false
           /usr/bin/python3 scripts/packageui/linux/acceptance.py
           sha256sum --check "$RUNNER_TEMP/ui-installed.sha256"
+
+      - name: Restore disposable browser first-run preference
+        if: always()
+        run: |
+          set -euo pipefail
+          original="$RUNNER_TEMP/harbor-browser-prompt.original"
+          if [ -f "$original" ]; then
+            setting="$(cat "$original")"
+            case "$setting" in
+              true|false) gsettings set org.gnome.Epiphany ask-for-default "$setting" ;;
+              *) exit 1 ;;
+            esac
+          fi
 
       - name: Unregister fixture, release owned networking, and preserve user data
         run: |
