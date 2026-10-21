@@ -27,9 +27,10 @@ final class HarborPackageUITests: XCTestCase {
     }
 
     func testInstalledCreationStartAndReopen() throws {
-        let root = URL(fileURLWithPath: "/tmp/harbor-package-ui-" + UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-        let projectDirectory = root.resolvingSymlinksInPath().appendingPathComponent("project", isDirectory: true)
+        let temporaryRoot = URL(fileURLWithPath: "/tmp/harbor-package-ui-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: false)
+        let root = try canonicalFixtureDirectory(temporaryRoot)
+        let projectDirectory = root.appendingPathComponent("project", isDirectory: true)
         try launchInstalledApplication("first-launch")
         try awaitWindow()
         try assertInstalledBundle()
@@ -46,7 +47,7 @@ final class HarborPackageUITests: XCTestCase {
 
         try click("New project")
         try fill("Project name", with: "Project")
-        try exerciseDirectoryPicker(parent: root.resolvingSymlinksInPath(), expected: projectDirectory)
+        try exerciseDirectoryPicker(parent: root, expected: projectDirectory)
         try fill("Project name", with: projectName)
         try fill("Go module", with: "example.com/harbor-installed-ui")
         try click("Continue")
@@ -168,6 +169,15 @@ final class HarborPackageUITests: XCTestCase {
         ]
         try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
             .write(to: URL(fileURLWithPath: "/tmp/harbor-package-ui-evidence.json"), options: .withoutOverwriting)
+    }
+
+    // canonicalFixtureDirectory retains the kernel spelling returned by NSOpenPanel instead of Foundation's /tmp alias.
+    private func canonicalFixtureDirectory(_ directory: URL) throws -> URL {
+        guard let resolved = realpath(directory.path, nil) else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        defer { free(resolved) }
+        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
     }
 
     // exerciseDirectoryPicker proves both native cancellation and the actual selected parent before creation.
