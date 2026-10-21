@@ -654,3 +654,23 @@
 .harbor-terminal-line {
   min-height: 1.2em;
 }
+
+.harbor-log-controls {
+  --background: var(--terminal-background);
+  --foreground: var(--terminal-foreground);
+  --muted-foreground: var(--terminal-bright-black);
+  --accent: var(--terminal-black);
+  --accent-foreground: var(--terminal-foreground);
+  --border: var(--terminal-border);
+}
+
+.harbor-log-match {
+  color: inherit;
+  background: color-mix(in srgb, var(--terminal-yellow) 28%, var(--terminal-background));
+  border-radius: 2px;
+}
+
+.harbor-log-match[data-active-match="true"] {
+  background: color-mix(in srgb, var(--terminal-yellow) 45%, var(--terminal-background));
+  outline: 1px solid var(--terminal-yellow);
+}

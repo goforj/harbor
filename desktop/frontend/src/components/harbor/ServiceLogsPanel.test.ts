@@ -70,7 +70,7 @@ describe('ServiceLogsPanel', () => {
     expect(wait).toHaveBeenCalledWith('orders', 'session-orders', 'mysql', 6, 25_000)
     expect(wrapper.text()).toContain('Live')
     expect(wrapper.find('[data-testid="terminal-output"]').exists()).toBe(true)
-    expect(wrapper.get('button[aria-pressed="true"]').text()).toContain('Following')
+    expect(wrapper.get('button[aria-pressed="true"]').text()).toContain('Pause scrolling')
 
     const clear = wrapper.findAll('button').find((button) => button.text().includes('Clear'))
     if (!clear) throw new Error('Clear service logs action is missing')

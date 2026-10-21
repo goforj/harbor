@@ -1,14 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import { Check, CircleDot, Clipboard, Eraser, Radio, SquareTerminal } from '@lucide/vue'
-import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
-import { terminalPlainText } from '@/lib/terminal'
+import { computed } from 'vue'
+import { Eraser, SquareTerminal } from '@lucide/vue'
+import LogViewer from '@/components/harbor/LogViewer.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card } from '@/components/ui/card'
 import { useServiceLogs } from '@/composables/useServiceLogs'
 import { useHarborStore } from '@/stores/harbor'
-import { copyText } from '@/bridge/clipboard'
 
 const props = defineProps<{
   projectId: string
@@ -18,10 +16,6 @@ const props = defineProps<{
 }>()
 
 const store = useHarborStore()
-const viewport = ref<HTMLElement | null>(null)
-const follow = ref(true)
-const copied = ref(false)
-const copyError = ref<string | null>(null)
 const projectId = computed(() => props.projectId)
 const serviceId = computed(() => props.serviceId)
 const logSupported = computed(() => store.daemonStatus?.capabilities.includes('control.service-logs.v1') === true)
@@ -29,6 +23,7 @@ const logWaitSupported = computed(() => store.daemonStatus?.capabilities.include
 const daemonConnected = computed(() => store.connectionState === 'connected')
 const snapshotSequence = computed(() => store.snapshot?.sequence)
 const {
+  logs,
   output,
   outputResetKey,
   error,
@@ -70,110 +65,35 @@ const emptyMessage = computed(() => {
   }
 })
 
-watch([projectId, serviceId], () => {
-  follow.value = true
-})
-
-// updateFollow pauses automatic tailing when the user moves away from the end of the transcript.
-function updateFollow() {
-  const element = viewport.value
-  if (!element) return
-  follow.value = element.scrollHeight - element.scrollTop - element.clientHeight <= 24
-}
-
-// scrollToEnd waits for terminal rows to render before moving the viewport.
-async function scrollToEnd(force = false) {
-  if (!force && !follow.value) return
-  await nextTick()
-  const element = viewport.value
-  if (!element) return
-  element.scrollTop = element.scrollHeight
-}
-
-// resumeFollow makes the choice explicit after a user has paused automatic tailing.
-function resumeFollow() {
-  follow.value = true
-  void scrollToEnd(true)
-}
-
-// clearOutput removes only this desktop view while the daemon cursor remains attached to the live stream.
-function clearOutput() {
-  clear()
-  follow.value = true
-}
-
-// copyOutput uses the terminal's visible text so copied logs do not contain ANSI control sequences.
-async function copyOutput() {
-  if (!output.value) return
-  copyError.value = null
-  try {
-    await copyText(terminalPlainText(output.value))
-    copied.value = true
-    window.setTimeout(() => { copied.value = false }, 1600)
-  }
-  catch (error) {
-    copyError.value = error instanceof Error ? error.message : 'Could not copy service logs.'
-  }
-}
 </script>
 
 <template>
   <Card :class="['gap-0 overflow-hidden rounded-lg py-0 shadow-none', { 'flex min-h-0 flex-1 flex-col': fill }]">
-    <CardHeader class="!flex !items-center !justify-between gap-3 border-b px-4 py-2">
-      <div class="flex min-w-0 items-center gap-2"><SquareTerminal class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Logs</CardTitle></div>
-      <div class="flex shrink-0 items-center gap-2">
+    <LogViewer
+      :output="output"
+      :reset-key="outputResetKey"
+      :identity="`${projectId}:${serviceId}:${logs?.session_id ?? ''}`"
+      :label="`${serviceName} service logs`"
+      :fill="fill ?? false"
+    >
+      <template #label>
+        <SquareTerminal class="size-4" /><span class="text-sm font-semibold text-foreground">Logs</span>
         <Badge variant="outline" class="gap-1.5 capitalize">
-          <span
-            class="size-1.5 rounded-full"
-            :class="{
-              'animate-pulse bg-emerald-500': state === 'live',
-              'animate-pulse bg-amber-500': state === 'connecting' || state === 'reconnecting',
-              'bg-destructive': state === 'error',
-              'bg-muted-foreground': state === 'unsupported' || state === 'ended' || state === 'waiting',
-            }"
-            aria-hidden="true"
-          />
+          <span class="size-1.5 rounded-full" :class="{
+            'animate-pulse bg-emerald-500': state === 'live',
+            'animate-pulse bg-amber-500': state === 'connecting' || state === 'reconnecting',
+            'bg-destructive': state === 'error',
+            'bg-muted-foreground': state === 'unsupported' || state === 'ended' || state === 'waiting',
+          }" aria-hidden="true" />
           {{ statusLabel }}
         </Badge>
-        <Button variant="ghost" size="sm" :disabled="!output" @click="clearOutput">
-          <Eraser class="size-3.5" />
-          Clear
-        </Button>
-        <Button variant="ghost" size="sm" :disabled="!output" @click="copyOutput">
-          <Check v-if="copied" class="size-3.5" /><Clipboard v-else class="size-3.5" />
-          {{ copied ? 'Copied' : 'Copy' }}
-        </Button>
-        <Button
-          :variant="follow ? 'secondary' : 'outline'"
-          size="sm"
-          :aria-pressed="follow"
-          @click="resumeFollow"
-        >
-          <Radio v-if="follow" class="size-3.5" />
-          <CircleDot v-else class="size-3.5" />
-          {{ follow ? 'Following' : 'Follow logs' }}
-        </Button>
-      </div>
-    </CardHeader>
-    <CardContent :class="['p-0', { 'flex min-h-0 flex-1 flex-col': fill }]">
-      <p v-if="error" class="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{{ error }}</p>
-      <p v-if="copyError" class="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{{ copyError }}</p>
-      <p v-if="truncated" class="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">Earlier logs are no longer retained. The live stream continues from the newest visible output.</p>
-      <div
-        ref="viewport"
-        :class="fill ? 'min-h-0 flex-1 overflow-auto harbor-log-viewport px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none' : 'max-h-[30rem] min-h-72 overflow-auto harbor-log-viewport px-4 py-3 font-mono text-xs leading-5 text-zinc-200 outline-none'"
-        tabindex="0"
-        :aria-label="`${serviceName} service logs`"
-        @scroll="updateFollow"
-      >
-        <TerminalOutput
-          v-if="output"
-          :output="output"
-          :reset-key="outputResetKey"
-          @rendered="scrollToEnd"
-        />
-        <p v-else class="flex min-h-64 items-center justify-center text-center text-zinc-500">{{ emptyMessage }}</p>
-      </div>
-    </CardContent>
+      </template>
+      <template #actions><Button variant="ghost" size="sm" class="h-7 text-xs" :disabled="!output" @click="clear"><Eraser class="size-3.5" />Clear</Button></template>
+      <template #notices>
+        <p v-if="error" class="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{{ error }}</p>
+        <p v-if="truncated" class="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">Earlier logs are no longer retained. Search covers retained output only; the live stream continues.</p>
+      </template>
+      <template #empty><p class="flex min-h-64 items-center justify-center text-center text-muted-foreground">{{ emptyMessage }}</p></template>
+    </LogViewer>
   </Card>
 </template>

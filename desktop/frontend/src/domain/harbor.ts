@@ -1,3 +1,20 @@
+export interface PrerequisiteCheck {
+  id: string
+  name: string
+  status: 'ready' | 'missing' | 'incompatible' | 'unavailable'
+  version?: string
+  detail: string
+  action?: string
+  url?: string
+  required_for?: 'creation' | 'start'
+}
+
+export interface PrerequisiteReport {
+  provider_id: string
+  project_id?: string
+  checks: PrerequisiteCheck[]
+}
+
 export type Destination = 'overview' | 'projects' | 'services' | 'system'
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected'

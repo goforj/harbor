@@ -122,6 +122,8 @@ export function createWailsBridge(): HarborBridge {
   }
 
   return {
+    getProjectCreationPrerequisites: request => app?.ProjectCreationPrerequisites ? app.ProjectCreationPrerequisites(request) : Promise.reject(new Error('Restart Harbor to enable prerequisite checks.')),
+    getProjectPrerequisites: projectId => app?.ProjectPrerequisites ? app.ProjectPrerequisites(projectId) : Promise.reject(new Error('Restart Harbor to enable prerequisite checks.')),
     getProjectCreationProviders: () => app?.ProjectCreationProviders ? app.ProjectCreationProviders() : Promise.reject(new Error('Restart Harbor to enable project creation.')),
     startProjectCreation: request => app?.StartProjectCreation ? app.StartProjectCreation(request) : Promise.reject(new Error('Restart Harbor to enable creation progress.')),
     getProjectCreationProgress: (jobId, cursor) => app?.ProjectCreationProgress ? app.ProjectCreationProgress(jobId, cursor) : Promise.reject(new Error('Restart Harbor to enable creation progress.')),

@@ -473,9 +473,9 @@ test('routes services with project and service identities', async ({ page }) => 
   await expect(page.getByRole('heading', { name: 'MySQL' })).toBeVisible()
   await expect(page.getByText('orders-api', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('Compose service', { exact: true }).first()).toBeVisible()
-  await expect(page.getByLabel('MySQL service logs')).toContainText('MySQL ready on orders-api')
+  await expect(page.getByLabel('MySQL service logs', { exact: true })).toContainText('MySQL ready on orders-api')
   await expect(page.getByRole('button', { name: 'Clear', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Following', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: 'Pause scrolling', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(page).toHaveURL(/#\/services\/orders-api\/mysql$/)
 })
 

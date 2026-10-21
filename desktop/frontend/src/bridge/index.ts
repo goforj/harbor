@@ -14,6 +14,8 @@ function createUnavailableBridge(): HarborBridge {
 
   return {
     addProject: unavailable,
+    getProjectCreationPrerequisites: unavailable,
+    getProjectPrerequisites: unavailable,
     getProjectCreationProviders: unavailable,
     startProjectCreation: unavailable,
     getProjectCreationProgress: unavailable,

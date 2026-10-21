@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, ArrowRight, Check, ChevronDown, FolderOpen, FolderPlus, Layers, Plus, RotateCw } from '@lucide/vue'
 import goforjIcon from '@/assets/brand/goforj-ios.png'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { harborBridge } from '@/bridge'
-import type { ProjectCreationField, ProjectCreationSchema, ProjectCreationResult, ProjectCreationProgress, ProjectCreationProvider } from '@/domain/harbor'
+import type { PrerequisiteReport, ProjectCreationField, ProjectCreationSchema, ProjectCreationResult, ProjectCreationProgress, ProjectCreationProvider } from '@/domain/harbor'
 import { creationDefault, creationFieldAvailable, toggleCreationOption } from '@/lib/projectCreation'
 import { useHarborStore } from '@/stores/harbor'
 import { Button } from '@/components/ui/button'
@@ -13,6 +13,9 @@ import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import CreationOptionPreview from './CreationOptionPreview.vue'
+import PrerequisitePanel from './PrerequisitePanel.vue'
+import { prerequisitesReady, validatePrerequisites } from '@/lib/prerequisites'
+import { projectGuideState, selectProjectGuideProject } from '@/lib/projectGuide'
 
 const open = defineModel<boolean>('open', { default: false })
 const store = useHarborStore()
@@ -27,19 +30,32 @@ const observingError = ref('')
 let observation = 0
 const schema = ref<ProjectCreationSchema | null>(null)
 const values = ref<Record<string, string>>({})
+const prerequisites = ref<PrerequisiteReport | null>(null)
+const checkingPrerequisites = ref(false)
+const prerequisiteError = ref('')
+let prerequisiteGeneration = 0
+let schemaGeneration = 0
+let openGeneration = 0
 const loading = ref(false)
 const creating = ref(false)
 const error = ref('')
 const step = ref(0)
+const stepViewport = ref<HTMLElement | null>(null)
 const result = ref<ProjectCreationResult | null>(null)
 const steps = computed(() => schema.value ? [...new Set(schema.value.fields.map(field => field.step)), 'Review'] : [])
 const fields = computed(() => schema.value?.fields.filter(field => field.step === steps.value[step.value]) ?? [])
 const reviewing = computed(() => step.value === steps.value.length - 1)
 const phaseLabel = computed(() => ({ creating: 'Creating project files', registering: 'Adding project to Harbor', completed: 'Project ready', failed: 'Creation needs attention', registration_failed: 'Files created, registration needs attention' })[progress.value?.phase ?? 'creating'])
 
+// Each wizard step starts at its heading even when the previous step had a long option list.
+watch(step, async () => { await nextTick(); if (stepViewport.value) stepViewport.value.scrollTop = 0 })
+
 watch(open, async value => {
-  if (!value) return
+  const generation = ++openGeneration
+  if (!value) { prerequisiteGeneration++; schemaGeneration++; return }
   loading.value = true
+  prerequisites.value = null
+  prerequisiteError.value = ''
   schema.value = null
   result.value = null
   error.value = ''
@@ -48,26 +64,67 @@ watch(open, async value => {
     progress.value = null
     output.value = ''
     observingError.value = ''
-    providers.value = await harborBridge.getProjectCreationProviders()
+    const availableProviders = await harborBridge.getProjectCreationProviders()
+    if (!open.value || generation !== openGeneration) return
+    providers.value = availableProviders
     if (!providers.value.length) throw new Error('No project creators are available.')
     providerId.value = providers.value[0]!.id
     await loadSchema()
-  } catch (cause) { error.value = String(cause instanceof Error ? cause.message : cause) }
-  finally { loading.value = false }
+  } catch (cause) { if (generation === openGeneration) error.value = message(cause) }
+  finally { if (generation === openGeneration) loading.value = false }
 })
 
 async function loadSchema() {
+  const generation = ++schemaGeneration
   loading.value = true
   schema.value = null
   error.value = ''
   step.value = 0
   try {
-    const loaded = await harborBridge.getProjectCreationSchema(providerId.value)
+    if (!await checkPrerequisites(true) || generation !== schemaGeneration || !open.value) return
+    const selected = providerId.value
+    const loaded = await harborBridge.getProjectCreationSchema(selected)
+    if (generation !== schemaGeneration || !open.value) return
     if (loaded.schema_version !== 1 || loaded.provider_id !== providerId.value) throw new Error('This project wizard needs a newer Harbor version.')
     schema.value = loaded
     values.value = Object.fromEntries(loaded.fields.map(field => [field.key, creationDefault(field)]))
-  } catch (cause) { error.value = message(cause) }
-  finally { loading.value = false }
+  } catch (cause) { if (generation === schemaGeneration) error.value = message(cause) }
+  finally { if (generation === schemaGeneration) loading.value = false }
+}
+
+// checkPrerequisites discards stale provider/options results rather than enabling creation from a previous selection.
+async function checkPrerequisites(initial = false) {
+  const generation = ++prerequisiteGeneration
+  const selected = providerId.value
+  const options = initial ? {} : { ...values.value }
+  const fingerprint = JSON.stringify(options)
+  checkingPrerequisites.value = true
+  prerequisiteError.value = ''
+  try {
+    const report = await harborBridge.getProjectCreationPrerequisites({ provider_id: selected, schema_version: schema.value?.schema_version ?? 1, options })
+    if (!open.value || generation !== prerequisiteGeneration || selected !== providerId.value || (!initial && fingerprint !== JSON.stringify(values.value))) return false
+    validatePrerequisites(report, selected)
+    prerequisites.value = report
+    return prerequisitesReady(report, 'creation')
+  } catch (cause) {
+    if (generation === prerequisiteGeneration) prerequisiteError.value = message(cause)
+    return false
+  } finally {
+    if (generation === prerequisiteGeneration) checkingPrerequisites.value = false
+  }
+}
+
+watch(values, () => {
+  prerequisiteGeneration++
+  prerequisites.value = null
+  checkingPrerequisites.value = false
+}, { deep: true })
+watch(reviewing, value => { if (value && open.value && !progress.value) void checkPrerequisites() })
+
+// recheckPrerequisites recovers missing authoring tools without discarding user-entered choices.
+async function recheckPrerequisites() {
+  if (!schema.value) await loadSchema()
+  else await checkPrerequisites()
 }
 
 function message(cause: unknown) { return String(cause instanceof Error ? cause.message : cause) }
@@ -111,7 +168,12 @@ async function acceptProgress(update: ProjectCreationProgress) {
   if (update.result?.registration) {
     await store.refresh()
     open.value = false
-    await router.push(`/projects/${encodeURIComponent(update.result.registration.project.id)}`)
+    if (projectGuideState.value.visible) {
+      selectProjectGuideProject(update.result.registration.project.id)
+      await router.push('/overview')
+    } else {
+      await router.push(`/projects/${encodeURIComponent(update.result.registration.project.id)}`)
+    }
   }
 }
 
@@ -132,7 +194,8 @@ async function observe() {
 }
 
 async function create() {
-  if (!schema.value || creating.value) return
+  if (!schema.value || creating.value || checkingPrerequisites.value) return
+  if (!await checkPrerequisites() || !reviewing.value || !open.value) return
   creating.value = true
   error.value = ''
   output.value = ''
@@ -160,7 +223,7 @@ function reviewChoices() {
   step.value = 0
 }
 
-onBeforeUnmount(() => { observation++ })
+onBeforeUnmount(() => { observation++; prerequisiteGeneration++; schemaGeneration++ })
 </script>
 
 <template>
@@ -194,6 +257,9 @@ onBeforeUnmount(() => { observation++ })
           <Check class="size-4 shrink-0 text-primary" aria-hidden="true" />
         </div>
       </div>
+      <div v-if="!progress && !schema" class="min-h-0 overflow-auto px-6 py-3">
+        <PrerequisitePanel :report="prerequisites" :checking="checkingPrerequisites" :error="prerequisiteError" stage="creation" compact @recheck="recheckPrerequisites" />
+      </div>
       <div v-if="loading" class="flex items-center gap-3 px-6 py-12 text-sm text-muted-foreground"><Spinner />Loading project options…</div>
       <template v-else-if="schema">
         <ol class="flex items-center gap-2 border-b px-6 pb-4 text-xs" :class="progress ? 'pt-4' : ''" aria-label="Creation steps">
@@ -219,7 +285,8 @@ onBeforeUnmount(() => { observation++ })
           <p v-if="creating" class="text-xs text-muted-foreground">Dependency installation can take a few minutes. Output updates as the command runs.</p>
           <div v-if="observingError" class="space-y-2 text-xs"><p role="alert">{{ observingError }}</p><Button size="sm" variant="outline" @click="observe"><RotateCw class="size-3" />Resume updates</Button></div>
         </div>
-        <div v-else class="min-h-0 space-y-5 overflow-y-auto px-6 py-5">
+        <div v-else ref="stepViewport" data-testid="creation-step" class="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5 [overflow-anchor:none]">
+          <PrerequisitePanel v-if="reviewing" :report="prerequisites" :checking="checkingPrerequisites" :error="prerequisiteError" stage="creation" compact @recheck="recheckPrerequisites" />
           <dl v-if="reviewing" class="space-y-4 text-sm">
             <div v-for="field in schema.fields.filter(available)" :key="field.key" class="grid grid-cols-[8rem_minmax(0,1fr)] gap-3"><dt class="text-muted-foreground">{{ field.label }}</dt><dd class="break-words">{{ summary(field) }}</dd></div>
             <p class="border-t pt-4 text-xs text-muted-foreground">The project will be added in a stopped state. Start it when you're ready.</p>
@@ -256,7 +323,7 @@ onBeforeUnmount(() => { observation++ })
         <Button v-if="progress?.phase === 'failed'" variant="outline" @click="reviewChoices">Review choices</Button>
         <Button v-if="schema && !progress && step > 0" variant="outline" @click="step--; error = ''"><ArrowLeft class="size-3.5" />Back</Button>
         <Button v-if="schema && !progress && !reviewing" @click="next">Continue<ArrowRight class="size-3.5" /></Button>
-        <Button v-if="schema && !progress && reviewing" @click="create"><Plus class="size-3.5" />Create project</Button>
+        <Button v-if="schema && !progress && reviewing" :disabled="checkingPrerequisites || !!prerequisiteError || !prerequisitesReady(prerequisites, 'creation')" @click="create"><Plus class="size-3.5" />Create project</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>

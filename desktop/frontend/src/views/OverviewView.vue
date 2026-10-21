@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import NetworkSetupRecoveryCard from '@/components/harbor/NetworkSetupRecoveryCard.vue'
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import {
@@ -8,6 +8,7 @@ import {
   ArrowUpRight,
   Boxes,
   Clock3,
+  Compass,
   FolderKanban,
   FolderPlus,
   Network,
@@ -16,6 +17,8 @@ import {
   TriangleAlert,
 } from '@lucide/vue'
 import { showNewProjectDialog } from '@/lib/projectCreationDialog'
+import { offerProjectGuide, projectGuideState, selectProjectGuideProject, showProjectGuide } from '@/lib/projectGuide'
+import FirstProjectGuide from '@/components/harbor/FirstProjectGuide.vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
 import ProjectIcon from '@/components/harbor/ProjectIcon.vue'
 import KindIcon from '@/components/harbor/KindIcon.vue'
@@ -28,6 +31,9 @@ import { useHarborStore } from '@/stores/harbor'
 
 const store = useHarborStore()
 const router = useRouter()
+watch([() => store.projects.length, () => store.connectionState, () => store.snapshotStale], () => {
+  offerProjectGuide(store.projects.length, store.snapshot !== null && store.connectionState === 'connected' && !store.snapshotStale)
+}, { immediate: true })
 const recentProjects = computed(() => [...store.projects]
   .sort((left, right) => Number(right.favorite) - Number(left.favorite) || right.updated_at.localeCompare(left.updated_at))
   .slice(0, 4))
@@ -54,11 +60,12 @@ async function addProject() {
     : `${registration.project.name} is already in Harbor`, {
     description: registration.created ? 'Stopped; routing is not configured yet.' : undefined,
   })
-  await router.push(`/projects/${encodeURIComponent(registration.project.id)}`)
+  if (projectGuideState.value.visible) selectProjectGuideProject(registration.project.id)
+  else await router.push(`/projects/${encodeURIComponent(registration.project.id)}`)
 }
 
 async function setupNetwork() {
-  const result = await store.setupNetwork()
+  const result = store.networkSetupRecovery ? await store.resumeNetworkSetup() : await store.setupNetwork()
   if (result) {
     toast.success('Secure networking is ready', {
       description: 'Harbor completed trusted local DNS, HTTPS, and ingress.',
@@ -90,6 +97,7 @@ async function removeOldNetworking() {
         </p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
+        <Button variant="ghost" size="sm" @click="showProjectGuide"><Compass class="size-3.5 text-primary" />Getting started</Button>
         <Button size="sm" :disabled="store.connectionState !== 'connected'" @click="showNewProjectDialog"><FolderPlus class="size-3.5" />New project</Button>
         <Button variant="outline" size="sm" :disabled="store.addingProject || store.connectionState !== 'connected'" @click="addProject">
           <Spinner v-if="store.addingProject" aria-hidden="true" />
@@ -104,7 +112,8 @@ async function removeOldNetworking() {
     </header>
 
     <div class="space-y-5 p-5 lg:p-7">
- <NetworkSetupRecoveryCard />
+      <FirstProjectGuide v-if="projectGuideState.visible" @add="addProject" @setup="setupNetwork" @remove-old-networking="removeOldNetworking" />
+      <NetworkSetupRecoveryCard v-else />
       <div v-if="store.error && !store.connectionMessage" class="flex items-start gap-3 rounded-lg border border-destructive/35 bg-destructive/10 px-4 py-3 text-sm" role="alert">
         <TriangleAlert class="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
         <div>
@@ -113,7 +122,7 @@ async function removeOldNetworking() {
         </div>
       </div>
 
-      <Card v-if="store.networkSetupOnboarding" class="gap-0 rounded-lg py-0 shadow-none">
+      <Card v-if="store.networkSetupOnboarding && !projectGuideState.visible" class="gap-0 rounded-lg py-0 shadow-none">
         <CardHeader class="border-b px-4 py-3">
           <div class="flex items-center gap-2">
             <Network class="size-4 text-muted-foreground" aria-hidden="true" />
@@ -151,7 +160,7 @@ async function removeOldNetworking() {
         </CardContent>
       </Card>
 
-      <section aria-label="Harbor snapshot summary" class="grid grid-cols-2 overflow-hidden rounded-lg border lg:grid-cols-4">
+      <section v-if="store.projects.length || !projectGuideState.visible" aria-label="Harbor snapshot summary" class="grid grid-cols-2 overflow-hidden rounded-lg border lg:grid-cols-4">
         <div class="border-b p-4 lg:border-r lg:border-b-0">
           <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground"><FolderKanban class="size-3.5" />Projects</div>
           <div class="mt-2 flex items-end justify-between gap-2"><span class="text-2xl font-semibold tabular-nums">{{ store.projects.length }}</span><span class="text-xs text-muted-foreground">{{ store.runningCount }} active</span></div>
@@ -170,7 +179,7 @@ async function removeOldNetworking() {
         </div>
       </section>
 
-      <div class="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
+      <div v-if="store.projects.length || !projectGuideState.visible" class="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
         <Card class="gap-0 rounded-lg py-0 shadow-none">
           <CardHeader class="flex items-center justify-between gap-4 border-b px-4 py-3">
             <div><CardTitle class="text-sm">Projects</CardTitle><p class="mt-0.5 text-xs text-muted-foreground">Latest authoritative project state</p></div>

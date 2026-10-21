@@ -1,6 +1,26 @@
 # Development Handoff
 
-## Current continuation (2026-10-20)
+Status: four local product slices integrated with current main; updated installed-flow verification remains
+
+Last updated: 2026-10-20
+
+## Current continuation
+
+HARBOR-14 failure details, HARBOR-49 log search/navigation, HARBOR-48 provider prerequisites, and the HARBOR-30 first-project guide are combined on `feat/project-onboarding-20261020` in `/tmp/harbor-onboarding-integration-20261020`, based on main `f82be98fe875b03e17271e9e3b5e26ba866ea72e`. This preserves main's installed-platform fixes, transparent daemon restart continuity, release workflow, and the intentional desktop-to-root module replacement. Root runtime code, dependencies, versions, and persisted schemas are unchanged by this product slice. A local semantic checkpoint is being saved here; no remote branch, PR, release, or installation is part of this checkpoint.
+
+The user's active `/Users/cmiles/code/harbor-wails-v3` checkout remains on `feat/terminal-appearance` at `c4fb533`, with its original local task edits and pre-existing commit untouched. Its UI already contains these four slices. Its older root backend has not been copied into the integration checkout or restarted. A complete tracked patch, 27 new task files, and a manifest are saved in `/tmp/harbor-onboarding-integration-20261020-backup`. Treat the integration branch as the source for further integration and preserve the active development checkout until a deliberate transition.
+
+The combined source passes 229 focused frontend tests in 17 files, the production build including TypeScript checks, and six Chromium flows for the guide, tool repair, creation warning semantics, stale wizard responses, failure/retry details, and log search/navigation. Browser results are in `/tmp/harbor-onboarding-integration-browser-results`; logs are `/tmp/harbor-integration-ui-tests.log` and `/tmp/harbor-integration-build.log`. Playwright owns and stops its isolated Vite server on port 9426. No VitePress process was started. Previews are `/tmp/harbor-project-guide-dark.png` and `/tmp/harbor-project-guide-light.png`.
+
+Focused native checker/contract/fixture tests, App prerequisites/creation tests, and root GoForj/creation contracts pass on this combined source. An installed read-only smoke reports canonical GoForj v0.35.1 and Go 1.27.0 with both graphical creation and descriptor contracts available. Earlier local checker race/vet evidence is retained. Go-owned wire fixtures regenerate identically twice at SHA-256 `12195574b16c03db156661931400901fae468213ef2ca5448055d2938c47d36a`. Native linking still emits the existing local deployment-target warnings. Do not regenerate source fixtures while browser checks are running, because HMR will reload them.
+
+Creation requires Go and the supported canonical forj schema. Node/npm and Docker/Compose/engine checks are selected by provider/options and are runtime warnings during file creation. A fresh Start checks tools before ordinary daemon admission; explicit Try Start bypasses only that advisory desktop-environment observation. Existing admitted or uncertain intents still reconcile. Registered paths come only from fresh authenticated snapshots; commands use fixed argv, bounded output, timeouts, and no shell or project hooks. Conventional generated root/frontend package manifests are the current detection boundary. Custom locations/hooks and nonstandard Windows npm shim layouts may need manual guidance; the ordinary Start path remains available.
+
+The guide uses session-only UI state and existing creation/registration, networking setup/resume/removal, Start, prerequisite repair, and exact published-resource opening. A fresh empty Overview offers it automatically; existing workspaces can reopen it through Getting started or command search. Guided creation returns to Overview while ordinary creation preserves its project-detail destination. Native creation smoke now waits for Create to become enabled after asynchronous checks. Failed launches and service/project logs use the existing authenticated feed; no arbitrary trace-file read, command runner, tool installer, or support-bundle export was added.
+
+Plane HARBOR-14, HARBOR-49, and HARBOR-48 record completed local scope. HARBOR-30 remains In Progress for updated installed-flow verification. The existing public preview and earlier native runner receipts do not include this feature branch. One next goal: use the existing package/GUI workflows on this source to verify the changed creation/guide/native-binding path before including it in another preview. Keep genuine first-user consent, signing, supported Windows clients, native Docker Desktop, Wayland, reboot, and signed updates as their separate gates. Do not run install/uninstall against the active developer installation.
+
+## Released preview baseline (2026-10-20)
 
 The user authorized a preview release using hosted-runner acceptance. [Harbor v0.1.0-beta.1](https://github.com/goforj/harbor/releases/tag/v0.1.0-beta.1) is published at tag source `1e71ce47e5aaa07eeeb0f615a822dd49ca46770b`, after successful exact-source [main CI](https://github.com/goforj/harbor/actions/runs/39519520985) and [release run 39520200187](https://github.com/goforj/harbor/actions/runs/39520200187). The macOS Apple-silicon PKG and Ubuntu amd64 DEB are unsigned previews; Windows publication remains gated on production signing. No active developer installation was changed.
 

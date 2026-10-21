@@ -1,7 +1,9 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { harborBridge } from '@/bridge'
+import { prerequisitesReady, validatePrerequisites } from '@/lib/prerequisites'
 import type {
+  PrerequisiteReport,
   ConnectionEvent,
   ConnectionState,
   DaemonStatus,
@@ -74,6 +76,11 @@ export const useHarborStore = defineStore('harbor', () => {
   const removingProjectId = ref<string | null>(null)
   const projectRemovalApprovalProjectId = ref<string | null>(null)
   const projectLifecycleRequestProjectIds = ref<Record<string, true>>({})
+  const projectPrerequisites = ref<Record<string, PrerequisiteReport>>({})
+  const projectPrerequisiteChecking = ref<Record<string, boolean>>({})
+  const projectPrerequisiteErrors = ref<Record<string, string>>({})
+  const prerequisiteRequests = new Map<string, number>()
+  let nextPrerequisiteRequest = 0
   const projectLifecycleErrors = ref<Record<string, string>>({})
   const projectLifecycleProblemCodes = ref<Record<string, string>>({})
   const projectRemovalNotices = ref<Record<string, ProjectRemovalNotice>>({})
@@ -223,6 +230,7 @@ export const useHarborStore = defineStore('harbor', () => {
   function transitionConnection(event: ConnectionEvent) {
     discardProjectRuntimeRepair()
     connectionEpoch += 1
+    invalidatePrerequisiteObservations()
     statusRequest += 1
     daemonStatus.value = null
     connectionState.value = event.state
@@ -309,6 +317,7 @@ export const useHarborStore = defineStore('harbor', () => {
       && snapshotResult.status === 'rejected'
       && statusRequestForRefresh === statusRequest) {
       connectionEpoch += 1
+      invalidatePrerequisiteObservations()
       statusRequest += 1
       daemonStatus.value = null
       connectionState.value = 'disconnected'
@@ -350,6 +359,7 @@ export const useHarborStore = defineStore('harbor', () => {
   }
 
   function dispose() {
+    invalidatePrerequisiteObservations()
     unsubscribeSnapshot?.()
     unsubscribeConnection?.()
     unsubscribeSnapshot = null
@@ -815,9 +825,47 @@ export const useHarborStore = defineStore('harbor', () => {
     })
   }
 
+  // invalidatePrerequisiteObservations prevents reconnects from displaying readiness from an old desktop session.
+  function invalidatePrerequisiteObservations() {
+    prerequisiteRequests.clear()
+    projectPrerequisites.value = {}
+    projectPrerequisiteErrors.value = {}
+    projectPrerequisiteChecking.value = {}
+  }
+
+  // checkProjectPrerequisites keeps observations scoped to the same registration and authenticated connection epoch.
+  async function checkProjectPrerequisites(projectId: string): Promise<PrerequisiteReport | null> {
+    const request = ++nextPrerequisiteRequest
+    prerequisiteRequests.set(projectId, request)
+    const epoch = connectionEpoch
+    const path = projectById(projectId)?.path
+    projectPrerequisiteChecking.value = { ...projectPrerequisiteChecking.value, [projectId]: true }
+    projectPrerequisiteErrors.value = { ...projectPrerequisiteErrors.value, [projectId]: '' }
+    try {
+      const report = await harborBridge.getProjectPrerequisites(projectId)
+      if (request !== prerequisiteRequests.get(projectId)) return null
+      if (epoch !== connectionEpoch || (snapshot.value && (snapshotStale.value || connectionState.value !== 'connected' || projectById(projectId)?.path !== path))) {
+        throw new Error('Harbor state changed during the check. Reconnect or refresh, then recheck.')
+      }
+      validatePrerequisites(report, undefined, projectId)
+      projectPrerequisites.value = { ...projectPrerequisites.value, [projectId]: report }
+      return report
+    }
+    catch (cause) {
+      if (request === prerequisiteRequests.get(projectId)) {
+        projectPrerequisiteErrors.value = { ...projectPrerequisiteErrors.value, [projectId]: cause instanceof Error ? cause.message : 'Could not check local tools.' }
+      }
+      return null
+    }
+    finally {
+      if (request === prerequisiteRequests.get(projectId)) projectPrerequisiteChecking.value = { ...projectPrerequisiteChecking.value, [projectId]: false }
+    }
+  }
+
   async function changeProjectLifecycle(
     projectId: string,
     action: ProjectLifecycleAction,
+    inspectTools = true,
   ): Promise<ProjectLifecycleOperation | null> {
     if (settingUpNetwork.value) {
       setProjectLifecycleError(projectId, 'Wait for network setup to finish, then try the project action again.')
@@ -858,6 +906,14 @@ export const useHarborStore = defineStore('harbor', () => {
     setProjectLifecycleProblem(projectId, null)
 
     try {
+      // Already-admitted and uncertain intents must reconcile with the daemon even if the local tool environment changed.
+      if (action === 'start' && inspectTools && !active && !remembered) {
+        const report = await checkProjectPrerequisites(projectId)
+        if (!prerequisitesReady(report)) {
+          forgetProjectLifecycleIntent(projectId)
+          return null
+        }
+      }
       const result = action === 'start'
         ? await harborBridge.startProject(projectId, intent.id)
         : action === 'stop'
@@ -899,8 +955,8 @@ export const useHarborStore = defineStore('harbor', () => {
     }
   }
 
-  function startProject(projectId: string) {
-    return changeProjectLifecycle(projectId, 'start')
+  function startProject(projectId: string, options?: { checkPrerequisites?: boolean }) {
+    return changeProjectLifecycle(projectId, 'start', options?.checkPrerequisites ?? true)
   }
 
   function stopProject(projectId: string) {
@@ -1506,6 +1562,10 @@ export const useHarborStore = defineStore('harbor', () => {
     projectLifecycleBusy,
     projectLifecycleBusyFor,
     projectLifecycleBlockedFor,
+    projectPrerequisites,
+    projectPrerequisiteChecking,
+    projectPrerequisiteErrors,
+    checkProjectPrerequisites,
     projectLifecycleErrors,
     projectLifecycleProblemCodes,
     projectRuntimeRepairInspection,
@@ -1523,6 +1583,7 @@ export const useHarborStore = defineStore('harbor', () => {
     resources,
     recentResources,
     operations,
+    networkConfigured,
     networkSetupOnboarding,
     oldNetworkingRemovalAvailable,
     oldNetworkingRemovalBlocked,

@@ -10,7 +10,9 @@ import (
 	"sync"
 
 	"github.com/goforj/harbor/desktop/internal/desktopwire"
+	"github.com/goforj/harbor/desktop/internal/projectreadiness"
 	"github.com/goforj/harbor/internal/control"
+	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectcreation"
 )
 
@@ -22,16 +24,21 @@ type projectCreator interface {
 
 // projectCreatorAdapter keeps registration and executable discovery with the stack that understands them.
 type projectCreatorAdapter struct {
-	info     projectcreation.ProviderInfo
-	new      func() (projectCreator, error)
-	register func(context.Context, controlClient, string) (control.ProjectRegistration, error)
+	info          projectcreation.ProviderInfo
+	new           func() (projectCreator, error)
+	register      func(context.Context, controlClient, string) (control.ProjectRegistration, error)
+	checkCreation func(context.Context, map[string]string) projectreadiness.Report
+	checkProject  func(context.Context, domain.ProjectSnapshot) projectreadiness.Report
 }
 
 // defaultProjectCreators is an explicit adapter registry; schemas cannot introduce executables or plugins.
 func defaultProjectCreators() map[string]projectCreatorAdapter {
+	checker := projectreadiness.New()
 	return map[string]projectCreatorAdapter{projectcreation.GoForj.ID: {
-		info: projectcreation.GoForj,
-		new:  func() (projectCreator, error) { return projectcreation.New() },
+		info:          projectcreation.GoForj,
+		new:           func() (projectCreator, error) { return projectcreation.New() },
+		checkCreation: checker.GoForjCreation,
+		checkProject:  checker.GoForjProject,
 		register: func(ctx context.Context, client controlClient, path string) (control.ProjectRegistration, error) {
 			return client.RegisterProject(ctx, control.RegisterProjectRequest{Path: path})
 		},

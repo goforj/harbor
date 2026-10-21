@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goforj/harbor/desktop/internal/desktopwire"
+	"github.com/goforj/harbor/desktop/internal/projectreadiness"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectcreation"
@@ -42,42 +43,44 @@ func fixtureProjectCreationSchema() projectcreation.Schema {
 
 // MethodMetadata records the generated Wails method names consumed by the bridge.
 type MethodMetadata struct {
-	ProjectCreationProviders    string `json:"project_creation_providers"`
-	StartProjectCreation        string `json:"start_project_creation"`
-	ProjectCreationProgress     string `json:"project_creation_progress"`
-	RetryProjectRegistration    string `json:"retry_project_registration"`
-	ProjectCreationSchema       string `json:"project_creation_schema"`
-	ChooseProjectParent         string `json:"choose_project_parent"`
-	CreateProject               string `json:"create_project"`
-	AddProject                  string `json:"add_project"`
-	ApproveProjectRemoval       string `json:"approve_project_removal"`
-	ConfirmProjectRuntimeRepair string `json:"confirm_project_runtime_repair"`
-	InspectProjectRuntimeRepair string `json:"inspect_project_runtime_repair"`
-	OpenResource                string `json:"open_resource"`
-	OpenTerminalURL             string `json:"open_terminal_url"`
-	ResourceIconURL             string `json:"resource_icon_url"`
-	ProjectActivity             string `json:"project_activity"`
-	ProjectEnvironment          string `json:"project_environment"`
-	SaveProjectEnvironmentFile  string `json:"save_project_environment_file"`
-	ServiceLogs                 string `json:"service_logs"`
-	WaitProjectActivity         string `json:"wait_project_activity"`
-	WaitServiceLogs             string `json:"wait_service_logs"`
-	RemoveProject               string `json:"remove_project"`
-	RemoveOldNetworking         string `json:"remove_old_networking"`
-	RepairNetwork               string `json:"repair_network"`
-	ExpandNetwork               string `json:"expand_network"`
-	ResumeNetworkSetup          string `json:"resume_network_setup"`
-	SetupNetwork                string `json:"setup_network"`
-	Snapshot                    string `json:"snapshot"`
-	StartProject                string `json:"start_project"`
-	RestartProject              string `json:"restart_project"`
-	StartProjectTerminal        string `json:"start_project_terminal"`
-	AttachProjectTerminal       string `json:"attach_project_terminal"`
-	WriteProjectTerminal        string `json:"write_project_terminal"`
-	ResizeProjectTerminal       string `json:"resize_project_terminal"`
-	CloseProjectTerminal        string `json:"close_project_terminal"`
-	Status                      string `json:"status"`
-	StopProject                 string `json:"stop_project"`
+	ProjectCreationPrerequisites string `json:"project_creation_prerequisites"`
+	ProjectPrerequisites         string `json:"project_prerequisites"`
+	ProjectCreationProviders     string `json:"project_creation_providers"`
+	StartProjectCreation         string `json:"start_project_creation"`
+	ProjectCreationProgress      string `json:"project_creation_progress"`
+	RetryProjectRegistration     string `json:"retry_project_registration"`
+	ProjectCreationSchema        string `json:"project_creation_schema"`
+	ChooseProjectParent          string `json:"choose_project_parent"`
+	CreateProject                string `json:"create_project"`
+	AddProject                   string `json:"add_project"`
+	ApproveProjectRemoval        string `json:"approve_project_removal"`
+	ConfirmProjectRuntimeRepair  string `json:"confirm_project_runtime_repair"`
+	InspectProjectRuntimeRepair  string `json:"inspect_project_runtime_repair"`
+	OpenResource                 string `json:"open_resource"`
+	OpenTerminalURL              string `json:"open_terminal_url"`
+	ResourceIconURL              string `json:"resource_icon_url"`
+	ProjectActivity              string `json:"project_activity"`
+	ProjectEnvironment           string `json:"project_environment"`
+	SaveProjectEnvironmentFile   string `json:"save_project_environment_file"`
+	ServiceLogs                  string `json:"service_logs"`
+	WaitProjectActivity          string `json:"wait_project_activity"`
+	WaitServiceLogs              string `json:"wait_service_logs"`
+	RemoveProject                string `json:"remove_project"`
+	RemoveOldNetworking          string `json:"remove_old_networking"`
+	RepairNetwork                string `json:"repair_network"`
+	ExpandNetwork                string `json:"expand_network"`
+	ResumeNetworkSetup           string `json:"resume_network_setup"`
+	SetupNetwork                 string `json:"setup_network"`
+	Snapshot                     string `json:"snapshot"`
+	StartProject                 string `json:"start_project"`
+	RestartProject               string `json:"restart_project"`
+	StartProjectTerminal         string `json:"start_project_terminal"`
+	AttachProjectTerminal        string `json:"attach_project_terminal"`
+	WriteProjectTerminal         string `json:"write_project_terminal"`
+	ResizeProjectTerminal        string `json:"resize_project_terminal"`
+	CloseProjectTerminal         string `json:"close_project_terminal"`
+	Status                       string `json:"status"`
+	StopProject                  string `json:"stop_project"`
 }
 
 // EventMetadata records the Wails event names consumed by the bridge.
@@ -96,6 +99,7 @@ type ConnectionPayloads struct {
 
 // Document is the complete frontend contract fixture as encoded by production Go wire types.
 type Document struct {
+	ProjectPrerequisitesReport        projectreadiness.Report                         `json:"project_prerequisites_report"`
 	ProjectCreationSchema             projectcreation.Schema                          `json:"project_creation_schema"`
 	Methods                           MethodMetadata                                  `json:"methods"`
 	Events                            EventMetadata                                   `json:"events"`
@@ -138,44 +142,50 @@ func Fixture() Document {
 	projectOutput := "· Building app: web\n  Built web in 482ms\n✔ migrations complete (0)\n"
 
 	return Document{
+		ProjectPrerequisitesReport: projectreadiness.Report{ProviderID: "goforj", ProjectID: "orders-api", Checks: []projectreadiness.Check{
+			{ID: "go", Name: "Go", Status: "ready", Version: "1.27.0", Detail: "Go is available.", RequiredFor: "start"},
+			{ID: "docker-engine", Name: "Docker engine", Status: "unavailable", Detail: "Start the selected Docker engine, then recheck.", Action: "Start Docker and recheck.", URL: "https://docs.docker.com/engine/manage-resources/contexts/", RequiredFor: "start"},
+		}},
 		ProjectCreationSchema: fixtureProjectCreationSchema(),
 		Methods: MethodMetadata{
-			AddProject:                  desktopwire.MethodAddProject,
-			ProjectCreationProviders:    desktopwire.MethodProjectCreationProviders,
-			StartProjectCreation:        desktopwire.MethodStartProjectCreation,
-			ProjectCreationProgress:     desktopwire.MethodProjectCreationProgress,
-			RetryProjectRegistration:    desktopwire.MethodRetryProjectRegistration,
-			ProjectCreationSchema:       desktopwire.MethodProjectCreationSchema,
-			ChooseProjectParent:         desktopwire.MethodChooseProjectParent,
-			CreateProject:               desktopwire.MethodCreateProject,
-			ApproveProjectRemoval:       desktopwire.MethodApproveProjectRemoval,
-			ConfirmProjectRuntimeRepair: desktopwire.MethodConfirmProjectRuntimeRepair,
-			InspectProjectRuntimeRepair: desktopwire.MethodInspectProjectRuntimeRepair,
-			OpenResource:                desktopwire.MethodOpenResource,
-			OpenTerminalURL:             desktopwire.MethodOpenTerminalURL,
-			ResourceIconURL:             desktopwire.MethodResourceIconURL,
-			ProjectActivity:             desktopwire.MethodProjectActivity,
-			ProjectEnvironment:          desktopwire.MethodProjectEnvironment,
-			SaveProjectEnvironmentFile:  desktopwire.MethodSaveProjectEnvironmentFile,
-			ServiceLogs:                 desktopwire.MethodServiceLogs,
-			WaitProjectActivity:         desktopwire.MethodWaitProjectActivity,
-			WaitServiceLogs:             desktopwire.MethodWaitServiceLogs,
-			RemoveProject:               desktopwire.MethodRemoveProject,
-			RemoveOldNetworking:         desktopwire.MethodRemoveOldNetworking,
-			RepairNetwork:               desktopwire.MethodRepairNetwork,
-			ExpandNetwork:               desktopwire.MethodExpandNetwork,
-			ResumeNetworkSetup:          desktopwire.MethodResumeNetworkSetup,
-			SetupNetwork:                desktopwire.MethodSetupNetwork,
-			Snapshot:                    desktopwire.MethodSnapshot,
-			StartProject:                desktopwire.MethodStartProject,
-			RestartProject:              desktopwire.MethodRestartProject,
-			StartProjectTerminal:        desktopwire.MethodStartProjectTerminal,
-			AttachProjectTerminal:       desktopwire.MethodAttachProjectTerminal,
-			WriteProjectTerminal:        desktopwire.MethodWriteProjectTerminal,
-			ResizeProjectTerminal:       desktopwire.MethodResizeProjectTerminal,
-			CloseProjectTerminal:        desktopwire.MethodCloseProjectTerminal,
-			Status:                      desktopwire.MethodStatus,
-			StopProject:                 desktopwire.MethodStopProject,
+			ProjectCreationPrerequisites: desktopwire.MethodProjectCreationPrerequisites,
+			ProjectPrerequisites:         desktopwire.MethodProjectPrerequisites,
+			AddProject:                   desktopwire.MethodAddProject,
+			ProjectCreationProviders:     desktopwire.MethodProjectCreationProviders,
+			StartProjectCreation:         desktopwire.MethodStartProjectCreation,
+			ProjectCreationProgress:      desktopwire.MethodProjectCreationProgress,
+			RetryProjectRegistration:     desktopwire.MethodRetryProjectRegistration,
+			ProjectCreationSchema:        desktopwire.MethodProjectCreationSchema,
+			ChooseProjectParent:          desktopwire.MethodChooseProjectParent,
+			CreateProject:                desktopwire.MethodCreateProject,
+			ApproveProjectRemoval:        desktopwire.MethodApproveProjectRemoval,
+			ConfirmProjectRuntimeRepair:  desktopwire.MethodConfirmProjectRuntimeRepair,
+			InspectProjectRuntimeRepair:  desktopwire.MethodInspectProjectRuntimeRepair,
+			OpenResource:                 desktopwire.MethodOpenResource,
+			OpenTerminalURL:              desktopwire.MethodOpenTerminalURL,
+			ResourceIconURL:              desktopwire.MethodResourceIconURL,
+			ProjectActivity:              desktopwire.MethodProjectActivity,
+			ProjectEnvironment:           desktopwire.MethodProjectEnvironment,
+			SaveProjectEnvironmentFile:   desktopwire.MethodSaveProjectEnvironmentFile,
+			ServiceLogs:                  desktopwire.MethodServiceLogs,
+			WaitProjectActivity:          desktopwire.MethodWaitProjectActivity,
+			WaitServiceLogs:              desktopwire.MethodWaitServiceLogs,
+			RemoveProject:                desktopwire.MethodRemoveProject,
+			RemoveOldNetworking:          desktopwire.MethodRemoveOldNetworking,
+			RepairNetwork:                desktopwire.MethodRepairNetwork,
+			ExpandNetwork:                desktopwire.MethodExpandNetwork,
+			ResumeNetworkSetup:           desktopwire.MethodResumeNetworkSetup,
+			SetupNetwork:                 desktopwire.MethodSetupNetwork,
+			Snapshot:                     desktopwire.MethodSnapshot,
+			StartProject:                 desktopwire.MethodStartProject,
+			RestartProject:               desktopwire.MethodRestartProject,
+			StartProjectTerminal:         desktopwire.MethodStartProjectTerminal,
+			AttachProjectTerminal:        desktopwire.MethodAttachProjectTerminal,
+			WriteProjectTerminal:         desktopwire.MethodWriteProjectTerminal,
+			ResizeProjectTerminal:        desktopwire.MethodResizeProjectTerminal,
+			CloseProjectTerminal:         desktopwire.MethodCloseProjectTerminal,
+			Status:                       desktopwire.MethodStatus,
+			StopProject:                  desktopwire.MethodStopProject,
 		},
 		Events: EventMetadata{
 			Connection:      desktopwire.ConnectionEventName,
@@ -556,42 +566,44 @@ func (document Document) Validate() error {
 		return err
 	}
 	methods := map[string]string{
-		desktopwire.MethodProjectCreationProviders:    document.Methods.ProjectCreationProviders,
-		desktopwire.MethodStartProjectCreation:        document.Methods.StartProjectCreation,
-		desktopwire.MethodProjectCreationProgress:     document.Methods.ProjectCreationProgress,
-		desktopwire.MethodRetryProjectRegistration:    document.Methods.RetryProjectRegistration,
-		desktopwire.MethodProjectCreationSchema:       document.Methods.ProjectCreationSchema,
-		desktopwire.MethodChooseProjectParent:         document.Methods.ChooseProjectParent,
-		desktopwire.MethodCreateProject:               document.Methods.CreateProject,
-		desktopwire.MethodAddProject:                  document.Methods.AddProject,
-		desktopwire.MethodApproveProjectRemoval:       document.Methods.ApproveProjectRemoval,
-		desktopwire.MethodConfirmProjectRuntimeRepair: document.Methods.ConfirmProjectRuntimeRepair,
-		desktopwire.MethodInspectProjectRuntimeRepair: document.Methods.InspectProjectRuntimeRepair,
-		desktopwire.MethodOpenResource:                document.Methods.OpenResource,
-		desktopwire.MethodOpenTerminalURL:             document.Methods.OpenTerminalURL,
-		desktopwire.MethodResourceIconURL:             document.Methods.ResourceIconURL,
-		desktopwire.MethodProjectActivity:             document.Methods.ProjectActivity,
-		desktopwire.MethodProjectEnvironment:          document.Methods.ProjectEnvironment,
-		desktopwire.MethodSaveProjectEnvironmentFile:  document.Methods.SaveProjectEnvironmentFile,
-		desktopwire.MethodServiceLogs:                 document.Methods.ServiceLogs,
-		desktopwire.MethodWaitProjectActivity:         document.Methods.WaitProjectActivity,
-		desktopwire.MethodWaitServiceLogs:             document.Methods.WaitServiceLogs,
-		desktopwire.MethodRemoveProject:               document.Methods.RemoveProject,
-		desktopwire.MethodRemoveOldNetworking:         document.Methods.RemoveOldNetworking,
-		desktopwire.MethodRepairNetwork:               document.Methods.RepairNetwork,
-		desktopwire.MethodExpandNetwork:               document.Methods.ExpandNetwork,
-		desktopwire.MethodResumeNetworkSetup:          document.Methods.ResumeNetworkSetup,
-		desktopwire.MethodSetupNetwork:                document.Methods.SetupNetwork,
-		desktopwire.MethodSnapshot:                    document.Methods.Snapshot,
-		desktopwire.MethodStartProject:                document.Methods.StartProject,
-		desktopwire.MethodRestartProject:              document.Methods.RestartProject,
-		desktopwire.MethodStartProjectTerminal:        document.Methods.StartProjectTerminal,
-		desktopwire.MethodAttachProjectTerminal:       document.Methods.AttachProjectTerminal,
-		desktopwire.MethodWriteProjectTerminal:        document.Methods.WriteProjectTerminal,
-		desktopwire.MethodResizeProjectTerminal:       document.Methods.ResizeProjectTerminal,
-		desktopwire.MethodCloseProjectTerminal:        document.Methods.CloseProjectTerminal,
-		desktopwire.MethodStatus:                      document.Methods.Status,
-		desktopwire.MethodStopProject:                 document.Methods.StopProject,
+		desktopwire.MethodProjectCreationPrerequisites: document.Methods.ProjectCreationPrerequisites,
+		desktopwire.MethodProjectPrerequisites:         document.Methods.ProjectPrerequisites,
+		desktopwire.MethodProjectCreationProviders:     document.Methods.ProjectCreationProviders,
+		desktopwire.MethodStartProjectCreation:         document.Methods.StartProjectCreation,
+		desktopwire.MethodProjectCreationProgress:      document.Methods.ProjectCreationProgress,
+		desktopwire.MethodRetryProjectRegistration:     document.Methods.RetryProjectRegistration,
+		desktopwire.MethodProjectCreationSchema:        document.Methods.ProjectCreationSchema,
+		desktopwire.MethodChooseProjectParent:          document.Methods.ChooseProjectParent,
+		desktopwire.MethodCreateProject:                document.Methods.CreateProject,
+		desktopwire.MethodAddProject:                   document.Methods.AddProject,
+		desktopwire.MethodApproveProjectRemoval:        document.Methods.ApproveProjectRemoval,
+		desktopwire.MethodConfirmProjectRuntimeRepair:  document.Methods.ConfirmProjectRuntimeRepair,
+		desktopwire.MethodInspectProjectRuntimeRepair:  document.Methods.InspectProjectRuntimeRepair,
+		desktopwire.MethodOpenResource:                 document.Methods.OpenResource,
+		desktopwire.MethodOpenTerminalURL:              document.Methods.OpenTerminalURL,
+		desktopwire.MethodResourceIconURL:              document.Methods.ResourceIconURL,
+		desktopwire.MethodProjectActivity:              document.Methods.ProjectActivity,
+		desktopwire.MethodProjectEnvironment:           document.Methods.ProjectEnvironment,
+		desktopwire.MethodSaveProjectEnvironmentFile:   document.Methods.SaveProjectEnvironmentFile,
+		desktopwire.MethodServiceLogs:                  document.Methods.ServiceLogs,
+		desktopwire.MethodWaitProjectActivity:          document.Methods.WaitProjectActivity,
+		desktopwire.MethodWaitServiceLogs:              document.Methods.WaitServiceLogs,
+		desktopwire.MethodRemoveProject:                document.Methods.RemoveProject,
+		desktopwire.MethodRemoveOldNetworking:          document.Methods.RemoveOldNetworking,
+		desktopwire.MethodRepairNetwork:                document.Methods.RepairNetwork,
+		desktopwire.MethodExpandNetwork:                document.Methods.ExpandNetwork,
+		desktopwire.MethodResumeNetworkSetup:           document.Methods.ResumeNetworkSetup,
+		desktopwire.MethodSetupNetwork:                 document.Methods.SetupNetwork,
+		desktopwire.MethodSnapshot:                     document.Methods.Snapshot,
+		desktopwire.MethodStartProject:                 document.Methods.StartProject,
+		desktopwire.MethodRestartProject:               document.Methods.RestartProject,
+		desktopwire.MethodStartProjectTerminal:         document.Methods.StartProjectTerminal,
+		desktopwire.MethodAttachProjectTerminal:        document.Methods.AttachProjectTerminal,
+		desktopwire.MethodWriteProjectTerminal:         document.Methods.WriteProjectTerminal,
+		desktopwire.MethodResizeProjectTerminal:        document.Methods.ResizeProjectTerminal,
+		desktopwire.MethodCloseProjectTerminal:         document.Methods.CloseProjectTerminal,
+		desktopwire.MethodStatus:                       document.Methods.Status,
+		desktopwire.MethodStopProject:                  document.Methods.StopProject,
 	}
 	contracts := desktopwire.MethodContracts()
 	if len(methods) != len(contracts) {
@@ -730,7 +742,7 @@ func TypeScript() ([]byte, error) {
 		return nil, err
 	}
 
-	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { ProjectCreationProvider, ProjectCreationProgress, ProjectCreationSchema, ProjectCreationRequest, ProjectCreationResult, AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, ProjectActivity, ProjectEnvironment, ProjectEnvironmentFile, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
+	generated := []byte("// Code generated by go generate; DO NOT EDIT.\n\nimport type { PrerequisiteReport, ProjectCreationProvider, ProjectCreationProgress, ProjectCreationSchema, ProjectCreationRequest, ProjectCreationResult, AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, ProjectActivity, ProjectEnvironment, ProjectEnvironmentFile, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'\nimport type { HarborWireFixture } from './types'\n\n")
 	generated = append(generated, declarations...)
 	generated = append(generated, []byte("\nexport const harborWireFixture = ")...)
 	generated = append(generated, payload...)
@@ -826,6 +838,8 @@ func typeScriptMethodResult(contract desktopwire.MethodContract) (string, error)
 // typeScriptType maps only the reviewed Go wire types allowed to cross the desktop boundary.
 func typeScriptType(goType reflect.Type) (string, error) {
 	switch goType {
+	case reflect.TypeFor[projectreadiness.Report]():
+		return "PrerequisiteReport", nil
 	case reflect.TypeFor[[]projectcreation.ProviderInfo]():
 		return "ProjectCreationProvider[]", nil
 	case reflect.TypeFor[desktopwire.ProjectCreationProgress]():

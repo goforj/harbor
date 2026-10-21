@@ -26,6 +26,8 @@ describe('Harbor mock bridge', () => {
       disconnected: { state: 'disconnected' },
     })
     expect(harborWireFixture.methods).toEqual({
+      project_creation_prerequisites: 'ProjectCreationPrerequisites',
+      project_prerequisites: 'ProjectPrerequisites',
       add_project: 'AddProject',
       project_creation_providers: 'ProjectCreationProviders',
       start_project_creation: 'StartProjectCreation',

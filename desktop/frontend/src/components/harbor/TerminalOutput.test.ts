@@ -5,6 +5,26 @@ import { harborBridge } from '@/bridge'
 import TerminalOutput from './TerminalOutput.vue'
 
 describe('TerminalOutput', () => {
+  it('highlights styled and linked matches while keeping process markup inert', async () => {
+    const frames: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { frames.push(callback); return frames.length })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+    const wrapper = mount(TerminalOutput, { props: {
+      output: 're\u001b[31mady\u001b[0m https://orders.test/ready <script>ready</script>', resetKey: 0, query: 'ready',
+    } })
+    frames.shift()?.(0)
+    await nextTick()
+    expect(wrapper.find('script').exists()).toBe(false)
+    expect(wrapper.findAll('mark').map(mark => mark.text())).toEqual(['re', 'ady', 'ready', 'ready'])
+    const link = wrapper.get('a')
+    expect(link.text()).toBe('https://orders.test/ready')
+    expect(link.get('mark').text()).toBe('ready')
+    const opener = vi.spyOn(harborBridge, 'openTerminalURL').mockResolvedValueOnce()
+    await link.trigger('click')
+    expect(opener).toHaveBeenCalledWith('https://orders.test/ready')
+    wrapper.unmount()
+  })
+
   it('batches appended output into animation frames and renders process text without HTML execution', async () => {
     const frames: FrameRequestCallback[] = []
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
