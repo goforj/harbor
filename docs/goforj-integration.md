@@ -53,6 +53,12 @@ Harbor allows up to five minutes for App readiness after launching the supervise
 
 ## Current foundation
 
+Published GoForj v0.35.1 supplies the static descriptor, graphical creation schema, cross-platform development runtime, native MySQL/MariaDB readiness, and resource-only status query used by current acceptance. Harbor launches ordinary `forj dev`, supplies admitted runtime values in the child environment, and owns process scope, independent App probes and observed routes. It removes only an exact legacy Harbor block from `.env.host`; it does not write a new block or activate the future managed protocol. App-owned OpenAPI/Lighthouse resources do not depend on a Compose topology. SPAs with build/watch nodes do not imply a separate Vite listener or URL.
+
+### Historical design inputs
+
+The following lists preserve the July research inputs and gaps. They are not the current implementation matrix; use [current state](./current-state.md) and the published source evidence above for present behavior.
+
 GoForj already provides most of the project semantics Harbor needs:
 
 - the default App uses `cmd/app`, `app`, and `app/wire`;
@@ -66,7 +72,7 @@ GoForj already provides most of the project semantics Harbor needs:
 - the internal resource registry models URLs, App/runtime ownership, health, auth, and priority;
 - generated Apps expose a versioned `resources:describe --json` contract for durable database and storage resources.
 
-The current pieces are not yet an external Harbor contract:
+At research time, these gaps motivated the external contract:
 
 - watcher state and actions are internal;
 - Lighthouse receives lossy, presentation-oriented log lines;
@@ -202,7 +208,7 @@ Harbor stores the schema version and normalized topology digest. A digest change
 
 GoForj should add a managed mode to `forj dev`. The transport remains domain-neutral even though Harbor is its first consumer.
 
-Harbor contains a transport-neutral v1 message contract and authenticated handler seam, and GoForj contains a private adapter that mirrors the frame, envelope, handshake, and typed calls because Harbor's implementation packages are intentionally not importable across modules. This managed-session path remains dormant in production: `NewProjectLifecycleCoordinator` does not provide a managed-launch factory, so Start and Restart supply no launch context, ticket, capability negotiation, registration, publication, or Compose barrier. The schema and handler seam remain pending activation or deletion as the integration contract settles.
+Harbor retains a transport-neutral v1 message contract and authenticated handler seam. GoForj's earlier matching private adapter was removed in `467616187df5ab8a19cf3b4c7237be49cf29bd3d`; it is not part of the released CLI. This managed-session path remains dormant in production: `NewProjectLifecycleCoordinator` does not provide a managed-launch factory, so Start and Restart supply no launch context, ticket, capability negotiation, registration, publication, or Compose barrier. The schema and handler seam remain pending activation or deletion as the integration contract settles.
 
 Conceptual invocation:
 
@@ -212,7 +218,7 @@ forj dev --managed --control-endpoint <inherited-or-owner-only-reference>
 
 The control credential is inherited or stored in an owner-only runtime file. It is not printed or placed in an argument visible to other processes.
 
-Until that path is activated, Harbor launches ordinary `forj dev`, writes its leased loopback override through the marked `.env.host` block, probes App readiness itself, and owns process supervision, observed route publication, and TLS. The design's managed barriers, semantic runtime plans, overlays, and process/action events are not production behavior; ordinary standalone `forj dev` remains unchanged.
+Until that path is activated, Harbor launches ordinary `forj dev`, supplies its leased loopback overrides in the child environment and retires only an exact legacy `.env.host` block, probes App readiness itself, and owns process supervision, observed route publication, and TLS. The design's managed barriers, semantic runtime plans, overlays, and process/action events are not production behavior; ordinary standalone `forj dev` remains unchanged.
 
 Startup ordering matters:
 

@@ -95,6 +95,17 @@ The implementation reserves these machine-global path contracts:
 
 Windows resolves ProgramData and Program Files through native Known Folder APIs rather than environment variables. These are security and ownership contracts in source; they are not proof that production installation exists on every platform.
 
+## Native cgo generation
+
+Wire's cached loader can omit a constructor defined in a local cgo file, producing `undefined: trust.New` while direct Go builds succeed. [Wire PR #31](https://github.com/goforj/wire/pull/31) fixes the loader; it is not yet a published tool release. Native maintainers exercising the affected source can install its exact reviewed source temporarily:
+
+```sh
+go install github.com/goforj/wire/cmd/wire@b913fce3791c52fb7c9d158e536dffa3388f1c35
+forj harbord make:migration example_change --connection default --no-open
+```
+
+Expect both migration directions beneath `migrations/harbord/default`. Use a new migration name and keep only intentional migrations. This is a generator repair, not a reason to change Harbor's trust providers, hand-edit Wire output, or add persistent loader environment flags. The affected provider graph regenerated twice with no changes using that source. The pinned release commands below still describe the repository tool pin; use the repaired installed `wire` for this native cgo case until the fix is released.
+
 ## Generated sources
 
 Generated files must move with their authoritative source. Run the applicable generator after a source change, commit the result together, then run the same generator again and require a clean diff.

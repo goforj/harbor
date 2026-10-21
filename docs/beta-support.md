@@ -14,7 +14,7 @@ The current public download is [v0.1.0-beta.1](https://github.com/goforj/harbor/
 
 These are observed preview profiles, not a minimum-OS or stable-support promise. macOS Intel, Linux ARM64, additional distributions/desktops, Windows client editions, and other resolver/trust combinations need their own native evidence. A compiled executable or a lower deployment target does not establish support. The full release matrix remains governed by [cross-platform testing](./testing.md#release-support-matrix).
 
-Native Docker Engine project isolation is exercised by the [Ubuntu generated-project gate](https://github.com/goforj/harbor/actions/runs/39423903409) against released GoForj v0.35.1. Native Docker Desktop workflows on macOS and Windows remain unproved. A Linux Docker result does not establish Desktop integration on those platforms.
+Native Docker Engine project isolation is exercised by the [Ubuntu generated-project gate](https://github.com/goforj/harbor/actions/runs/39423903409) against released GoForj v0.35.1. Source-development checks additionally exercise macOS 26.5.2 arm64 with OrbStack Engine 29.4.0: distinct project loopbacks, equal MySQL ports, independent SQL data, service DNS/logs, failed starts and daemon reconnect. These are separate local source receipts in [current state](./current-state.md), not installed-package or Docker Desktop evidence. Native Docker Desktop workflows on macOS and Windows remain unproved.
 
 ### Newer source changes
 
@@ -63,7 +63,7 @@ The current source modules require Go 1.26.1 for development. Native creation ac
 
 ## Diagnose a problem
 
-First inspect the selected project's state and **Development output**. A Start failure can occur before a runtime session exists, so an empty output panel does not establish that the App ran. On newer source, failure details show the failed/interrupted startup step and a bounded redacted excerpt. Log search works within retained output; it does not search files on disk.
+First inspect the selected project's state and **Development output**. A Start failure can occur before a runtime session exists, so an empty output panel does not establish that the App ran. On newer source, failure details show the failed/interrupted startup step and a bounded redacted excerpt. The newest source also retains the last failed session's bounded authenticated output after process retirement, with an explicit historical label. New attempts replace that selection. Older pre-fix failures are not reconstructed by guessing a launch trace. Log search works within retained output; it does not search files on disk.
 
 | Symptom | Next action |
 | --- | --- |
