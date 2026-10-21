@@ -23,6 +23,7 @@ import (
 	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/goforjruntime"
+	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/productproof"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
@@ -163,6 +164,14 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	for _, project := range projects {
 		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, project.intent, domain.ProjectReady))
 	}
+	network, initialized, err := store.Network(ctx)
+	if err != nil || !initialized {
+		t.Fatalf("read assigned Compose addresses: initialized=%t, %v", initialized, err)
+	}
+	assignedAddresses, err := generatedComposeAssignedAddresses(projects, network.Leases)
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
 	observations := make(map[domain.ProjectID]projectprocess.ServiceObservation, len(projects))
 	for _, project := range projects {
@@ -183,7 +192,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		supervisor,
 		projects,
 		projects[0],
-		configuration.addresses[0],
+		assignedAddresses[0],
 		observations[projects[0].id],
 	)
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
@@ -200,7 +209,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	}
 	waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, stopped.id, stopIntent, domain.ProjectStopped)
 	assertGeneratedComposePeerSurvival(t, ctx, store, projects[1:])
-	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects[1:], ready[1:], configuration.addresses[1:])
+	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects[1:], ready[1:], assignedAddresses[1:])
 	assertGeneratedComposeRetainedFailure(t, ctx, store, journal, supervisor, coordinator, stopped, spoolDirectory)
 	assertGeneratedComposePeerSurvival(t, ctx, store, projects[1:])
 
@@ -221,7 +230,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 			ctx,
 			configuration.forj,
 			projects,
-			configuration.addresses,
+			assignedAddresses,
 			runtime,
 			composeProjects,
 			eventRefreshEvidence,
@@ -247,6 +256,57 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		if resetErr := supervisor.Down(ctx, projectprocess.DownRequest{CheckoutRoot: project.project.Root}); resetErr != nil {
 			t.Fatalf("final reset generated Compose project %q: %v", project.id, resetErr)
 		}
+	}
+}
+
+// generatedComposeAssignedAddresses binds every fixture mutation and receipt to its durable primary lease rather than startup order.
+func generatedComposeAssignedAddresses(projects []projectIdentityAcceptanceProject, leases []identity.Lease) ([]netip.Addr, error) {
+	addresses := make(map[domain.ProjectID]netip.Addr, len(projects))
+	for _, lease := range leases {
+		if lease.Key.Kind() == identity.LeaseKindPrimary {
+			addresses[lease.Key.ProjectID] = lease.Address
+		}
+	}
+	ordered := make([]netip.Addr, 0, len(projects))
+	for _, project := range projects {
+		address, found := addresses[project.id]
+		if !found || !address.Is4() || !address.IsLoopback() {
+			return nil, fmt.Errorf("project %q has no assigned IPv4 loopback lease", project.id)
+		}
+		ordered = append(ordered, address)
+	}
+	return ordered, nil
+}
+
+// TestGeneratedComposeAssignedAddressesUsesProjectIdentity covers concurrent allocation order and missing primary authority.
+func TestGeneratedComposeAssignedAddressesUsesProjectIdentity(t *testing.T) {
+	projects := []projectIdentityAcceptanceProject{{id: "orders"}, {id: "billing"}}
+	orders, err := identity.NewPrimaryKey("orders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	billing, err := identity.NewPrimaryKey("billing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases := []identity.Lease{{Key: billing, Address: netip.MustParseAddr("127.77.0.10")}, {Key: orders, Address: netip.MustParseAddr("127.77.0.11")}}
+	got, err := generatedComposeAssignedAddresses(projects, leases)
+	if err != nil || len(got) != 2 || got[0] != leases[1].Address || got[1] != leases[0].Address {
+		t.Fatalf("project-bound addresses = %v, %v", got, err)
+	}
+	for _, test := range []struct {
+		name   string
+		leases []identity.Lease
+	}{
+		{name: "missing primary", leases: leases[:1]},
+		{name: "non-loopback", leases: []identity.Lease{{Key: orders, Address: netip.MustParseAddr("192.0.2.1")}}},
+		{name: "IPv6", leases: []identity.Lease{{Key: orders, Address: netip.IPv6Loopback()}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := generatedComposeAssignedAddresses(projects, test.leases); err == nil {
+				t.Fatal("invalid primary authority produced a fixture address")
+			}
+		})
 	}
 }
 
