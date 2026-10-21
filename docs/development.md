@@ -97,14 +97,14 @@ Windows resolves ProgramData and Program Files through native Known Folder APIs 
 
 ## Native cgo generation
 
-Wire's cached loader can omit a constructor defined in a local cgo file, producing `undefined: trust.New` while direct Go builds succeed. [Wire PR #31](https://github.com/goforj/wire/pull/31) fixes the loader; it is not yet a published tool release. Native maintainers exercising the affected source can install its exact reviewed source temporarily:
+Wire versions before [v1.3.1](https://github.com/goforj/wire/releases/tag/v1.3.1) can omit constructors in local cgo packages during cached discovery, producing `undefined: trust.New` while direct Go builds succeed. Install the published generator repair when exercising this native provider graph:
 
 ```sh
-go install github.com/goforj/wire/cmd/wire@5027efedad598786df3012ad311f30cb26fd224b
+go install github.com/goforj/wire/cmd/wire@v1.3.1
 forj harbord make:migration example_change --connection default --no-open
 ```
 
-Expect both migration directions beneath `migrations/harbord/default`. Use a new migration name and keep only intentional migrations. This is a generator repair, not a reason to change Harbor's trust providers, hand-edit Wire output, or add persistent loader environment flags. The affected provider graph regenerated twice with no changes using that source. The pinned release commands below still describe the repository tool pin; use the repaired installed `wire` for this native cgo case until the fix is released.
+Expect both migration directions beneath `migrations/harbord/default`. Use a new migration name and keep only intentional migrations. The equivalent reviewed source regenerated both provider graphs twice without changes and passed ordinary migration generation in an isolated fixture. No persistent loader override, trust-provider workaround, or manual Wire edit is needed. Wire v1.3.1 retains its existing Go 1.25 minimum. The separately pinned tool commands below remain reproducibility instructions for the repository pin; this repair updates the ordinary installed generator without changing Harbor's dependencies.
 
 ## Generated sources
 
