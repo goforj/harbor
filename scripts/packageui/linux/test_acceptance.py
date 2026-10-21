@@ -3,10 +3,11 @@
 import ast
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 from urllib.parse import urlsplit
 
 
@@ -15,6 +16,27 @@ def load_function(name, **namespace):
     function = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == name)
     exec(compile(ast.Module(body=[function], type_ignores=[]), 'acceptance.py', 'exec'), namespace)
     return namespace[name]
+
+
+def browser_reader(*, executable='/usr/bin/epiphany', address='https://project.test/', uid=1001, geometry='WIDTH=1024\nHEIGHT=768'):
+    """browser_reader supplies native observations while retaining the real window and address admission logic."""
+    paths = {'epiphany': '/usr/bin/epiphany', '/proc/123/exe': executable}
+    responses = {
+        ('pgrep', '-x', 'epiphany'): '123',
+        ('xdotool', 'search', '--onlyvisible', '--pid', '123', '--name', '.'): '7',
+        ('xdotool', 'getwindowgeometry', '--shell', '7'): geometry,
+        ('xdotool', 'windowactivate', '--sync', '7'): '',
+        ('xclip', '-selection', 'clipboard', '-out'): address,
+    }
+    command = Mock(side_effect=lambda *args: responses[args])
+    key = Mock()
+    opened = load_function('opened_browser',
+        Path=lambda path: SimpleNamespace(resolve=lambda: paths[path]),
+        shutil=SimpleNamespace(which=lambda _: 'epiphany'), urlsplit=urlsplit,
+        os=SimpleNamespace(stat=lambda _: SimpleNamespace(st_uid=uid), getuid=lambda: 1001),
+        subprocess=subprocess, time=SimpleNamespace(sleep=lambda _: None), command=command, key=key,
+        record_browser_probe=Mock())
+    return opened, key, command
 
 
 class CreationDiagnosticsTests(unittest.TestCase):
@@ -65,25 +87,28 @@ class CreationDiagnosticsTests(unittest.TestCase):
                                                ('/usr/bin/epiphany', 'other.test', False),
                                                ('/usr/bin/unrelated', 'project.test', False)):
             with self.subTest(executable=executable, address=address):
-                paths = {'epiphany': '/usr/bin/epiphany', '/proc/123/exe': executable}
-                app = SimpleNamespace(get_process_id=lambda: 123)
-                node = SimpleNamespace(getRoleName=lambda: 'entry')
-                opened = load_function('opened_browser',
-                    Path=lambda path: SimpleNamespace(resolve=lambda: paths[path]),
-                    shutil=SimpleNamespace(which=lambda _: 'epiphany'), urlsplit=urlsplit,
-                    pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda _: [app])),
-                    nodes=lambda _: [node], accessible_text=lambda _: address,
-                    GLib=SimpleNamespace(GError=RuntimeError))
+                opened, key, command = browser_reader(executable=executable, address=address)
                 self.assertEqual(opened('https://project.test') is not None, expected)
+                if expected:
+                    self.assertEqual(key.call_args_list, [call('ctrl+l'), call('ctrl+c'), call('Escape')])
+                    command.assert_any_call('xclip', '-selection', 'clipboard', '-out')
+                if executable != '/usr/bin/epiphany':
+                    key.assert_not_called()
 
-    def test_browser_address_waits_for_accessibility_tree_turnover(self):
-        desktop = Mock(side_effect=RuntimeError('retired tree'))
-        opened = load_function('opened_browser',
-            Path=lambda _: SimpleNamespace(resolve=lambda: '/usr/bin/epiphany'),
-            shutil=SimpleNamespace(which=lambda _: 'epiphany'), urlsplit=urlsplit,
-            pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=desktop)),
-            GLib=SimpleNamespace(GError=RuntimeError))
-        self.assertIsNone(opened('https://project.test'))
+    def test_browser_address_rejects_foreign_users_and_popup_windows(self):
+        for options in ({'uid': 2000}, {'geometry': 'WIDTH=300\nHEIGHT=200'}, {'geometry': 'WIDTH=invalid'}):
+            with self.subTest(options=options):
+                opened, key, _ = browser_reader(**options)
+                self.assertIsNone(opened('https://project.test'))
+                key.assert_not_called()
+
+    def test_browser_address_waits_for_native_query_turnover(self):
+        for failure in (OSError('retired process'), subprocess.CalledProcessError(1, ['pgrep'])):
+            with self.subTest(failure=failure):
+                opened, key, command = browser_reader()
+                command.side_effect = failure
+                self.assertIsNone(opened('https://project.test'))
+                key.assert_not_called()
 
     def test_webkit_text_can_be_unnamed_or_exposed_as_an_accessible_name(self):
         for name, text, expected in (('', 'Required tools are ready', True),

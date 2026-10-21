@@ -247,25 +247,48 @@ def restore_browser_preference(receipt):
         path.write_bytes(original)
 
 
+def record_browser_probe(observation):
+    """record_browser_probe retains bounded progress metadata without collecting unexpected clipboard text."""
+    (EVIDENCE / 'browser-probe.json').write_text(json.dumps(observation, indent=2) + '\n')
+
+
 def opened_browser(url):
-    """opened_browser observes the installed browser's address field after the native resource handoff."""
+    """opened_browser reads the real address through X11 input because GTK4 may omit it from AT-SPI."""
     expected_executable = Path(shutil.which('epiphany')).resolve()
     host = urlsplit(url).netloc
+    observation = {'expected_executable': str(expected_executable), 'expected_address': url, 'stage': 'finding_process'}
     try:
-        for app in pyatspi.Registry.getDesktop(0):
+        for pid in command('pgrep', '-x', 'epiphany').split():
             try:
-                pid = app.get_process_id()
-                if Path(f'/proc/{pid}/exe').resolve() != expected_executable:
+                observation.update(pid=pid, stage='checking_executable')
+                if not pid.isdecimal() or Path(f'/proc/{pid}/exe').resolve() != expected_executable:
                     continue
-                for node in nodes(app):
-                    if node.getRoleName() in ('entry', 'text'):
-                        address = accessible_text(node).strip().rstrip('/')
-                        if address in (url.rstrip('/'), host):
-                            return {'pid': pid, 'executable': str(expected_executable), 'address': address}
-            except (OSError, GLib.GError):
+                if os.stat(f'/proc/{pid}').st_uid != os.getuid():
+                    continue
+                observation['stage'] = 'finding_window'
+                for identifier in command('xdotool', 'search', '--onlyvisible', '--pid', pid, '--name', '.').split():
+                    geometry = dict(line.split('=', 1) for line in command('xdotool', 'getwindowgeometry', '--shell', identifier).splitlines() if '=' in line)
+                    if int(geometry.get('WIDTH', '0')) < 420 or int(geometry.get('HEIGHT', '0')) < 520:
+                        continue
+                    observation.update(window_id=identifier, stage='copying_address')
+                    command('xdotool', 'windowactivate', '--sync', identifier)
+                    key('ctrl+l')
+                    time.sleep(.1)
+                    key('ctrl+c')
+                    address = command('xclip', '-selection', 'clipboard', '-out').strip().rstrip('/')
+                    observation['stage'] = 'checking_address'
+                    if address in (url.rstrip('/'), host):
+                        key('Escape')
+                        observation['stage'] = 'verified'
+                        return {'pid': int(pid), 'executable': str(expected_executable), 'window_id': identifier, 'address': address}
+            except (OSError, subprocess.SubprocessError, ValueError) as error:
+                observation['error_type'] = type(error).__name__
                 continue
-    except GLib.GError:
+    except (OSError, subprocess.SubprocessError) as error:
+        observation['error_type'] = type(error).__name__
         return None
+    finally:
+        record_browser_probe(observation)
     return None
 
 
