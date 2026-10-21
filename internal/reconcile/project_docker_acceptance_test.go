@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,10 +23,12 @@ import (
 	"github.com/goforj/harbor/internal/containerruntime"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/goforjruntime"
+	"github.com/goforj/harbor/internal/network/identity"
 	"github.com/goforj/harbor/internal/productproof"
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/internal/testkit/goforjproject"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -118,9 +121,10 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	registerProjectIdentityAcceptanceProjects(t, store, projects)
 	initializeProjectIdentityAcceptanceNetwork(t, store, configuration.prefix, configuration.addresses, projects)
 
+	spoolDirectory := filepath.Join(t.TempDir(), "project-output")
 	supervisor := projectprocess.New(projectprocess.Options{
 		GracePeriod:          3 * time.Second,
-		OutputSpoolDirectory: filepath.Join(t.TempDir(), "project-output"),
+		OutputSpoolDirectory: spoolDirectory,
 		Environment:          projectEnvironment,
 		ContainerRuntime:     runtime,
 		ServiceLogIdlePeriod: time.Second,
@@ -160,6 +164,14 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	for _, project := range projects {
 		ready = append(ready, waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, project.intent, domain.ProjectReady))
 	}
+	network, initialized, err := store.Network(ctx)
+	if err != nil || !initialized {
+		t.Fatalf("read assigned Compose addresses: initialized=%t, %v", initialized, err)
+	}
+	assignedAddresses, err := generatedComposeAssignedAddresses(projects, network.Leases)
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := observeGeneratedComposeContainerIDs(t, ctx, runtime, projects)
 	observations := make(map[domain.ProjectID]projectprocess.ServiceObservation, len(projects))
 	for _, project := range projects {
@@ -180,7 +192,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		supervisor,
 		projects,
 		projects[0],
-		configuration.addresses[0],
+		assignedAddresses[0],
 		observations[projects[0].id],
 	)
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects, ready, configuration.addresses)
@@ -197,7 +209,9 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	}
 	waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, stopped.id, stopIntent, domain.ProjectStopped)
 	assertGeneratedComposePeerSurvival(t, ctx, store, projects[1:])
-	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects[1:], ready[1:], configuration.addresses[1:])
+	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects[1:], ready[1:], assignedAddresses[1:])
+	assertGeneratedComposeRetainedFailure(t, ctx, store, journal, supervisor, coordinator, stopped, spoolDirectory)
+	assertGeneratedComposePeerSurvival(t, ctx, store, projects[1:])
 
 	restartIntent := domain.IntentID("intent-restart-compose-orders")
 	queued, restartErr := coordinator.Start(ctx, ProjectStartRequest{
@@ -216,7 +230,7 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 			ctx,
 			configuration.forj,
 			projects,
-			configuration.addresses,
+			assignedAddresses,
 			runtime,
 			composeProjects,
 			eventRefreshEvidence,
@@ -243,6 +257,142 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 			t.Fatalf("final reset generated Compose project %q: %v", project.id, resetErr)
 		}
 	}
+}
+
+// generatedComposeAssignedAddresses binds every fixture mutation and receipt to its durable primary lease rather than startup order.
+func generatedComposeAssignedAddresses(projects []projectIdentityAcceptanceProject, leases []identity.Lease) ([]netip.Addr, error) {
+	addresses := make(map[domain.ProjectID]netip.Addr, len(projects))
+	for _, lease := range leases {
+		if lease.Key.Kind() == identity.LeaseKindPrimary {
+			addresses[lease.Key.ProjectID] = lease.Address
+		}
+	}
+	ordered := make([]netip.Addr, 0, len(projects))
+	for _, project := range projects {
+		address, found := addresses[project.id]
+		if !found || !address.Is4() || !address.IsLoopback() {
+			return nil, fmt.Errorf("project %q has no assigned IPv4 loopback lease", project.id)
+		}
+		ordered = append(ordered, address)
+	}
+	return ordered, nil
+}
+
+// TestGeneratedComposeAssignedAddressesUsesProjectIdentity covers concurrent allocation order and missing primary authority.
+func TestGeneratedComposeAssignedAddressesUsesProjectIdentity(t *testing.T) {
+	projects := []projectIdentityAcceptanceProject{{id: "orders"}, {id: "billing"}}
+	orders, err := identity.NewPrimaryKey("orders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	billing, err := identity.NewPrimaryKey("billing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases := []identity.Lease{{Key: billing, Address: netip.MustParseAddr("127.77.0.10")}, {Key: orders, Address: netip.MustParseAddr("127.77.0.11")}}
+	got, err := generatedComposeAssignedAddresses(projects, leases)
+	if err != nil || len(got) != 2 || got[0] != leases[1].Address || got[1] != leases[0].Address {
+		t.Fatalf("project-bound addresses = %v, %v", got, err)
+	}
+	for _, test := range []struct {
+		name   string
+		leases []identity.Lease
+	}{
+		{name: "missing primary", leases: leases[:1]},
+		{name: "non-loopback", leases: []identity.Lease{{Key: orders, Address: netip.MustParseAddr("192.0.2.1")}}},
+		{name: "IPv6", leases: []identity.Lease{{Key: orders, Address: netip.IPv6Loopback()}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := generatedComposeAssignedAddresses(projects, test.leases); err == nil {
+				t.Fatal("invalid primary authority produced a fixture address")
+			}
+		})
+	}
+}
+
+// assertGeneratedComposeRetainedFailure keeps a real custom-hook failure readable after its process authority retires.
+func assertGeneratedComposeRetainedFailure(
+	t *testing.T,
+	ctx context.Context,
+	store *state.Store,
+	journal *state.OperationJournal,
+	supervisor *projectprocess.Supervisor,
+	coordinator *ProjectLifecycleCoordinator,
+	project projectIdentityAcceptanceProject,
+	spoolDirectory string,
+) {
+	t.Helper()
+	configurationPath := filepath.Join(project.project.Root, ".goforj.yml")
+	original, err := os.ReadFile(configurationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.WriteFile(configurationPath, original, 0o600); err != nil {
+			t.Errorf("restore test-owned development hooks: %v", err)
+		}
+	}()
+	var configuration map[string]any
+	if err := yaml.Unmarshal(original, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	dev, ok := configuration["dev"].(map[string]any)
+	if !ok {
+		t.Fatal("generated fixture has no development graph")
+	}
+	hookDirectory := filepath.Join(project.project.Root, "_data", "harbor-retained-probe")
+	if err := os.MkdirAll(hookDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const marker = "HARBOR_GENERATED_HOOK_FAILED_AFTER_OUTPUT_PAGE"
+	const hook = "package main\nimport (\"fmt\"; \"os\"; \"strings\")\nfunc main() { fmt.Print(strings.Repeat(\"owned failure padding line\\n\", 6000)); fmt.Fprintln(os.Stderr, \"" + marker + "\"); os.Exit(73) }\n"
+	if err := os.WriteFile(filepath.Join(hookDirectory, "main.go"), []byte(hook), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dev["pre"] = []map[string]string{{"name": "Retained custom hook failure", "cmd": "go run ./_data/harbor-retained-probe/main.go"}}
+	changed, err := yaml.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configurationPath, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const intent = domain.IntentID("intent-generated-retained-failure")
+	if _, err := coordinator.Start(ctx, ProjectStartRequest{ProjectID: project.id, OperationID: "operation-generated-retained-failure", IntentID: intent}); err != nil {
+		t.Fatal(err)
+	}
+	waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, intent, domain.ProjectFailed)
+	var missing *state.ProjectSessionNotFoundError
+	if _, err := store.ActiveProjectSession(ctx, project.id); !errors.As(err, &missing) {
+		t.Fatalf("failed hook retained active process authority: %v", err)
+	}
+	fresh := projectprocess.New(projectprocess.Options{OutputSpoolDirectory: spoolDirectory})
+	defer func() { _ = fresh.Close(context.Background()) }()
+	request := ProjectActivityRequest{ProjectID: project.id}
+	var output strings.Builder
+	for {
+		activity, err := readCurrentProjectActivity(ctx, store, fresh, request)
+		if err != nil || activity.Session == nil {
+			t.Fatalf("fresh failed-project reader = %#v, %v", activity, err)
+		}
+		chunk := activity.Session.Output
+		if chunk.Available || !chunk.Historical {
+			t.Fatalf("retired output claimed live process authority: %#v", chunk)
+		}
+		output.WriteString(chunk.Text)
+		if !chunk.HasMore {
+			break
+		}
+		if chunk.NextCursor <= request.Cursor {
+			t.Fatal("retained failure did not advance its cursor")
+		}
+		request.SessionID = activity.Session.ID
+		request.Cursor = chunk.NextCursor
+	}
+	if output.Len() <= projectprocess.MaximumOutputChunkBytes || !strings.Contains(output.String(), marker) {
+		t.Fatalf("final custom-hook error missing beyond first cursor page (%d bytes)", output.Len())
+	}
+	t.Logf("real generated custom-hook failure retained %d bytes across process retirement and fresh reader", output.Len())
 }
 
 // assertGeneratedComposeEventRefresh proves a test-controlled Compose replacement reaches Harbor through the event wake path.
@@ -499,18 +649,18 @@ func generatedDockerProductRuntimeEvidence(ctx context.Context, forj string) (pr
 		return productproof.RuntimeEvidence{}, productproof.DependencyEvidence{}, err
 	}
 	return productproof.RuntimeEvidence{
-			GOOS:               runtime.GOOS,
-			GOARCH:             runtime.GOARCH,
-			Commit:             commit,
-			RunnerName:         runnerName,
-			RunnerImage:        runnerImage,
-			RunnerImageVersion: runnerVersion,
-		}, productproof.DependencyEvidence{
-			GoForjVersion: projectIdentityAcceptanceGoForjVersion,
-			GoForjDigest:  forjDigest,
-			EngineKind:    engineKind,
-			EngineVersion: engineVersion,
-		}, nil
+		GOOS:               runtime.GOOS,
+		GOARCH:             runtime.GOARCH,
+		Commit:             commit,
+		RunnerName:         runnerName,
+		RunnerImage:        runnerImage,
+		RunnerImageVersion: runnerVersion,
+	}, productproof.DependencyEvidence{
+		GoForjVersion: projectIdentityAcceptanceGoForjVersion,
+		GoForjDigest:  forjDigest,
+		EngineKind:    engineKind,
+		EngineVersion: engineVersion,
+	}, nil
 }
 
 // generatedDockerEngineVersion reads the server version through Docker's read-only CLI metadata endpoint.

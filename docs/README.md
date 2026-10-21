@@ -22,8 +22,8 @@ No repository port files need to change, and stopping or unregistering a project
 | Area | Decision |
 |---|---|
 | Authority | `harbord` is the sole Harbor state writer and reconciler. |
-| Repository | Harbor's CLI and daemon remain GoForj Apps. The desktop is a nested Wails v2 module in the same development graph; privileged helper/installer entrypoints stay bespoke. |
-| Desktop | Stable Wails v2 hosts a thin, replaceable client. Tray integration is a separate Go capability proved against the native event loops; closing the UI does not stop projects. |
+| Repository | Harbor's CLI and daemon remain GoForj Apps. The desktop is a nested Wails v3.0.0-beta.32 module in the same development graph; privileged helper/installer entrypoints stay bespoke. |
+| Desktop | Pinned Wails v3.0.0-beta.32 hosts a thin, replaceable client and its integrated native tray. Closing the UI does not stop projects; native profile and consent proof remains explicit. |
 | Frontend | Harbor starts from GoForj's source-owned Vue/shadcn starter, keeps its primitive layer intact, and builds Harbor-specific views from those components. Lerd is the initial visual anchor for density, layout, and interaction styling. |
 | GoForj | GoForj describes and runs projects through versioned contracts; Harbor does not parse terminal output or reproduce `.goforj.yml` semantics. |
 | Project intent | `.goforj.yml` remains authoritative for GoForj composition. An optional, runtime-neutral `.harbor.yml` may map explicitly allowlisted Harbor facts to project environment names; it cannot define commands or project topology. |
@@ -38,6 +38,7 @@ No repository port files need to change, and stopping or unregistering a project
 
 ## Documents
 
+- [Beta support and recovery](./beta-support.md) explains public downloads, tested profiles, setup, conflicts, diagnostics, and ownership-safe recovery.
 - [Current implementation state](./current-state.md) is the source of truth for what works now, how to run it, intentional temporary bridges, and known gaps.
 - [Development handoff](./handoff.md) records the current worktree boundary, host reproduction, uncommitted work, and next goal.
 - [Source development](./development.md) explains how to build and bootstrap the privileged helper from source on macOS and Linux.

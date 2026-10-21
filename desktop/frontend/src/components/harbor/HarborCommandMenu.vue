@@ -5,6 +5,7 @@ import { Check } from '@lucide/vue'
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command'
 import { useHarborStore } from '@/stores/harbor'
 import { showNewProjectDialog } from '@/lib/projectCreationDialog'
+import { showProjectGuide } from '@/lib/projectGuide'
 import { currentThemePreference, setThemePreference, type ThemePreference } from '@/lib/theme'
 import StatusBadge from './StatusBadge.vue'
 import ProjectIcon from './ProjectIcon.vue'
@@ -58,6 +59,11 @@ async function addProject() {
   if (registration) await router.push(`/projects/${encodeURIComponent(registration.project.id)}`)
 }
 
+function openProjectGuide() {
+  showProjectGuide()
+  navigate('/overview')
+}
+
 function refresh() {
   setOpen(false)
   void store.refresh()
@@ -82,6 +88,7 @@ async function openResource(projectId: string, resourceId: string) {
       <CommandEmpty>No Harbor results found.</CommandEmpty>
 
       <CommandGroup heading="Actions">
+        <CommandItem value="Getting started first project onboarding setup create start help" @select="openProjectGuide"><KindIcon kind="overview" compact /><span>Getting started</span></CommandItem>
         <CommandItem value="New project create scaffold starter kit" :disabled="!connected" @select="createProject"><KindIcon kind="new-project" compact /><span>New project</span></CommandItem>
         <CommandItem value="Add existing project import folder" :disabled="!connected || store.addingProject" @select="addProject"><KindIcon kind="import-project" compact /><span>Add existing project</span></CommandItem>
         <CommandItem value="Refresh Harbor state reload snapshot reconnect" :disabled="store.refreshing" @select="refresh"><KindIcon kind="refresh" compact /><span>Refresh Harbor state</span></CommandItem>

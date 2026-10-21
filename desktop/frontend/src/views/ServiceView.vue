@@ -38,8 +38,8 @@ async function openResource(resourceId: string) {
           </Button>
           <ServiceIcon :service="service" />
           <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2"><h1 id="service-title" class="truncate text-base font-semibold tracking-tight">{{ service.name }}</h1><StatusBadge :status="service.state" /></div>
-            <p class="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><span>{{ service.project_name }} · {{ service.kind }}</span><span aria-hidden="true">·</span><ServiceOwnership :owner="service.owner" /></p>
+            <div class="flex min-w-0 flex-wrap items-center gap-2"><h1 id="service-title" class="min-w-0 break-words text-base font-semibold tracking-tight" :title="service.name">{{ service.name }}</h1><StatusBadge :status="service.state" /></div>
+            <p class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"><span class="min-w-0 break-words">{{ service.project_name }} · {{ service.kind }}</span><span aria-hidden="true">·</span><ServiceOwnership :owner="service.owner" /></p>
           </div>
         </div>
       </header>
@@ -63,7 +63,7 @@ async function openResource(resourceId: string) {
         <div class="grid min-w-0 gap-5 xl:grid-cols-2">
           <Card class="gap-0 rounded-lg py-0 shadow-none">
             <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Server class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Service identity</CardTitle></div></CardHeader>
-            <CardContent class="p-0"><dl class="divide-y text-xs"><div class="grid grid-cols-[7rem_1fr] gap-3 px-4 py-3"><dt class="text-muted-foreground">Project ID</dt><dd class="font-mono">{{ service.project_id }}</dd></div><div class="grid grid-cols-[7rem_1fr] gap-3 px-4 py-3"><dt class="text-muted-foreground">Service ID</dt><dd class="font-mono">{{ service.id }}</dd></div><div class="grid grid-cols-[7rem_1fr] gap-3 px-4 py-3"><dt class="text-muted-foreground">Kind</dt><dd>{{ service.kind }}</dd></div></dl></CardContent>
+            <CardContent class="p-0"><dl class="divide-y text-xs"><div class="grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Project ID</dt><dd class="break-all font-mono">{{ service.project_id }}</dd></div><div class="grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Service ID</dt><dd class="break-all font-mono">{{ service.id }}</dd></div><div class="grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Kind</dt><dd class="break-words">{{ service.kind }}</dd></div></dl></CardContent>
           </Card>
 
           <Card class="gap-0 rounded-lg py-0 shadow-none">

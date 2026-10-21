@@ -20,6 +20,7 @@ class PackageVerificationTests(unittest.TestCase):
             (root / (name + ".sha256")).write_text(f"{digest}  {name}\n")
         revision = "a" * 40
         verify.prepare.seal_assets(root, version, revision, "https://github.com/goforj/harbor/actions/runs/123")
+        names = [name.replace("~", ".") for name in names]
         run = {"id": 123, "head_sha": revision, "repository": {"full_name": "goforj/harbor"},
                "path": ".github/workflows/release.yml", "status": "completed", "conclusion": "success"}
         return run, names
@@ -29,6 +30,30 @@ class PackageVerificationTests(unittest.TestCase):
             root = Path(directory)
             run, names = self.fixture(root)
             self.assertEqual(verify.verify_assets(root, run), ("a" * 40, *names))
+
+    def test_accepts_exact_legacy_sealed_debian_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run, names = self.fixture(root)
+            current = names[1]
+            legacy = current.replace("0.1.0.beta", "0.1.0~beta")
+            (root / current).rename(root / legacy)
+            (root / (current + ".sha256")).rename(root / (legacy + ".sha256"))
+            for name in (legacy + ".sha256", "SHA256SUMS", "provenance.json"):
+                path = root / name
+                path.write_text(path.read_text().replace(current, legacy))
+            self.assertEqual(verify.verify_assets(root, run), ("a" * 40, names[0], legacy))
+
+    def test_rejects_a_manifest_containing_both_debian_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run, names = self.fixture(root)
+            path = root / "provenance.json"
+            data = json.loads(path.read_text())
+            data["packages"][names[1].replace("0.1.0.beta", "0.1.0~beta")] = data["packages"][names[1]]
+            path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "unexpected package publication set"):
+                verify.verify_assets(root, run)
 
     def test_outputs_only_admitted_platform_packages(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -91,14 +116,20 @@ class PackageVerificationTests(unittest.TestCase):
         expected = {"desktop/main.go": ("file", "same"), "docs/current-state.md": "old"}
         verify.verify_product(expected, dict(expected, **{"docs/current-state.md": "new", "desktop/packageui/test.swift": "new"}))
         verify.verify_product(expected, dict(expected, **{".github/workflows/linux-package-ui.yml": "new"}))
+        verify.verify_product(expected, dict(expected, **{"desktop/frontend/e2e/harbor.spec.ts": "new assertions"}))
+        verify.verify_product(expected, dict(expected, **{"desktop/project_prerequisites_test.go": "native path fixture"}))
         for name in ("windows-package-ui.yml", "windows-native-capacity.yml", "windows-installation-admission.yml", "ci.yml", "docker-project-diagnostics.yml"):
             verify.verify_product(expected, dict(expected, **{f".github/workflows/{name}": "new"}))
         verify.verify_product(expected, dict(expected, **{"internal/platform/loopback/backend_windows_diagnostic_integration_test.go": "new"}))
         for path in ("internal/reconcile/project_docker_acceptance_test.go", "internal/reconcile/project_docker_diagnostics_test.go",
+                     "internal/reconcile/project_session_continuity_fault_test.go",
                      "internal/testkit/goforjproject/project.go", "internal/testkit/goforjproject/project_test.go",
+                     "internal/network/dataplane/integration_test.go",
                      "internal/platformproof/project_identity_test.go"):
             verify.verify_product(expected, dict(expected, **{path: "diagnostics"}))
         for current in ({}, {"desktop/main.go": ("file", "changed")},
+                        dict(expected, **{"desktop/project_prerequisites.go": "changed"}),
+                        dict(expected, **{"desktop/frontend/src/components/harbor/LogViewer.vue": "changed"}),
                         dict(expected, **{"cmd/harbord/main.go": "new"}),
                         dict(expected, **{"internal/platform/loopback/backend_windows.go": "changed"}),
                         dict(expected, **{".github/workflows/macos-development-package.yml": "changed"}),
@@ -106,6 +137,8 @@ class PackageVerificationTests(unittest.TestCase):
                         dict(expected, **{"internal/testkit/goforjproject/snapshot.go": "changed"}),
                         dict(expected, **{"internal/testkit/goforjproject/doc.go": "changed"}),
                         dict(expected, **{"internal/reconcile/project_docker.go": "changed"}),
+                        dict(expected, **{"internal/reconcile/project_session_continuity.go": "changed"}),
+                        dict(expected, **{"internal/network/dataplane/runtime.go": "changed"}),
                         dict(expected, **{"internal/platformproof/project_identity.go": "changed"}),
                         dict(expected, **{"internal/projectprocess/output_broker_server.go": "changed"}),
                         dict(expected, **{"internal/reconcile/project_docker_diagnostics.go": "changed"})):

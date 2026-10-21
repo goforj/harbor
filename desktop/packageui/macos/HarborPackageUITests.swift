@@ -33,6 +33,7 @@ final class HarborPackageUITests: XCTestCase {
         try launchInstalledApplication("first-launch")
         try awaitWindow()
         try assertInstalledBundle()
+        XCTAssertTrue(application.buttons["Dismiss getting started guide"].waitForExistence(timeout: 30))
         attach("installed-first-launch")
 
         let setup = application.buttons["Set up secure networking"]
@@ -69,9 +70,28 @@ final class HarborPackageUITests: XCTestCase {
         let identifier = try XCTUnwrap(registration["id"] as? String)
         let slug = try XCTUnwrap(registration["slug"] as? String)
         XCTAssertEqual(registration["state"] as? String, "stopped")
+        XCTAssertTrue(application.buttons["Dismiss getting started guide"].waitForExistence(timeout: 30), "guided creation returns to Overview")
         try click("Start project", timeout: 30)
         try awaitProject(identifier, state: "ready")
         try assertHTTPS(slug)
+        try click("Recheck")
+        try waitUntil("native prerequisites are ready") {
+            self.hasText("Required tools are ready")
+        }
+        try click("Open app", timeout: 30)
+        application.activate()
+        try waitUntil("guide App opening completed") {
+            self.hasText("4 of 4 steps complete")
+        }
+        attach("guide-complete")
+        application.activate()
+        try waitUntil("Harbor foreground after external App opening") {
+            self.application.state == .runningForeground && self.application.buttons["Finish setup"].isHittable
+        }
+        try click("Finish setup")
+        try waitUntil("guide dismissed after completion") {
+            !self.application.buttons["Dismiss getting started guide"].exists
+        }
         attach("project-ready")
 
         let originalProcess = try installedProcess()
@@ -130,6 +150,7 @@ final class HarborPackageUITests: XCTestCase {
             "project_directory": projectDirectory.path,
             "project_id": identifier,
             "creation": "production graphical wizard",
+            "onboarding": "installed first-project guide, native tool recheck, and published App opening completed",
             "start": "ready with system-trusted HTTPS 200",
             "window_close": "project remains ready",
             "window_reopen": "ordinary macOS open restores the original process and visible window",
@@ -267,8 +288,14 @@ final class HarborPackageUITests: XCTestCase {
         try waitUntil("refresh command closes the menu") { !refresh.exists }
     }
 
+    // hasText supports WebKit text carried by AXValue as well as AXLabel.
+    private func hasText(_ text: String) -> Bool {
+        application.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@ OR value == %@", text, text)).firstMatch.exists
+    }
+
     private func click(_ label: String, timeout: TimeInterval = 20) throws {
-        let button = application.buttons[label]
+        let button = application.buttons[label].firstMatch
         XCTAssertTrue(button.waitForExistence(timeout: timeout), "missing button: \(label)\n\(application.debugDescription)")
         try waitUntil("enabled button \(label)") { button.isEnabled }
         button.click()

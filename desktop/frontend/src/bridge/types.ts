@@ -1,7 +1,9 @@
-import type { ProjectCreationProvider, ProjectCreationProgress, ProjectCreationSchema, ProjectCreationRequest, ProjectCreationResult, AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectEnvironment, ProjectEnvironmentFile, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
+import type { PrerequisiteReport, ProjectCreationProvider, ProjectCreationProgress, ProjectCreationSchema, ProjectCreationRequest, ProjectCreationResult, AddProjectResult, ConnectionEvent, DaemonStatus, HarborSnapshot, NetworkResolverPolicyMigrationOperation, NetworkSetupOperation, Operation, Problem, ProjectActivity, ProjectEnvironment, ProjectEnvironmentFile, ProjectLifecycleOperation, ProjectRuntimeRepairConfirmation, ProjectRuntimeRepairInspection, ProjectTerminalEvent, ProjectTerminalStarted, ProjectUnregistration, ServiceLogs } from '@/domain/harbor'
 
 export interface HarborWireFixture {
   methods: {
+    project_creation_prerequisites: 'ProjectCreationPrerequisites'
+    project_prerequisites: 'ProjectPrerequisites'
     project_creation_providers: 'ProjectCreationProviders'
     start_project_creation: 'StartProjectCreation'
     project_creation_progress: 'ProjectCreationProgress'
@@ -49,6 +51,7 @@ export interface HarborWireFixture {
     connected: ConnectionEvent & { state: 'connected' }
     disconnected: ConnectionEvent & { state: 'disconnected' }
   }
+  project_prerequisites_report: PrerequisiteReport
   project_creation_schema: ProjectCreationSchema
   status: DaemonStatus
   snapshot: HarborSnapshot
@@ -80,6 +83,8 @@ export interface HarborWireFixture {
 }
 
 export interface HarborBridge {
+  getProjectCreationPrerequisites(request: ProjectCreationRequest): Promise<PrerequisiteReport>
+  getProjectPrerequisites(projectId: string): Promise<PrerequisiteReport>
   getProjectCreationProviders(): Promise<ProjectCreationProvider[]>
   startProjectCreation(request: ProjectCreationRequest): Promise<ProjectCreationProgress>
   getProjectCreationProgress(jobId: string, cursor: number): Promise<ProjectCreationProgress>

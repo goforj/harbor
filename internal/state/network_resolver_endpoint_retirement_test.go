@@ -106,7 +106,7 @@ func TestClearResolverStageNativeTCPEndpointsRejectsUnsafeAuthority(t *testing.T
 		{
 			name: "active project",
 			mutate: func(fixture *resolverEndpointRetirementFixture) {
-				if err := fixture.database.Model(&models.Project{}).Where("project_id = ?", fixture.projectID).Update("state", string(domain.ProjectReady)).Error; err != nil {
+				if err := fixture.database.Model(&models.Project{}).Where("project_id = ?", fixture.projectID).UpdateColumn("state", string(domain.ProjectReady)).Error; err != nil {
 					t.Fatalf("activate project: %v", err)
 				}
 			},

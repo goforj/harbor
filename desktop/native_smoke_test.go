@@ -189,7 +189,7 @@ const nativeCreationSmokeProbe = `(async () => {
   await wait(()=>document.querySelector('[aria-label="Atlas agent support"]'));
   await progress('options'); const atlas=document.querySelector('[aria-label="Atlas agent support"]');atlas.value='skip';atlas.dispatchEvent(new Event('change',{bubbles:true}));
   await new Promise(r=>setTimeout(r,50));button('Continue').click();
-  await wait(()=>button('Create project'));await progress('create');await new Promise(r=>setTimeout(r,50));button('Create project').click();
+  await wait(()=>button('Create project')&&!button('Create project').disabled);await progress('create');await new Promise(r=>setTimeout(r,50));button('Create project').click();
   await wait(()=>!document.querySelector('[role="dialog"]')||document.querySelector('[role="alert"]'));
   if(document.querySelector('[role="dialog"]'))throw new Error(document.querySelector('[role="alert"]')?.textContent||'creation failed');
   await progress('registration'); const snapshot=await window.go.main.App.Snapshot();

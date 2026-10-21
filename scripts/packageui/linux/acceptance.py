@@ -3,9 +3,12 @@
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 import pyatspi
 from gi.repository import GLib
@@ -160,6 +163,9 @@ def capture(name):
                 rows = []
                 for node in nodes(app):
                     rows.append(node.getRoleName() + ': ' + node.name + ' states=' + str(node.getState().getStates()))
+                    text = accessible_text(node)
+                    if text:
+                        rows.append('  text: ' + repr(text[:4096]))
                     if node.name == 'Creation output':
                         output = accessible_text(node)
                         if not output:
@@ -199,11 +205,147 @@ def launch():
     wait('window visible', visible, 60)
 
 
-def accessible_text(node):
+def accessible_text(node, depth=0):
+    """accessible_text expands WebKit embedded-object characters using their native hypertext anchors."""
     try:
-        return node.queryText().getText(0, -1)
+        text = node.queryText().getText(0, -1)
     except (NotImplementedError, GLib.GError):
         return ''
+    if '\ufffc' not in text or depth >= 4:
+        return text
+    try:
+        hypertext = node.queryHypertext()
+        parts = []
+        for offset, character in enumerate(text):
+            if character == '\ufffc':
+                index = hypertext.getLinkIndex(offset)
+                if index >= 0:
+                    link = hypertext.getLink(index)
+                    if link is not None:
+                        child = link.get_object(0)
+                        if child is not None:
+                            character = accessible_text(child, depth + 1) or child.name
+            parts.append(character)
+        return ''.join(parts)
+    except (NotImplementedError, GLib.GError):
+        return text
+
+
+def visible_text(label):
+    """visible_text handles WebKit static text exposed through Text instead of an accessible name."""
+    app = application()
+    if app is None:
+        return False
+    try:
+        expected = ''.join(label.split())
+        return any(node.name == label or expected in ''.join(accessible_text(node).split()) for node in nodes(app))
+    except GLib.GError:
+        return False
+
+
+def selected_document_text(label):
+    """selected_document_text observes rendered WebKit text that GTK omits from the accessibility tree."""
+    activate()
+    # Retire the browser's clipboard value before copying the actual Harbor
+    # document. An unchanged or unavailable selection cannot satisfy this check.
+    subprocess.run(['xclip', '-selection', 'clipboard', '-in'], input='Harbor UI probe cleared',
+                   text=True, check=True, timeout=5)
+    key('ctrl+a')
+    key('ctrl+c')
+    time.sleep(.1)
+    try:
+        text = command('xclip', '-selection', 'clipboard', '-out', '-target', 'UTF8_STRING')
+    except subprocess.CalledProcessError:
+        return False
+    return ''.join(label.split()) in ''.join(text.split())
+
+
+def configure_browser_preference(home):
+    """configure_browser_preference gives the disposable XFCE desktop a real browser and retains its prior setting."""
+    path = home / '.config/xfce4/helpers.rc'
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise RuntimeError('browser preference must be a direct regular file')
+    original = path.read_bytes() if path.exists() else None
+    text = original.decode() if original is not None else ''
+    updated, count = re.subn(r'(?m)^[ \t]*WebBrowser=.*$', 'WebBrowser=epiphany', text)
+    if not count:
+        updated = text.rstrip('\n') + ('\n' if text else '') + 'WebBrowser=epiphany\n'
+    expected = updated.encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(expected)
+    return path, original, expected
+
+
+def restore_browser_preference(receipt):
+    """restore_browser_preference preserves another writer's changes instead of overwriting an unexpected setting."""
+    path, original, expected = receipt
+    if path.is_symlink() or path.read_bytes() != expected:
+        raise RuntimeError('browser preference changed outside the fixture')
+    if original is None:
+        path.unlink()
+    else:
+        path.write_bytes(original)
+
+
+def record_browser_probe(observation):
+    """record_browser_probe retains bounded progress metadata without collecting unexpected clipboard text."""
+    (EVIDENCE / 'browser-probe.json').write_text(json.dumps(observation, indent=2) + '\n')
+
+
+def opened_browser(url):
+    """opened_browser reads the real address through X11 input because GTK4 may omit it from AT-SPI."""
+    expected_executable = Path(shutil.which('epiphany')).resolve()
+    host = urlsplit(url).netloc
+    observation = {'expected_executable': str(expected_executable), 'expected_address': url, 'stage': 'finding_process'}
+    try:
+        for pid in command('pgrep', '-x', 'epiphany').split():
+            try:
+                observation.update(pid=pid, stage='checking_executable')
+                if not pid.isdecimal() or Path(f'/proc/{pid}/exe').resolve() != expected_executable:
+                    continue
+                if os.stat(f'/proc/{pid}').st_uid != os.getuid():
+                    continue
+                observation['stage'] = 'finding_window'
+                clients = re.findall(r'0x[0-9a-fA-F]+', command('xprop', '-root', '_NET_CLIENT_LIST'))
+                for identifier in clients:
+                    try:
+                        if command('xdotool', 'getwindowpid', identifier).strip() != pid:
+                            continue
+                    except subprocess.SubprocessError:
+                        continue
+                    geometry = dict(line.split('=', 1) for line in command('xdotool', 'getwindowgeometry', '--shell', identifier).splitlines() if '=' in line)
+                    if int(geometry.get('WIDTH', '0')) < 420 or int(geometry.get('HEIGHT', '0')) < 520:
+                        continue
+                    observation.update(window_id=identifier, stage='copying_address')
+                    command('xdotool', 'windowactivate', '--sync', identifier)
+                    active = command('xdotool', 'getactivewindow').strip()
+                    observation['active_window'] = active
+                    if int(active, 0) != int(identifier, 0):
+                        continue
+                    key('ctrl+l')
+                    time.sleep(.1)
+                    key('ctrl+c')
+                    observation['clipboard_target'] = 'UTF8_STRING'
+                    try:
+                        address = command('xclip', '-selection', 'clipboard', '-out', '-target', 'UTF8_STRING')
+                    except subprocess.CalledProcessError:
+                        observation['clipboard_target'] = 'text/plain;charset=utf-8'
+                        address = command('xclip', '-selection', 'clipboard', '-out', '-target', 'text/plain;charset=utf-8')
+                    address = address.strip().rstrip('/')
+                    observation['stage'] = 'checking_address'
+                    if address in (url.rstrip('/'), host):
+                        key('Escape')
+                        observation['stage'] = 'verified'
+                        return {'pid': int(pid), 'executable': str(expected_executable), 'window_id': identifier, 'address': address}
+            except (OSError, subprocess.SubprocessError, ValueError) as error:
+                observation['error_type'] = type(error).__name__
+                continue
+    except (OSError, subprocess.SubprocessError) as error:
+        observation['error_type'] = type(error).__name__
+        return None
+    finally:
+        record_browser_probe(observation)
+    return None
 
 
 def window(visible):
@@ -240,8 +382,12 @@ def quit_ui():
 
 root = Path(tempfile.mkdtemp(prefix='harbor-package-ui-', dir='/tmp'))
 directory = root / 'project'
+browser_preference = None
 try:
+    assert shutil.which('epiphany'), 'the disposable desktop requires its installed browser'
+    browser_preference = configure_browser_preference(Path.home())
     launch()
+    element('Dismiss getting started guide', ['push button'])
     capture('installed-first-launch')
     # Overview can expose New project before its networking setup card finishes rendering.
     wait('first-run UI', lambda: find('Set up secure networking') or find('New project'), 60)
@@ -263,9 +409,20 @@ try:
     click('Create project')
     row = wait('created registration', created_project, 300)
     assert row['state'] == 'stopped'
+    element('Dismiss getting started guide', ['push button'])
     click('Start project')
     state('ready')
     https(row['slug'])
+    click('Recheck')
+    wait('native prerequisites are ready', lambda: visible_text('Required tools are ready'))
+    click('Open app')
+    browser = wait('real browser opened the project address', lambda: opened_browser('https://' + row['slug'] + '.test'), 60)
+    (EVIDENCE / 'browser-open.json').write_text(json.dumps(browser, indent=2) + '\n')
+    activate()
+    wait('guide App opening completed', lambda: selected_document_text('4 of 4 steps complete'))
+    capture('guide-complete')
+    click('Finish setup')
+    wait('guide dismissed after completion', lambda: not find('Dismiss getting started guide'))
     capture('project-ready')
     daemon_pid = command('systemctl', '--user', 'show', 'harbord.service', '--property=MainPID', '--value')
     assert int(daemon_pid) > 1
@@ -319,6 +476,8 @@ try:
         'application': APP, 'project_directory': str(directory), 'project_id': row['id'],
         'fixture': 'Ubuntu 24.04 x86_64, XFCE X11 desktop on Xvfb, AT-SPI, GTK/WebKit',
         'creation': 'production graphical wizard', 'start': 'ready and system-trusted HTTPS 200',
+        'onboarding': 'installed first-project guide, native tool recheck, and published App opening completed',
+        'browser': browser,
         'close': 'hidden with project ready', 'reopen': 'original process restored',
         'quit': 'native GTK menu, same daemon PID and project ready',
         'quit_method': 'native GTK menu',
@@ -369,3 +528,5 @@ finally:
     (EVIDENCE / 'ui-child-settlement.json').write_text(json.dumps([
         {'pid': child.pid, 'returncode': child.poll()} for child in children
     ], indent=2) + '\n')
+    if browser_preference is not None:
+        restore_browser_preference(browser_preference)

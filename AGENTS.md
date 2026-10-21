@@ -26,7 +26,7 @@ Code and tests are authoritative for present behavior. The target design is auth
 - One failed or quarantined project must not prevent the daemon or unrelated projects from operating.
 - Do not wipe durable state, delete a checkout, remove volumes, or mutate foreign host state as ordinary recovery.
 - Do not claim macOS, Linux, or Windows support from a cross-compile. Crucial networking, resolver, certificate, privilege, desktop, and cleanup behavior needs native OS evidence.
-- The bounded `.env.host` managed block is an accepted temporary bridge. Preserve it until the typed GoForj managed-session overlay is implemented and proved; do not broaden it into a second project manifest.
+- Project dotenv files remain repository-owned. Supply assigned runtime values through the existing child environment and retire only the exact legacy Harbor `.env.host` block through its guarded implementation. Do not broaden this bridge into a second project manifest or claim that the future managed-session protocol is active.
 
 ## Repository Boundaries
 

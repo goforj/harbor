@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, shallowReactive, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowReactive, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
@@ -33,12 +33,15 @@ import StartupTimeline from '@/components/harbor/StartupTimeline.vue'
 import InteractiveTerminal from '@/components/harbor/InteractiveTerminal.vue'
 import ProjectConnectPanel from '@/components/harbor/ProjectConnectPanel.vue'
 import ProjectEnvironmentPanel from '@/components/harbor/ProjectEnvironmentPanel.vue'
+import ProjectFailurePanel from '@/components/harbor/ProjectFailurePanel.vue'
+import SupportDiagnostics from '@/components/harbor/SupportDiagnostics.vue'
+import PrerequisitePanel from '@/components/harbor/PrerequisitePanel.vue'
 import ResourceFavicon from '@/components/harbor/ResourceFavicon.vue'
 import ProjectIcon from '@/components/harbor/ProjectIcon.vue'
 import KindIcon from '@/components/harbor/KindIcon.vue'
 import ServiceIcon from '@/components/harbor/ServiceIcon.vue'
 import ServiceLogsPanel from '@/components/harbor/ServiceLogsPanel.vue'
-import TerminalOutput from '@/components/harbor/TerminalOutput.vue'
+import LogViewer from '@/components/harbor/LogViewer.vue'
 import { copyText } from '@/bridge/clipboard'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
@@ -66,7 +69,6 @@ import {
 } from '@/components/ui/tooltip'
 import { useProjectActivity } from '@/composables/useProjectActivity'
 import { countReadyServices } from '@/lib/servicePresentation'
-import { terminalPlainText } from '@/lib/terminal'
 import { projectTerminalCleanup } from '@/lib/projectTerminalCleanup'
 import { ProjectTerminalSession } from '@/lib/projectTerminalSession'
 import { useHarborStore } from '@/stores/harbor'
@@ -78,11 +80,7 @@ const router = useRouter()
 const store = useHarborStore()
 const copiedPath = ref(false)
 const copiedProjectAddress = ref(false)
-const copiedDevelopmentOutput = ref(false)
-const developmentOutputCopyError = ref<string | null>(null)
 const removeOpen = ref(false)
-const developmentOutputViewport = ref<HTMLElement | null>(null)
-const followDevelopmentOutput = ref(true)
 const selectedDetailTab = ref('overview')
 const projectId = computed(() => String(route.params.projectId ?? ''))
 const projectTerminalLimit = 8
@@ -145,6 +143,7 @@ const {
   output: developmentOutput,
   outputResetKey: developmentOutputResetKey,
   error: developmentOutputError,
+  fresh: developmentOutputFresh,
   truncated: developmentOutputTruncated,
 } = useProjectActivity({
   projectId,
@@ -373,6 +372,8 @@ const lifecycleControlsDisabled = computed(() => store.snapshotStale
   || removalPending.value)
 const lifecycleDisabled = computed(() => lifecycleControlsDisabled.value
   || store.projectLifecycleBlockedFor(projectId.value, lifecycleAction.value))
+const showFailureDetails = computed(() => !needsNetworkSetup.value && !recoveryRequired.value && !checkoutMissing.value
+  && Boolean(lifecycleError.value || project.value?.state === 'failed'))
 const restartDisabled = computed(() => lifecycleControlsDisabled.value
   || store.projectLifecycleBlockedFor(projectId.value, 'restart')
   || !restartAvailable.value)
@@ -417,7 +418,6 @@ const updatedAt = computed(() => project.value
 
 watch([projectId, project], ([nextProjectId, nextProject], [previousProjectId, previousProject]) => {
   if (nextProjectId !== previousProjectId) {
-    followDevelopmentOutput.value = true
     selectedDetailTab.value = 'overview'
   }
   if (nextProjectId && nextProjectId === previousProjectId && previousProject && !nextProject) {
@@ -440,20 +440,6 @@ onBeforeUnmount(() => {
   closeProjectTerminalWorkspaces()
 })
 
-async function scrollDevelopmentOutput() {
-  if (!followDevelopmentOutput.value) return
-  await nextTick()
-  const viewport = developmentOutputViewport.value
-  if (viewport) viewport.scrollTop = viewport.scrollHeight
-}
-
-// updateDevelopmentOutputFollow pauses automatic tailing while the user inspects earlier output.
-function updateDevelopmentOutputFollow() {
-  const viewport = developmentOutputViewport.value
-  if (!viewport) return
-  followDevelopmentOutput.value = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 32
-}
-
 async function copyPath() {
   if (!project.value) return
   await copyText(project.value.path)
@@ -466,19 +452,6 @@ async function copyProjectAddress() {
   await copyText(projectAddress.value)
   copiedProjectAddress.value = true
   window.setTimeout(() => { copiedProjectAddress.value = false }, 1600)
-}
-
-async function copyDevelopmentOutput() {
-  if (!developmentOutput.value) return
-  developmentOutputCopyError.value = null
-  try {
-    await copyText(terminalPlainText(developmentOutput.value))
-    copiedDevelopmentOutput.value = true
-    window.setTimeout(() => { copiedDevelopmentOutput.value = false }, 1600)
-  }
-  catch (error) {
-    developmentOutputCopyError.value = error instanceof Error ? error.message : 'Could not copy development output.'
-  }
 }
 
 async function openResource(resourceId: string) {
@@ -512,13 +485,19 @@ async function changeProjectLifecycle() {
   await store.stopProject(project.value.id)
 }
 
-async function startProject(requestedProjectId: string) {
+// retryFailedProject uses ordinary Start admission only while the selected project still accepts it.
+async function retryFailedProject() {
+  if (lifecycleDisabled.value || lifecycleAction.value !== 'start') return
+  await startProject(projectId.value)
+}
+
+async function startProject(requestedProjectId: string, options?: { checkPrerequisites?: boolean }) {
   if (projectId.value === requestedProjectId
     && project.value?.id === requestedProjectId
     && selectedDetailTab.value === 'overview') {
     selectedDetailTab.value = 'output'
   }
-  await store.startProject(requestedProjectId)
+  await store.startProject(requestedProjectId, options)
 }
 
 async function restartProject() {
@@ -698,11 +677,39 @@ async function setupNetworkAndStartProject() {
               </Tooltip>
             </TooltipProvider>
           </div>
-          <span class="hidden shrink-0 text-[11px] text-muted-foreground sm:block" :title="`Updated ${updatedAt}`">{{ project.slug }}</span>
+          <SupportDiagnostics :source="{ connection: store.connectionState, stale: store.snapshotStale, status: store.daemonStatus, snapshot: store.snapshot, projectId, activity: projectActivity, output: developmentOutput, outputFresh: developmentOutputFresh, outputError: developmentOutputError, outputTruncated: developmentOutputTruncated }" :output-reset-key="developmentOutputResetKey" />
         </div>
       </header>
 
-      <div v-if="lifecycleError || (recoveryRequired && runtimeRepairNotice)" class="px-5 pt-5 lg:px-7">
+      <div v-if="store.projectPrerequisiteChecking[projectId] || store.projectPrerequisiteErrors[projectId] || store.projectPrerequisites[projectId]" class="px-5 pt-5 lg:px-7">
+        <PrerequisitePanel
+          :report="store.projectPrerequisites[projectId]"
+          :checking="store.projectPrerequisiteChecking[projectId]"
+          :error="store.projectPrerequisiteErrors[projectId]"
+          :continue-available="lifecycleAction === 'start' && !lifecycleDisabled"
+          compact
+          @recheck="store.checkProjectPrerequisites(projectId)"
+          @continue="startProject(projectId, { checkPrerequisites: false })"
+        />
+      </div>
+
+      <div v-if="showFailureDetails" class="px-5 pt-5 lg:px-7">
+        <ProjectFailurePanel
+          :key="project.id"
+          :project-name="project.name"
+          :message="lifecycleError ?? ''"
+          :code="lifecycleProblemCode ?? ''"
+          :session="projectActivitySession"
+          :output="developmentOutput"
+          :truncated="developmentOutputTruncated"
+          :output-error="developmentOutputError"
+          :retry-available="lifecycleAction === 'start'"
+          :retry-disabled="lifecycleDisabled"
+          @retry="retryFailedProject"
+          @view-output="selectedDetailTab = 'output'"
+        />
+      </div>
+      <div v-if="!showFailureDetails && (lifecycleError || (recoveryRequired && runtimeRepairNotice))" class="px-5 pt-5 lg:px-7">
         <Alert :variant="recoveryRequired || needsNetworkSetup ? 'default' : 'destructive'">
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{{ recoveryRequired ? 'Ready to start again' : needsNetworkRepair ? 'Harbor networking needs repair' : needsNetworkSetup ? 'Secure networking is not ready' : checkoutMissing ? 'Project folder is missing' : 'Project action failed' }}</AlertTitle>
@@ -744,17 +751,6 @@ async function setupNetworkAndStartProject() {
 
         <div class="project-tab-body" :class="selectedDetailTab === 'output' || selectedDetailTab === 'terminal' || selectedDetailTab === 'environment' || selectedDetailTab === 'services' ? 'flex min-h-0 flex-1 flex-col gap-5 p-5 lg:p-7' : 'space-y-5 p-5 lg:p-7'">
         <StartupTimeline v-if="projectActivitySession?.startup && (selectedDetailTab === 'overview' || selectedDetailTab === 'output')" :key="`${project.id}:${selectedDetailTab}`" :compact="selectedDetailTab === 'output'" :progress="projectActivitySession.startup" :settled="project.state !== 'starting' && project.state !== 'rebuilding'" />
-        <Alert v-if="project.state === 'failed' && projectActivitySession?.diagnostics?.port_conflicts.length" variant="destructive">
-          <TriangleAlert aria-hidden="true" />
-          <AlertTitle>A service port is already in use</AlertTitle>
-          <AlertDescription class="space-y-2">
-            <p v-for="conflict in projectActivitySession.diagnostics.port_conflicts" :key="`${conflict.service}:${conflict.address}:${conflict.port}:${conflict.listener}`" class="break-words">
-              <strong>{{ conflict.service }}</strong> requests <code>{{ conflict.address }}:{{ conflict.port }}/{{ conflict.protocol }}</code>.
-              <strong>{{ conflict.listener }}</strong> currently publishes that port on <code>{{ conflict.bound }}</code>.
-            </p>
-            <p>A wildcard bind such as <code>0.0.0.0</code> can block a project's loopback address. Stop or reconfigure the competing workload, then retry this project.</p>
-          </AlertDescription>
-        </Alert>
         <Alert
           v-if="runtimeRepairNotice && !recoveryRequired"
           :variant="runtimeRepairNotice.state === 'failed' ? 'destructive' : 'default'"
@@ -923,6 +919,7 @@ async function setupNetworkAndStartProject() {
         <TabsContent value="connect" class="m-0">
           <ProjectConnectPanel
             :active="selectedDetailTab === 'connect'"
+            :fresh="daemonConnected && !store.snapshotStale"
             :project="project"
             :sequence="snapshotSequence"
           />
@@ -930,34 +927,25 @@ async function setupNetworkAndStartProject() {
 
         <TabsContent value="output" class="m-0 flex min-h-0 flex-1 flex-col">
         <section v-if="showDevelopmentOutput" aria-label="Development output panel" class="project-log flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div class="project-log-toolbar flex min-h-11 shrink-0 flex-wrap items-center justify-between gap-2 border-b px-5 lg:px-7">
-            <div class="flex items-center gap-2 text-xs text-muted-foreground"><SquareTerminal class="size-3.5" /><span class="font-mono">forj dev</span><span class="mx-1 text-border">/</span><span>{{ project.name }}</span></div>
-            <div class="flex items-center gap-3"><span class="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground"><span class="size-1.5 rounded-full" :class="followDevelopmentOutput ? 'bg-status-ready' : 'bg-status-stopped'" />{{ followDevelopmentOutput ? 'Following output' : 'Scroll paused' }}</span><Button variant="ghost" size="sm" class="h-7 text-xs" :disabled="!developmentOutput" @click="copyDevelopmentOutput"><Check v-if="copiedDevelopmentOutput" class="size-3" /><Clipboard v-else class="size-3" />{{ copiedDevelopmentOutput ? 'Copied' : 'Copy' }}</Button></div>
-          </div>
-          <div class="flex min-h-0 flex-1 flex-col">
-            <p v-if="developmentOutputError" class="border-b px-4 py-2 text-xs text-destructive">{{ developmentOutputError }}</p>
-            <p v-if="developmentOutputCopyError" class="border-b px-4 py-2 text-xs text-destructive">{{ developmentOutputCopyError }}</p>
-            <div
-              ref="developmentOutputViewport"
-              class="min-h-0 flex-1 overflow-auto project-log-viewport bg-zinc-950 px-5 py-4 lg:px-7 font-mono text-xs leading-5 text-zinc-200 outline-none"
-              tabindex="0"
-              aria-label="Current project development output"
-              @scroll="updateDevelopmentOutputFollow"
-            >
-              <p v-if="developmentOutputTruncated" class="mb-2 text-amber-300">Earlier output is no longer retained.</p>
-              <p v-if="projectActivitySession?.output.historical" class="mb-2 text-amber-300">Showing retained output from before Harbor reconnected; live output will resume when the process is reattached.</p>
-              <TerminalOutput
-                v-if="developmentOutput"
-                :output="developmentOutput"
-                :reset-key="developmentOutputResetKey"
-                @rendered="scrollDevelopmentOutput"
-              />
-              <p v-else-if="projectActivitySession?.output.historical" class="text-zinc-500">No retained output was recorded before Harbor reconnected.</p>
-              <p v-else-if="project?.state === 'failed' && lifecycleProblemCode === 'project.process.exited'" class="text-zinc-500">Harbor retained the launch trace at <code>_data/harbor/forj-dev.log</code>.</p>
-              <p v-else-if="projectActivitySession && !projectActivitySession.output.available" class="text-zinc-500">The current process is not available to stream output.</p>
-              <p v-else class="text-zinc-500">Waiting for <code>forj dev</code> output…</p>
-            </div>
-          </div>
+          <LogViewer
+            :output="developmentOutput"
+            :reset-key="developmentOutputResetKey"
+            :identity="`${projectId}:${projectActivitySession?.id ?? ''}`"
+            label="Current project development output"
+          >
+            <template #label><SquareTerminal class="size-3.5" /><span class="font-mono">forj dev</span><span class="mx-1 text-border">/</span><span>{{ project.name }}</span></template>
+            <template #notices><p v-if="developmentOutputError" class="border-b px-4 py-2 text-xs text-destructive">{{ developmentOutputError }}</p></template>
+            <template #viewport-notices>
+              <p v-if="developmentOutputTruncated" class="mb-2 text-amber-700 dark:text-amber-300">Earlier output is no longer retained. Search covers retained output only.</p>
+              <p v-if="projectActivitySession?.output.historical" class="mb-2 text-amber-700 dark:text-amber-300">{{ project?.state === 'failed' || project?.state === 'stopped' ? 'Showing retained output from the last run.' : 'Showing retained output from before Harbor reconnected; live output will resume when the process is reattached.' }}</p>
+            </template>
+            <template #empty>
+              <p v-if="projectActivitySession?.output.historical" class="text-muted-foreground">No retained output was recorded before Harbor reconnected.</p>
+              <p v-else-if="project?.state === 'failed' && lifecycleProblemCode === 'project.process.exited'" class="text-muted-foreground">Harbor retained the launch trace at <code>_data/harbor/forj-dev.log</code>.</p>
+              <p v-else-if="projectActivitySession && !projectActivitySession.output.available" class="text-muted-foreground">The current process is not available to stream output.</p>
+              <p v-else class="text-muted-foreground">Waiting for <code>forj dev</code> output…</p>
+            </template>
+          </LogViewer>
         </section>
         <Empty v-else class="min-h-0 flex-1 rounded-lg border">
           <EmptyHeader><EmptyTitle>No development output yet</EmptyTitle><EmptyDescription>Harbor will show the current <code>forj dev</code> session here when the project starts.</EmptyDescription></EmptyHeader>

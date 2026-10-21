@@ -173,7 +173,9 @@ test('offers one repeat-safe network setup action for an empty capable Harbor', 
 
   await page.goto('/#/overview', { waitUntil: 'domcontentloaded' })
 
-  await expect(page.getByText('This action is safe to run again.', { exact: false })).toBeVisible()
+  const guide = page.getByRole('region', { name: 'Getting started guide', exact: true })
+  await expect(guide.getByText('Set up local domains, HTTPS, and ingress with your approval.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Set up secure networking', exact: true })).toHaveCount(1)
   await page.getByRole('button', { name: 'Set up secure networking', exact: true }).click()
 
   await expect(page.getByRole('button', { name: 'Set up secure networking', exact: true })).toHaveCount(0)
@@ -200,7 +202,7 @@ test('shows live output from the current project session', async ({ page }) => {
   await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
 
   await page.getByRole('tab', { name: 'Development output', exact: true }).click()
-  const output = page.getByLabel('Current project development output')
+  const output = page.getByLabel('Current project development output', { exact: true })
   await expect(output).toContainText('Building app: web')
   await expect(output).toContainText('Built web in 482ms')
   await expect(output).toContainText('migrations complete (0)')
@@ -473,9 +475,9 @@ test('routes services with project and service identities', async ({ page }) => 
   await expect(page.getByRole('heading', { name: 'MySQL' })).toBeVisible()
   await expect(page.getByText('orders-api', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('Compose service', { exact: true }).first()).toBeVisible()
-  await expect(page.getByLabel('MySQL service logs')).toContainText('MySQL ready on orders-api')
+  await expect(page.getByLabel('MySQL service logs', { exact: true })).toContainText('MySQL ready on orders-api')
   await expect(page.getByRole('button', { name: 'Clear', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Following', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: 'Pause scrolling', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(page).toHaveURL(/#\/services\/orders-api\/mysql$/)
 })
 
@@ -584,7 +586,7 @@ test('persists terminal appearance and follows app appearance only when selected
 
   await page.goto('/#/projects/orders-api')
   await page.getByRole('tab', { name: 'Development output', exact: true }).click()
-  await expect(page.getByLabel('Current project development output')).toHaveCSS('background-color', 'rgb(246, 248, 250)')
+  await expect(page.getByLabel('Current project development output', { exact: true })).toHaveCSS('background-color', 'rgb(246, 248, 250)')
 
   await page.goto('/#/settings/appearance')
   await page.getByRole('radio', { name: 'Dark terminal appearance', exact: true }).check()
@@ -728,8 +730,9 @@ test('uses native bindings and recovers after the first snapshot read fails', as
   await expect(detail.getByRole('heading', { name: 'Overview' })).toBeVisible()
   await expect(detail.getByText('Connected to Harbor. Waiting for the first snapshot.')).toBeHidden()
   await expect(detail.getByText('Harbor daemon is starting')).toBeHidden()
-  await expect(detail.getByText('Add your first project', { exact: true })).toBeVisible()
-  await expect(detail.getByRole('button', { name: 'Choose a project folder', exact: true })).toBeVisible()
+  const guide = detail.getByRole('region', { name: 'Getting started guide', exact: true })
+  await expect(guide.getByRole('heading', { name: 'Get a project running', exact: true })).toBeVisible()
+  await expect(guide.getByRole('button', { name: 'Add existing', exact: true })).toBeEnabled()
 })
 
 test('keeps a missing first snapshot in an explicit waiting state and announces stale state once', async ({ page }) => {

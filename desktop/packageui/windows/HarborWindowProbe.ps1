@@ -152,7 +152,8 @@ try {
     Wait-Until 'Quit shortcut target keyboard focus' { $quitFocus.Current.HasKeyboardFocus } 10
     if (-not [HarborUIProfile]::IsRetainedProductWindowForeground($originalProcess, $script:windowHandle)) { throw 'Quit shortcut target is not in the exact foreground window' }
     Save-WindowControls 'before-native-quit'
-    [System.Windows.Forms.SendKeys]::SendWait('^q')
+    $nativeQuit = [HarborUIProfile]::SendRetainedProductQuit($originalProcess, $script:windowHandle)
+    $nativeQuit | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'native-quit-input.json') -Encoding UTF8
     Wait-Until 'normal native Quit exits exact retained UI handle' { [HarborUIProfile]::HasRetainedProductExited($originalProcess) }
     if ($daemonProcess.HasExited -or $daemonProcess.StartTime.ToFileTimeUtc().ToString() -cne $daemonBirth) { throw 'normal UI Quit stopped or replaced the original daemon' }
     Assert-UntouchedSnapshot 'after-native-quit'
@@ -160,7 +161,7 @@ try {
         schema_version=1; scope='installed-native-window-only'; full_gui_lifecycle_proved=$false
         application=$desktopPath; launcher=$launcherPath; daemon=$daemonPath; installation_id=$selection.installation_id; bundle_digest=$selection.bundle_digest
         ui_pid=$originalProcess; native_window=$originalWindowHandle.ToInt64().ToString(); native_close_hides=$true; original_process_reopen=$true
-        native_application_menu='Harbor'; quit_action='Ctrl+Q'; focus_target='Projects'; exact_retained_ui_handle_exited=$true
+        native_application_menu='Harbor'; quit_action='Ctrl+Q'; native_quit_input=$nativeQuit; focus_target='Projects'; exact_retained_ui_handle_exited=$true
         original_daemon_survived=$true; daemon_pid=$daemonProcess.Id; daemon_native_birth=$daemonBirth
         networking_configured=$false; projects=0; prior_operations=0; setup_or_helper_actions_requested=$false
         launched_token_facts=[HarborUIProfile]::LastLaunchFacts; protected_access_receipts=@([HarborUIProfile]::AccessReceipts)

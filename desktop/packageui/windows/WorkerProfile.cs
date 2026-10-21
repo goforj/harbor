@@ -17,6 +17,31 @@ public static class HarborUIProfile {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+    [DllImport("user32.dll", SetLastError=true)] static extern uint SendInput(uint count, Input[] inputs, int size);
+    [StructLayout(LayoutKind.Sequential)] struct MouseInput {
+        public int x, y; public uint data, flags, time; public UIntPtr extraInfo;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct KeyboardInput {
+        public ushort key, scan; public uint flags, time; public UIntPtr extraInfo;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct HardwareInput { public uint message; public ushort low, high; }
+    // InputUnion includes MOUSEINPUT so INPUT has the native x64 size and alignment, including its padding.
+    [StructLayout(LayoutKind.Explicit)] struct InputUnion {
+        [FieldOffset(0)] public MouseInput mouse;
+        [FieldOffset(0)] public KeyboardInput keyboard;
+        [FieldOffset(0)] public HardwareInput hardware;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct Input { public uint type; public InputUnion data; }
+    public sealed class NativeQuitReceipt {
+        public string method = "Win32 SendInput";
+        public string user_key_chord = "Ctrl+Q";
+        public int accepted_events;
+        public int modifier_hold_ms;
+        public int input_size;
+        public int pid;
+        public string native_window;
+    }
     [DllImport("user32.dll")] static extern IntPtr GetMenu(IntPtr window);
     [DllImport("user32.dll")] static extern IntPtr GetSubMenu(IntPtr menu, int position);
     [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr menu);
@@ -244,6 +269,55 @@ public static class HarborUIProfile {
     public static bool IsRetainedProductWindowForeground(int pid, IntPtr window) {
         if (!IsRetainedProductWindowVisible(pid, window)) throw new Exception("foreground target is not the visible admitted product window");
         return GetForegroundWindow() == window;
+    }
+    // AssertQuitKeysReleased prevents this attempt from taking ownership of an already pressed user key.
+    static void AssertQuitKeysReleased(bool ownControl) {
+        int[] keys = ownControl
+            ? new int[] { 0x12, 0x10, 0xA1, 0xA0, 0xA4, 0xA5, 0x5B, 0x5C, 0xA3, 0x51 }
+            : new int[] { 0x11, 0xA2, 0xA3, 0x12, 0xA4, 0xA5, 0x10, 0xA0, 0xA1, 0x5B, 0x5C, 0x51 };
+        foreach (int key in keys) {
+            if ((GetAsyncKeyState(key) & 0x8000) != 0) throw new Exception("native Quit requires released Ctrl/Alt/Shift/Win/Q keys");
+        }
+    }
+    // SendQuitKey requires an accepted native event before ownership can change.
+    static void SendQuitKey(ushort key, bool release) {
+        Input input = new Input { type = 1, data = new InputUnion {
+            keyboard = new KeyboardInput { key = key, flags = release ? 2u : 0u }
+        } };
+        uint accepted = SendInput(1, new Input[] { input }, Marshal.SizeOf(typeof(Input)));
+        if (accepted != 1) throw new Win32Exception(Marshal.GetLastWin32Error(), "native Quit SendInput accepted " + accepted + " of 1 events");
+    }
+    // SendRetainedProductQuit emits one guarded chord; process exit must separately prove accelerator dispatch.
+    public static NativeQuitReceipt SendRetainedProductQuit(int pid, IntPtr window) {
+        int inputSize = Marshal.SizeOf(typeof(Input));
+        if (IntPtr.Size != 8 || inputSize != 40 || Marshal.OffsetOf(typeof(Input), "data").ToInt32() != 8)
+            throw new Exception("native Quit requires the admitted x64 INPUT layout");
+        if (!IsRetainedProductWindowForeground(pid, window)) throw new Exception("native Quit target is not the exact foreground product window");
+        AssertQuitKeysReleased(false);
+        bool controlDown = false, qDown = false;
+        const int holdMilliseconds = 250;
+        int accepted = 0;
+        try {
+            SendQuitKey(0xA2, false); controlDown = true; accepted++;
+            AssertQuitKeysReleased(true);
+            if (!IsRetainedProductWindowForeground(pid, window)) throw new Exception("native Quit foreground changed before Q delivery");
+            SendQuitKey(0x51, false); qDown = true; accepted++;
+            // Release Q before the hold so autorepeat cannot target a window exposed by Quit.
+            SendQuitKey(0x51, true); qDown = false; accepted++;
+            // Wails beta.32 reads GetKeyboardState in its asynchronous accelerator callback.
+            // Keep only our Ctrl down after Q delivery for that modifier observation.
+            System.Threading.Thread.Sleep(holdMilliseconds);
+        } finally {
+            // Release only accepted keydowns owned by this attempt, even when the foreground guard fails.
+            try {
+                if (qDown) { SendQuitKey(0x51, true); accepted++; }
+            } finally {
+                if (controlDown) { SendQuitKey(0xA2, true); accepted++; }
+            }
+        }
+        if (accepted != 4) throw new Exception("native Quit did not accept exactly four input events");
+        return new NativeQuitReceipt { accepted_events = accepted, modifier_hold_ms = holdMilliseconds,
+            input_size = inputSize, pid = pid, native_window = window.ToInt64().ToString() };
     }
     public static void ActivateRetainedProductWindow(int pid, IntPtr window) {
         if (IsRetainedProductWindowForeground(pid, window)) return;

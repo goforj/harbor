@@ -118,7 +118,7 @@ jobs:
           sudo -n apt-get update
           sudo -n apt-get install --yes xfce4 xfce4-notifyd xvfb xdotool scrot python3-pyatspi \
             at-spi2-core libatk-adaptor dbus-user-session libcap2-bin libgtk-3-0 \
-            libwebkit2gtk-4.1-0 nftables policykit-1 systemd-resolved
+            libwebkit2gtk-4.1-0 nftables policykit-1 systemd-resolved epiphany-browser xclip
           sudo -n systemctl enable --now systemd-resolved.service
           sudo -n ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
           sudo -n setcap cap_net_admin=ep /usr/sbin/nft
@@ -127,7 +127,7 @@ jobs:
           printf 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" >> "$GITHUB_ENV"
           sudo -n systemctl start "user@$(id -u).service"
           mkdir -p harbor-package-ui-evidence
-          dpkg-query -W xfce4-session xfwm4 libgtk-3-0t64 libwebkit2gtk-4.1-0 at-spi2-core xvfb > harbor-package-ui-evidence/runtime-versions.txt
+          dpkg-query -W xfce4-session xfwm4 libgtk-3-0t64 libwebkit2gtk-4.1-0 at-spi2-core xvfb epiphany-browser xclip > harbor-package-ui-evidence/runtime-versions.txt
           cat /etc/os-release >> harbor-package-ui-evidence/runtime-versions.txt
           uname -a >> harbor-package-ui-evidence/runtime-versions.txt
           printf 'ImageOS=%s\nImageVersion=%s\n' "$ImageOS" "$ImageVersion" >> harbor-package-ui-evidence/runtime-versions.txt
@@ -170,8 +170,23 @@ jobs:
           done
           xdpyinfo >/dev/null
           xfce4-session > harbor-package-ui-evidence/xfce-session.log 2>&1 &
+          gsettings get org.gnome.Epiphany ask-for-default > "$RUNNER_TEMP/harbor-browser-prompt.original"
+          gsettings set org.gnome.Epiphany ask-for-default false
           /usr/bin/python3 scripts/packageui/linux/acceptance.py
           sha256sum --check "$RUNNER_TEMP/ui-installed.sha256"
+
+      - name: Restore disposable browser first-run preference
+        if: always()
+        run: |
+          set -euo pipefail
+          original="$RUNNER_TEMP/harbor-browser-prompt.original"
+          if [ -f "$original" ]; then
+            setting="$(cat "$original")"
+            case "$setting" in
+              true|false) gsettings set org.gnome.Epiphany ask-for-default "$setting" ;;
+              *) exit 1 ;;
+            esac
+          fi
 
       - name: Unregister fixture, release owned networking, and preserve user data
         run: |
@@ -224,6 +239,15 @@ jobs:
           mkdir -p harbor-package-ui-evidence
           /usr/bin/harbor daemon snapshot > harbor-package-ui-evidence/final-snapshot.json 2>&1 || true
           journalctl --user -u harbord.service --no-pager > harbor-package-ui-evidence/daemon-journal.txt 2>&1 || true
+          sudo -n journalctl -u polkit.service --lines=120 --no-pager > harbor-package-ui-evidence/polkit-journal.txt 2>&1 || true
+          sudo -n stat --format='%n type=%F uid=%u gid=%g mode=%a links=%h' \
+            /usr/libexec/harbor-helper /usr/bin/pkexec /usr/sbin/nft \
+            /var/lib/goforj/harbor /var/lib/goforj/harbor/tickets \
+            /var/lib/goforj/harbor/tickets/pending /var/lib/goforj/harbor/tickets/claims \
+            > harbor-package-ui-evidence/helper-boundary-metadata.txt 2>&1 || true
+          getcap /usr/sbin/nft > harbor-package-ui-evidence/nft-capabilities.txt 2>&1 || true
+          timeout 5s sudo -n /usr/sbin/nft --json list table inet goforj_harbor \
+            > harbor-package-ui-evidence/low-port-table.json 2>&1 || true
 
       - name: Recover owned resources after failed GUI check
         if: failure() && steps.install.outcome == 'success'

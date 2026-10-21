@@ -27,17 +27,13 @@ export function projectServiceConnections(
     ))
     const resourceConnections = resources.map((resource): ServiceConnection => {
       const upstream = new URL(resource.url)
-      const hostname = resource.id === 'app-http'
-        ? `${project.slug}.test`
-        : `${resource.id}.${project.slug}.test`
-      const path = upstream.pathname === '/' ? '' : upstream.pathname
       return {
         id: `resource:${resource.id}`,
-        endpoint: `https://${hostname}${path}`,
-        hostname,
+        endpoint: resource.url,
+        hostname: upstream.hostname,
         label: resource.name,
-        port: 443,
-        protocol: 'HTTPS',
+        port: upstream.port ? Number(upstream.port) : upstream.protocol === 'https:' ? 443 : 80,
+        protocol: upstream.protocol.slice(0, -1).toUpperCase(),
         source: 'resource',
       }
     })

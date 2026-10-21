@@ -179,7 +179,7 @@ func TestReleaseUnavailableProjectSessionRetiresReceiptFreeBoundaries(t *testing
 			if sessionState == domain.SessionPlanned {
 				if err := fixture.connection.Model(&models.ProjectSession{}).
 					Where("project_id = ?", string(fixture.boundary.Project.Project.ID)).
-					Update("state", string(sessionState)).Error; err != nil {
+					UpdateColumn("state", string(sessionState)).Error; err != nil {
 					t.Fatalf("set receipt-free session state: %v", err)
 				}
 			}

@@ -496,7 +496,7 @@ Cross-compilation, a successful `wails3 build`, or installation under an adminis
 7. Implement the Ubuntu package, systemd user lifecycle, package admission, and cleanup behavior.
 8. Add isolated signing, native product workers, build-once promotion, and release support-table generation.
 
-The unsigned Apple-silicon development-package workflow is the first packaging implementation. Its artifacts are labeled development builds and do not imply that signing, notarization, update, rollback, uninstall, or full native installation evidence has passed.
+The unsigned Apple-silicon development-package workflow was the first packaging implementation. The current preview and named hosted profiles now have installation, Harbor-owned uninstall, preservation, and GUI/recovery receipts recorded in [Current implementation state](./current-state.md). Signing, notarization, genuine consent, reboot, updates, rollback, and additional product profiles remain separate gates. The signed release sequence above remains the approved target.
 
 ## Open decisions
 

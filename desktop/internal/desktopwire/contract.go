@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/goforj/harbor/desktop/internal/projectreadiness"
 	"github.com/goforj/harbor/internal/control"
 	"github.com/goforj/harbor/internal/domain"
 	"github.com/goforj/harbor/internal/projectcreation"
@@ -36,6 +37,10 @@ type ProjectCreationProgress struct {
 }
 
 const (
+	// MethodProjectCreationPrerequisites inspects provider-selected authoring tools.
+	MethodProjectCreationPrerequisites = "ProjectCreationPrerequisites"
+	// MethodProjectPrerequisites inspects tools for one registered checkout.
+	MethodProjectPrerequisites = "ProjectPrerequisites"
 	// MethodProjectCreationProviders lists the available stack adapters.
 	MethodProjectCreationProviders = "ProjectCreationProviders"
 	// MethodStartProjectCreation starts a desktop-owned authoring job.
@@ -223,6 +228,8 @@ func (result AddProjectResult) Validate() error {
 
 // AppContract is the complete exported method surface Wails may bind from App.
 type AppContract interface {
+	ProjectCreationPrerequisites(request projectcreation.Request) (projectreadiness.Report, error)
+	ProjectPrerequisites(projectID string) (projectreadiness.Report, error)
 	ProjectCreationProviders() ([]projectcreation.ProviderInfo, error)
 	ProjectCreationSchema(providerID string) (projectcreation.Schema, error)
 	StartProjectCreation(request projectcreation.Request) (ProjectCreationProgress, error)
@@ -273,42 +280,44 @@ type MethodContract struct {
 func MethodContracts() []MethodContract {
 	contractType := reflect.TypeOf((*AppContract)(nil)).Elem()
 	parameterNames := map[string][]string{
-		MethodProjectCreationProviders:    {},
-		MethodProjectCreationSchema:       {"providerId"},
-		MethodStartProjectCreation:        {"request"},
-		MethodProjectCreationProgress:     {"jobId", "cursor"},
-		MethodRetryProjectRegistration:    {"jobId"},
-		MethodChooseProjectParent:         {},
-		MethodCreateProject:               {"request"},
-		MethodAddProject:                  {},
-		MethodApproveProjectRemoval:       []string{"projectId", "intentId"},
-		MethodConfirmProjectRuntimeRepair: []string{"projectId", "inspectionId", "candidateFingerprint"},
-		MethodInspectProjectRuntimeRepair: []string{"projectId"},
-		MethodOpenResource:                []string{"projectId", "resourceId"},
-		MethodOpenTerminalURL:             []string{"rawURL"},
-		MethodResourceIconURL:             []string{"projectId", "resourceId"},
-		MethodProjectActivity:             []string{"projectId", "sessionId", "cursor"},
-		MethodProjectEnvironment:          []string{"projectId"},
-		MethodSaveProjectEnvironmentFile:  []string{"projectId", "name", "contents", "revision"},
-		MethodServiceLogs:                 []string{"projectId", "sessionId", "serviceId", "cursor"},
-		MethodRemoveProject:               []string{"projectId", "intentId"},
-		MethodRemoveOldNetworking:         {},
-		MethodRepairNetwork:               {},
-		MethodExpandNetwork:               {},
-		MethodResumeNetworkSetup:          {},
-		MethodSetupNetwork:                {},
-		MethodSnapshot:                    []string{},
-		MethodStartProject:                []string{"projectId", "intentId"},
-		MethodStatus:                      []string{},
-		MethodStopProject:                 []string{"projectId", "intentId"},
-		MethodRestartProject:              []string{"projectId", "intentId"},
-		MethodStartProjectTerminal:        []string{"projectId", "columns", "rows", "useEnvironmentOverrides"},
-		MethodAttachProjectTerminal:       []string{"sessionId"},
-		MethodWriteProjectTerminal:        []string{"sessionId", "data"},
-		MethodResizeProjectTerminal:       []string{"sessionId", "columns", "rows"},
-		MethodCloseProjectTerminal:        []string{"sessionId"},
-		MethodWaitProjectActivity:         []string{"projectId", "sessionId", "cursor", "waitMilliseconds"},
-		MethodWaitServiceLogs:             []string{"projectId", "sessionId", "serviceId", "cursor", "waitMilliseconds"},
+		MethodProjectCreationPrerequisites: {"request"},
+		MethodProjectPrerequisites:         {"projectId"},
+		MethodProjectCreationProviders:     {},
+		MethodProjectCreationSchema:        {"providerId"},
+		MethodStartProjectCreation:         {"request"},
+		MethodProjectCreationProgress:      {"jobId", "cursor"},
+		MethodRetryProjectRegistration:     {"jobId"},
+		MethodChooseProjectParent:          {},
+		MethodCreateProject:                {"request"},
+		MethodAddProject:                   {},
+		MethodApproveProjectRemoval:        []string{"projectId", "intentId"},
+		MethodConfirmProjectRuntimeRepair:  []string{"projectId", "inspectionId", "candidateFingerprint"},
+		MethodInspectProjectRuntimeRepair:  []string{"projectId"},
+		MethodOpenResource:                 []string{"projectId", "resourceId"},
+		MethodOpenTerminalURL:              []string{"rawURL"},
+		MethodResourceIconURL:              []string{"projectId", "resourceId"},
+		MethodProjectActivity:              []string{"projectId", "sessionId", "cursor"},
+		MethodProjectEnvironment:           []string{"projectId"},
+		MethodSaveProjectEnvironmentFile:   []string{"projectId", "name", "contents", "revision"},
+		MethodServiceLogs:                  []string{"projectId", "sessionId", "serviceId", "cursor"},
+		MethodRemoveProject:                []string{"projectId", "intentId"},
+		MethodRemoveOldNetworking:          {},
+		MethodRepairNetwork:                {},
+		MethodExpandNetwork:                {},
+		MethodResumeNetworkSetup:           {},
+		MethodSetupNetwork:                 {},
+		MethodSnapshot:                     []string{},
+		MethodStartProject:                 []string{"projectId", "intentId"},
+		MethodStatus:                       []string{},
+		MethodStopProject:                  []string{"projectId", "intentId"},
+		MethodRestartProject:               []string{"projectId", "intentId"},
+		MethodStartProjectTerminal:         []string{"projectId", "columns", "rows", "useEnvironmentOverrides"},
+		MethodAttachProjectTerminal:        []string{"sessionId"},
+		MethodWriteProjectTerminal:         []string{"sessionId", "data"},
+		MethodResizeProjectTerminal:        []string{"sessionId", "columns", "rows"},
+		MethodCloseProjectTerminal:         []string{"sessionId"},
+		MethodWaitProjectActivity:          []string{"projectId", "sessionId", "cursor", "waitMilliseconds"},
+		MethodWaitServiceLogs:              []string{"projectId", "sessionId", "serviceId", "cursor", "waitMilliseconds"},
 	}
 	contracts := make([]MethodContract, 0, contractType.NumMethod())
 	for index := range contractType.NumMethod() {

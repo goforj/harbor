@@ -421,9 +421,6 @@ func copyServiceSnapshots(services []domain.ServiceSnapshot) []domain.ServiceSna
 
 // ObserveResources translates GoForj resource reports into runtime-neutral, ownership-admitted snapshots.
 func (runtime *Runtime) ObserveResources(ctx context.Context, request projectruntime.ResourceObservationRequest) (projectruntime.ResourceObservation, error) {
-	if len(request.Services) == 0 {
-		return projectruntime.ResourceObservation{Supported: false, Resources: []domain.ResourceSnapshot{}}, nil
-	}
 	observation, err := runtime.supervisor.ObserveFrameworkResources(ctx, request.ProjectID, request.SessionID, goForjEnvironmentOverrides(request.Plan.NetworkAssignment))
 	if err != nil || !observation.Supported {
 		return projectruntime.ResourceObservation{Supported: observation.Supported, Resources: []domain.ResourceSnapshot{}}, err

@@ -125,7 +125,8 @@ function Invoke-PreauthorizedNetworking([string]$Action) {
         $receipt.user_sid -cne $selection.user_sid -or $receipt.selection.action -cne $Action) { throw 'networking fixture receipt crossed selected process or authorization scope' }
     $script:approvalIndeterminate = $false
 }
-function Invoke-NativeUIQuit([int]$ProductProcessID) {
+$script:nativeQuitReceipts = @{}
+function Invoke-NativeUIQuit([int]$ProductProcessID, [ValidateSet('first','final')][string]$Phase) {
     [HarborUIProfile]::ActivateRetainedProductWindow($ProductProcessID, $script:windowHandle)
     Wait-Until 'exact foreground installed window' { [HarborUIProfile]::IsRetainedProductWindowForeground($ProductProcessID, $script:windowHandle) } 10
     $quitFocus = Find-Control 'Projects' ([System.Windows.Automation.ControlType]::Button)
@@ -133,7 +134,9 @@ function Invoke-NativeUIQuit([int]$ProductProcessID) {
     $quitFocus.SetFocus()
     Wait-Until 'Quit shortcut target keyboard focus' { $quitFocus.Current.HasKeyboardFocus } 10
     if (-not [HarborUIProfile]::IsRetainedProductWindowForeground($ProductProcessID, $script:windowHandle)) { throw 'Quit keyboard target is not in the exact foreground product window' }
-    [System.Windows.Forms.SendKeys]::SendWait('^q')
+    $receipt = [HarborUIProfile]::SendRetainedProductQuit($ProductProcessID, $script:windowHandle)
+    $script:nativeQuitReceipts[$Phase] = $receipt
+    $receipt | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory ('native-quit-' + $Phase + '-input.json')) -Encoding UTF8
     Wait-Until 'UI-only quit exits desktop' { [HarborUIProfile]::HasRetainedProductExited($ProductProcessID) }
 }
 function Open-Harbor {
@@ -342,6 +345,7 @@ try {
         native_birth=$daemonProcess.StartTime.ToFileTimeUtc().ToString(); image=$daemonProcess.Path
         session=$daemonProcess.SessionId; token_profile_verified=$true
     } | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'initial-daemon-selection.json') -Encoding UTF8
+    $null = Await-Control 'Dismiss getting started guide' ([System.Windows.Automation.ControlType]::Button)
     Save-Observation 'installed-first-launch'
     Wait-Until 'fresh setup action' {
         $null -ne (Find-Control 'Set up secure networking' ([System.Windows.Automation.ControlType]::Button))
@@ -349,6 +353,15 @@ try {
     Invoke-PreauthorizedNetworking 'setup'
     Wait-Until 'secure networking configured' { (Get-Snapshot).network_setup.configured -eq $true } 120
     Invoke-Button 'New project'
+    Wait-Until 'creation form or prerequisite guidance' {
+        $null -ne (Find-Control 'Project name' ([System.Windows.Automation.ControlType]::Edit)) -or
+        $null -ne (Find-Control 'Recheck' ([System.Windows.Automation.ControlType]::Button))
+    }
+    if ($null -eq (Find-Control 'Project name' ([System.Windows.Automation.ControlType]::Edit))) {
+        Save-Observation 'creation-prerequisites-before-recheck'
+        # Exercise the offered repair action after preserving the first cold-tool observation.
+        Invoke-Button 'Recheck'
+    }
     Set-Field 'Project name' 'Harbor Installed Windows UI'
     Set-Field 'Go module' 'example.com/harbor-installed-windows-ui'
     Set-Field 'Project directory' $projectDirectory
@@ -363,10 +376,18 @@ try {
     Save-Observation 'creation-review'
     Invoke-Button 'Create project'
     Await-ProjectState 'stopped'
+    $null = Await-Control 'Dismiss getting started guide' ([System.Windows.Automation.ControlType]::Button)
     $script:startupAfter = [DateTime]::UtcNow
     Invoke-Button 'Start project'
     Await-ProjectState 'ready'
     Assert-HTTPS
+    Invoke-Button 'Recheck'
+    $null = Await-Control 'Required tools are ready' ([System.Windows.Automation.ControlType]::Text)
+    Invoke-Button 'Open app'
+    $null = Await-Control '4 of 4 steps complete' ([System.Windows.Automation.ControlType]::Text)
+    Save-Observation 'guide-complete'
+    Invoke-Button 'Finish setup'
+    Wait-Until 'guide dismissed after completion' { $null -eq (Find-Control 'Dismiss getting started guide' ([System.Windows.Automation.ControlType]::Button)) }
     Save-Observation 'project-ready'
     $originalWindowHandle = $script:windowHandle
     if (-not [HarborUIProfile]::IsRetainedProductWindowVisible($originalProcess, $originalWindowHandle)) { throw 'original installed window is not natively visible before close' }
@@ -376,9 +397,9 @@ try {
         ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'native-window-close.json') -Encoding UTF8
     if ((Get-Project).state -cne 'ready') { throw 'closing the UI stopped the project' }
     if ((Open-Harbor) -ne $originalProcess) { throw 'reopening did not restore the original desktop process' }
-    Invoke-NativeUIQuit $originalProcess
+    Invoke-NativeUIQuit $originalProcess 'first'
     if ((Get-Project).state -cne 'ready') { throw 'UI-only quit stopped the project' }
-    @{ pid=$originalProcess; native_window=$script:windowHandle.ToInt64().ToString(); foreground_before=$true; focus_target='Projects'; user_key_chord='Ctrl+Q'; process_exited=$true; project_state='ready' } |
+    @{ pid=$originalProcess; native_window=$script:windowHandle.ToInt64().ToString(); foreground_before=$true; focus_target='Projects'; user_key_chord='Ctrl+Q'; native_input=$script:nativeQuitReceipts['first']; process_exited=$true; project_state='ready' } |
         ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'native-window-quit.json') -Encoding UTF8
     $reopenedProcess = Open-Harbor
     Await-ProjectState 'ready'
@@ -426,10 +447,12 @@ try {
     Save-Observation 'reconnected-after-crash-recovery'
     Invoke-Button 'Stop project'
     Await-ProjectState 'stopped'
-    Invoke-NativeUIQuit $reopenedProcess
+    Invoke-NativeUIQuit $reopenedProcess 'final'
     [ordered]@{
+        native_quit_first=$script:nativeQuitReceipts['first']; native_quit_final=$script:nativeQuitReceipts['final']
         application=$desktopPath; launcher=$launcherPath; daemon=$daemonPath; bundle_digest=$selection.bundle_digest; project_directory=$projectDirectory; project_id=(Get-Project).id
         creation='production graphical wizard through native UIAutomation'; start='ready and system-trusted HTTPS 200'
+        onboarding='installed first-project guide, native tool recheck, and published App opening completed'
         window_close='project remains ready'; second_launch='original process restored'
         crash_recovery='installed authenticated daemon crashes, safe retry, healthy peer and live GUI reconnect'; ui_quit='daemon and project remain ready'; ui_reopen='registration retained and HTTPS 200'; final_project_state='stopped'
     } | ConvertTo-Json | Set-Content (Join-Path $EvidenceDirectory 'installed-ui.json') -Encoding utf8

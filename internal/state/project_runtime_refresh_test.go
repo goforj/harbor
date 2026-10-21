@@ -140,6 +140,39 @@ func TestRefreshProjectRuntimeReplacesResourcesBehindSessionFence(t *testing.T) 
 	}
 }
 
+// TestRefreshProjectRuntimePreservesAnEmptyServiceTopology keeps App resources usable after the final Compose service disappears.
+func TestRefreshProjectRuntimePreservesAnEmptyServiceTopology(t *testing.T) {
+	store, _ := newProjectStoreReadTestHarness(t, 1, projectStoreMutationTestClock)
+	project, session, _ := projectLifecycleTestReadyProject(t, store, "project-empty-runtime-refresh")
+	resources := []domain.ResourceSnapshot{
+		{ID: "app-http", Name: "App", Kind: "application", URL: "http://127.0.0.1:3000", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}},
+		{ID: "openapi", Name: "OpenAPI", Kind: "docs", URL: "http://127.0.0.1:3000/openapi", Owner: domain.ResourceOwner{Kind: domain.ResourceOwnedByApp, AppID: "app"}},
+	}
+	record, err := store.Project(t.Context(), project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := RefreshProjectRuntimeRequest{
+		ProjectID: project.ID, ExpectedProjectRevision: record.Revision,
+		SessionID: session.ID, ExpectedSessionGeneration: session.Generation,
+		PrimaryAddress: netip.MustParseAddr("127.0.0.1"), Services: []domain.ServiceSnapshot{}, Resources: resources,
+		At: project.UpdatedAt.Add(time.Second),
+	}
+	refreshed, err := store.RefreshProjectRuntime(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.Project.Services == nil || len(refreshed.Project.Services) != 0 || !reflect.DeepEqual(refreshed.Project.Resources, resources) {
+		t.Fatalf("empty service runtime = %#v", refreshed.Project)
+	}
+	request.ExpectedProjectRevision = refreshed.Revision
+	request.At = request.At.Add(time.Second)
+	replayed, err := store.RefreshProjectRuntime(t.Context(), request)
+	if err != nil || replayed.Revision != refreshed.Revision {
+		t.Fatalf("unchanged empty runtime refresh = %#v, %v", replayed, err)
+	}
+}
+
 // TestValidateRefreshProjectRuntimeRejectsForeignResource verifies no non-loopback framework URL reaches durable state.
 func TestValidateRefreshProjectRuntimeRejectsForeignResource(t *testing.T) {
 	request := RefreshProjectRuntimeRequest{

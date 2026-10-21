@@ -82,14 +82,27 @@ func TestNormalizeServiceChangeWaitErrorDistinguishesPollAndCallerDeadlines(t *t
 	}
 }
 
-// TestObserveResourcesDefersAnEmptyServiceTopologyToTheServiceOnlyRefresh keeps last-service removal valid.
-func TestObserveResourcesDefersAnEmptyServiceTopologyToTheServiceOnlyRefresh(t *testing.T) {
-	runtime := &Runtime{}
-	observation, err := runtime.ObserveResources(t.Context(), projectruntime.ResourceObservationRequest{
+// TestAdmittedResourcesKeepsAppLinksWithoutComposeServices covers SQLite and the removal of a final Compose service.
+func TestAdmittedResourcesKeepsAppLinksWithoutComposeServices(t *testing.T) {
+	request := projectruntime.ResourceObservationRequest{
+		Plan: projectruntime.Plan{
+			NetworkAssignment: projectruntime.NetworkAssignment{Address: netip.MustParseAddr("127.77.4.8")},
+			Presentation:      projectruntime.Presentation{AppID: "app", ResourceURL: "http://127.77.4.8:3000"},
+		},
 		Services: []domain.ServiceSnapshot{},
+	}
+	resources := admittedResources(request, []projectprocess.FrameworkResource{
+		{ID: "openapi", Name: "OpenAPI", Kind: "docs", URL: "http://127.77.4.8:3000/openapi", App: "app"},
+		{ID: "lighthouse", Name: "Lighthouse", Kind: "operator", URL: "http://127.77.4.8:3000/lighthouse", App: "app"},
+		{ID: "removed", Name: "Removed service", Kind: "mail", URL: "http://127.77.4.8:8025", Service: "mailpit"},
 	})
-	if err != nil || observation.Supported || observation.Resources == nil || len(observation.Resources) != 0 {
-		t.Fatalf("ObserveResources(empty services) = %#v, %v, want unsupported non-nil empty resources", observation, err)
+	if len(resources) != 2 || resources[0].ID != "lighthouse" || resources[1].ID != "openapi" {
+		t.Fatalf("App resources without Compose = %#v", resources)
+	}
+	for _, resource := range resources {
+		if resource.Owner.Kind != domain.ResourceOwnedByApp || resource.Owner.AppID != "app" {
+			t.Fatalf("resource retained removed service ownership: %#v", resource)
+		}
 	}
 }
 

@@ -447,6 +447,10 @@ func runProjectLifecycleHelper() {
 		_, _ = fmt.Fprintln(os.Stdout, `{"schema_version":1,"supported":true,"services":[{"id":"mysql","name":"MySQL","kind":"compose","state":"ready","active":true,"required":true,"containers":[]},{"id":"old","name":"Old","kind":"compose","state":"stopped","active":false,"required":false,"containers":[]}]}`)
 		return
 	}
+	if os.Getenv(projectLifecycleHelperModeEnvironment) == "compose-failure" {
+		_, _ = fmt.Fprintln(os.Stderr, "Bind for 0.0.0.0:1025 failed: port is already allocated")
+		os.Exit(1)
+	}
 	address := os.Getenv("IP_ADDRESS")
 	port := os.Getenv("HARBOR_PROJECT_LIFECYCLE_PORT")
 	if address != "127.0.0.1" {

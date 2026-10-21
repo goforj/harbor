@@ -558,7 +558,9 @@ func assertProjectIdentityAcceptanceEndpoints(
 	slices.SortFunc(observedAddresses, func(left netip.Addr, right netip.Addr) int {
 		return left.Compare(right)
 	})
-	if !slices.Equal(observedAddresses, wantAddresses) {
+	expectedAddresses := append([]netip.Addr(nil), wantAddresses...)
+	slices.SortFunc(expectedAddresses, func(left netip.Addr, right netip.Addr) int { return left.Compare(right) })
+	if !slices.Equal(observedAddresses, expectedAddresses) {
 		t.Fatalf("allocated project addresses = %v, want %v", observedAddresses, wantAddresses)
 	}
 	return endpoints

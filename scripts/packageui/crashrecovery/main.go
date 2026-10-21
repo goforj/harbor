@@ -25,17 +25,19 @@ import (
 
 // projectEvidence retains only the bounded observations necessary to establish recovery continuity.
 type projectEvidence struct {
-	ProjectAddress string              `json:"project_address"`
-	ID             domain.ProjectID    `json:"id"`
-	Path           string              `json:"path"`
-	State          domain.ProjectState `json:"state"`
-	Host           string              `json:"host"`
-	Address        string              `json:"address"`
-	SessionID      domain.SessionID    `json:"session_id"`
-	SessionState   domain.SessionState `json:"session_state"`
-	Generation     uint64              `json:"generation"`
-	HTTPS200       bool                `json:"https_200"`
-	RouteWithdrawn bool                `json:"route_withdrawn"`
+	ProjectAddress     string              `json:"project_address"`
+	ID                 domain.ProjectID    `json:"id"`
+	Path               string              `json:"path"`
+	State              domain.ProjectState `json:"state"`
+	Host               string              `json:"host"`
+	Address            string              `json:"address"`
+	SessionID          domain.SessionID    `json:"session_id"`
+	SessionState       domain.SessionState `json:"session_state"`
+	Generation         uint64              `json:"generation"`
+	RetainedSessionID  domain.SessionID    `json:"retained_session_id,omitempty"`
+	RetainedGeneration uint64              `json:"retained_generation,omitempty"`
+	HTTPS200           bool                `json:"https_200"`
+	RouteWithdrawn     bool                `json:"route_withdrawn"`
 }
 
 // crashEvidence records native identity replacement independently of project session continuity.
@@ -485,11 +487,7 @@ func (driver *recovery) observe(ctx context.Context, id domain.ProjectID, health
 	if activity.ProjectID != id {
 		return result, errors.New("project activity identity differs")
 	}
-	if activity.Session != nil {
-		result.SessionID = activity.Session.ID
-		result.SessionState = activity.Session.State
-		result.Generation = activity.Session.Generation
-	}
+	result.recordSession(activity.Session)
 	if healthy {
 		result.Address, err = resolveAddress(ctx, result.Host)
 		if err != nil {
@@ -514,6 +512,21 @@ func (driver *recovery) observe(ctx context.Context, id domain.ProjectID, health
 		result.HTTPS200 = true
 	}
 	return result, nil
+}
+
+// recordSession keeps retained diagnostics separate from live process authority in receipts.
+func (project *projectEvidence) recordSession(session *control.ProjectSessionActivity) {
+	if session == nil {
+		return
+	}
+	if diagnosticOnlySession(session) {
+		project.RetainedSessionID = session.ID
+		project.RetainedGeneration = session.Generation
+		return
+	}
+	project.SessionID = session.ID
+	project.SessionState = session.State
+	project.Generation = session.Generation
 }
 
 // continuity checks that ordinary peer lifecycle work preserves the original session and public identity.
@@ -571,7 +584,7 @@ func (driver *recovery) stop(ctx context.Context) error {
 			return false, err
 		}
 		activity, err := driver.client.ProjectActivity(attempt, control.ProjectActivityRequest{ProjectID: driver.peer})
-		return project.State == domain.ProjectStopped && activity.Session == nil, err
+		return project.State == domain.ProjectStopped && retiredActivitySession(driver.peer, activity), err
 	})
 }
 

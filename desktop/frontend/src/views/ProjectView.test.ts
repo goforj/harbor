@@ -263,6 +263,24 @@ describe('ProjectView project start output', () => {
     wrapper.unmount()
   })
 
+  it('retries a failed project through ordinary Start and keeps stale snapshots disabled', async () => {
+    const start = vi.spyOn(harborBridge, 'startProject').mockImplementation(async (projectId, intentId) => admittedStart(projectId, intentId))
+    const { store, wrapper } = await mountProject('reports')
+    store.projectById('reports')!.state = 'failed'
+    store.projectLifecycleErrors.reports = 'The development runtime exited unexpectedly.'
+    store.projectLifecycleProblemCodes.reports = 'project.process.exited'
+    store.snapshotStale = true
+    await wrapper.vm.$nextTick()
+    expect(bodyButton('Retry start').disabled).toBe(true)
+    store.snapshotStale = false
+    await wrapper.vm.$nextTick()
+    bodyButton('Retry start').click()
+    await flushPromises()
+    expect(start).toHaveBeenCalledWith('reports', expect.stringMatching(/^desktop-project-start-/))
+    expect(activeDetailTab(wrapper)).toBe('Development output')
+    wrapper.unmount()
+  })
+
   it('does not override a tab selected while start is pending', async () => {
     const pending = deferred<ProjectLifecycleOperation>()
     vi.spyOn(harborBridge, 'startProject').mockReturnValueOnce(pending.promise)
@@ -627,7 +645,7 @@ describe('ProjectView network admission', () => {
   it.each([
     ['network readiness', 'project.network.setup_required', 'Secure networking is not ready', 'Set up Harbor\'s secure, trusted local DNS, HTTPS, and ingress before starting this project.'],
     ['missing checkout', 'project.checkout.missing', 'Project folder is missing', 'The project folder no longer exists. Restore it at its registered path or remove the project from Harbor.'],
-    ['runtime', 'project.process.exited', 'Project action failed', 'The development runtime exited unexpectedly.'],
+    ['runtime', 'project.process.exited', 'Development runtime stopped', 'The development runtime exited unexpectedly.'],
   ])('keeps the %s lifecycle error above the primary tabs across project surfaces', async (_, problemCode, title, message) => {
     const { store, wrapper } = await mountProject()
     store.$patch({

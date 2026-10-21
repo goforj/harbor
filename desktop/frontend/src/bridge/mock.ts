@@ -172,6 +172,18 @@ export function createMockBridge(): HarborBridge {
   }
 
   return {
+    async getProjectCreationPrerequisites(request) {
+      if (request.provider_id !== 'goforj') throw new Error('Unsupported project stack')
+      const components = request.options.components?.split(',') ?? []
+      const tools = ['forj', 'go']
+      if ((components.includes('web_ui') && ['vue', 'react', 'templ_htmx'].includes(request.options['starter-kit'] ?? '')) || request.options.demo === 'true') tools.push('node', 'npm')
+      if (components.includes('docker') || request.options.demo === 'true') tools.push('docker', 'compose', 'docker-engine')
+      return { provider_id: request.provider_id, checks: tools.map(id => ({ id, name: id, status: 'ready' as const, required_for: ['go', 'forj'].includes(id) ? 'creation' as const : 'start' as const, detail: 'Available in the browser fixture.' })) }
+    },
+    async getProjectPrerequisites(projectId) {
+      if (!snapshot.projects.some(project => project.id === projectId)) throw new Error('Unknown project')
+      return { provider_id: 'goforj', project_id: projectId, checks: [{ id: 'go', name: 'Go', status: 'ready', detail: 'Available in the browser fixture.' }] }
+    },
     async getProjectCreationProviders() { return [{ id: 'goforj', name: 'GoForj', description: 'Go applications and frontend starter kits' }] },
     async getProjectCreationSchema(providerId) {
       if (providerId !== 'goforj') throw new Error('Unsupported project stack.')
