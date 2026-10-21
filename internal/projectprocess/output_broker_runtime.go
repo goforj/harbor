@@ -31,6 +31,8 @@ type OutputBrokerLaunchConfig struct {
 	EndpointReference string `json:"endpoint_reference"`
 	// AttachmentTicket is the opaque credential required for Harbor attachment.
 	AttachmentTicket string `json:"attachment_ticket"`
+	// RetainProcessScope retains only the deterministic native job belonging to these exact session identities.
+	RetainProcessScope bool `json:"retain_process_scope,omitempty"`
 }
 
 // Validate reports whether a launch manifest is complete without containing process authority.
@@ -58,19 +60,9 @@ func ReadOutputBrokerLaunchConfig(path string) (OutputBrokerLaunchConfig, error)
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return OutputBrokerLaunchConfig{}, errors.New("output broker launch config path must be a canonical absolute path")
 	}
-	info, err := os.Lstat(path)
+	body, err := readPrivateOutputBrokerManifest(path)
 	if err != nil {
-		return OutputBrokerLaunchConfig{}, fmt.Errorf("inspect output broker launch config: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return OutputBrokerLaunchConfig{}, errors.New("output broker launch config must be a direct regular file")
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return OutputBrokerLaunchConfig{}, errors.New("output broker launch config must not be readable by group or other users")
-	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return OutputBrokerLaunchConfig{}, fmt.Errorf("read output broker launch config: %w", err)
+		return OutputBrokerLaunchConfig{}, fmt.Errorf("read private output broker launch config: %w", err)
 	}
 	if len(body) == 0 || len(body) > maximumOutputBrokerLaunchConfigBytes {
 		return OutputBrokerLaunchConfig{}, fmt.Errorf("output broker launch config must contain 1..%d bytes", maximumOutputBrokerLaunchConfigBytes)
@@ -118,6 +110,8 @@ type OutputBrokerRuntimeConfig struct {
 	Stdout io.Reader
 	// Stderr is the inherited child standard-error pipe.
 	Stderr io.Reader
+	// RetainProcessScope keeps the already-admitted native job alive until output reaches EOF.
+	RetainProcessScope bool
 }
 
 // RunOutputBroker owns inherited output pipes, appends them durably, and serves replay/live clients until both pipes end.
@@ -128,6 +122,11 @@ func RunOutputBroker(ctx context.Context, config OutputBrokerRuntimeConfig) erro
 	if err := validateOutputBrokerRuntimeConfig(config); err != nil {
 		return err
 	}
+	releaseScope, err := retainOutputBrokerProcessScope(config)
+	if err != nil {
+		return fmt.Errorf("retain native process scope: %w", err)
+	}
+	defer releaseScope()
 	currentProcess, err := CaptureCurrentProcessEvidence()
 	if err != nil {
 		return fmt.Errorf("capture output broker process evidence: %w", err)
@@ -189,7 +188,6 @@ func RunOutputBroker(ctx context.Context, config OutputBrokerRuntimeConfig) erro
 		case input, open := <-inputs:
 			if !open {
 				inputs = nil
-				cancel()
 				continue
 			}
 			frame, appendErr := journal.Append(input.stream, cursor, input.bytes)

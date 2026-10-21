@@ -61,15 +61,16 @@ func run(ctx context.Context, arguments []string) error {
 		return err
 	}
 	return projectprocess.RunOutputBroker(ctx, projectprocess.OutputBrokerRuntimeConfig{
-		ProjectID:         config.ProjectID,
-		SessionID:         config.SessionID,
-		OutputDirectory:   config.OutputDirectory,
-		EndpointReference: config.EndpointReference,
-		AttachmentTicket:  config.AttachmentTicket,
-		ManifestPath:      parsed.configPath,
-		Process:           evidence,
-		Stdout:            stdout,
-		Stderr:            stderr,
+		ProjectID:          config.ProjectID,
+		SessionID:          config.SessionID,
+		OutputDirectory:    config.OutputDirectory,
+		EndpointReference:  config.EndpointReference,
+		AttachmentTicket:   config.AttachmentTicket,
+		ManifestPath:       parsed.configPath,
+		Process:            evidence,
+		Stdout:             stdout,
+		Stderr:             stderr,
+		RetainProcessScope: config.RetainProcessScope,
 	})
 }
 

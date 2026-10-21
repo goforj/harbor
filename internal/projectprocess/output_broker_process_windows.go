@@ -35,6 +35,17 @@ func prepareOutputBrokerProcess(executable, configPath string, stdout, stderr *o
 	command.SysProcAttr = &syscall.SysProcAttr{
 		AdditionalInheritedHandles: []syscall.Handle{syscall.Handle(stdout.Fd()), syscall.Handle(stderr.Fd())},
 	}
+	config, err := ReadOutputBrokerLaunchConfig(configPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if config.RetainProcessScope {
+		flags, err := sessionProcessCreationFlags()
+		if err != nil {
+			return nil, nil, err
+		}
+		command.SysProcAttr.CreationFlags = flags
+	}
 	process := &outputBrokerProcess{}
 	process.start = func() error {
 		if err := command.Start(); err != nil {

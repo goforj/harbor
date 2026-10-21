@@ -25,11 +25,12 @@ type FrameworkResourceObservation struct {
 	Resources []FrameworkResource
 }
 
-// ObserveFrameworkResources asks the exact running GoForj executable for its host-resolved resource catalog.
+// ObserveFrameworkResources queries the accepted executable with read-only network overrides, including after daemon recovery.
 func (supervisor *Supervisor) ObserveFrameworkResources(
 	ctx context.Context,
 	projectID domain.ProjectID,
 	sessionID domain.SessionID,
+	overrides EnvironmentOverrides,
 ) (FrameworkResourceObservation, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -46,6 +47,16 @@ func (supervisor *Supervisor) ObserveFrameworkResources(
 	query, found := supervisor.frameworkResourceQuery(projectID, sessionID)
 	if !found {
 		return FrameworkResourceObservation{}, ErrNotRunning
+	}
+	if len(overrides) > 0 {
+		if err := validateEnvironmentOverrides(overrides); err != nil {
+			return FrameworkResourceObservation{}, fmt.Errorf("validate resource observation environment: %w", err)
+		}
+		values, err := PreviewEnvironmentOverrides(query.Checkout, overrides)
+		if err != nil {
+			return FrameworkResourceObservation{}, fmt.Errorf("resolve resource observation environment: %w", err)
+		}
+		query.Environment = withDevelopmentEnvironment(query.Environment, values)
 	}
 	observation, err := frameworkresources.Observe(ctx, query)
 	if err != nil {

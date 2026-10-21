@@ -27,6 +27,8 @@ type OutputBrokerLaunchSpec struct {
 	Stdout *os.File
 	// Stderr is the parent read end of the child's standard-error pipe.
 	Stderr *os.File
+	// RetainProcessScope asks the broker to retain the native session job without receiving lifecycle policy.
+	RetainProcessScope bool
 }
 
 // OutputBrokerAdoptionSpec identifies one owner-private broker that survived a Harbor restart.

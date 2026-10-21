@@ -14,6 +14,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/platform/windowsjob"
 	"golang.org/x/sys/windows"
 )
 
@@ -153,8 +154,8 @@ func (installation *Installation) startAdmitted(path, role string, arguments []s
 	}
 	child.job = job
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+	limits.BasicLimitInformation.LimitFlags = installedRoleJobLimits(role)
+	if err := windowsjob.Set(job, windows.JobObjectExtendedLimitInformation, unsafe.Pointer(&limits), uint32(unsafe.Sizeof(limits))); err != nil {
 		return nil, err
 	}
 	if err := windows.AssignProcessToJobObject(job, created.Process); err != nil {
@@ -282,4 +283,13 @@ func runtimeEnvironment(token windows.Token) ([]uint16, error) {
 	filtered = append(filtered, "LOCALAPPDATA="+local)
 	sort.Slice(filtered, func(i, j int) bool { return strings.ToUpper(filtered[i]) < strings.ToUpper(filtered[j]) })
 	return utf16.Encode([]rune(strings.Join(filtered, "\x00") + "\x00\x00")), nil
+}
+
+// installedRoleJobLimits permits explicit project breakaway only from the two daemon lifetime wrappers.
+func installedRoleJobLimits(role string) uint32 {
+	flags := uint32(windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+	if role == "daemon" || role == "daemon-launcher" {
+		flags |= windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK
+	}
+	return flags
 }

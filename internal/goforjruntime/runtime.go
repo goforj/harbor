@@ -424,7 +424,7 @@ func (runtime *Runtime) ObserveResources(ctx context.Context, request projectrun
 	if len(request.Services) == 0 {
 		return projectruntime.ResourceObservation{Supported: false, Resources: []domain.ResourceSnapshot{}}, nil
 	}
-	observation, err := runtime.supervisor.ObserveFrameworkResources(ctx, request.ProjectID, request.SessionID)
+	observation, err := runtime.supervisor.ObserveFrameworkResources(ctx, request.ProjectID, request.SessionID, goForjEnvironmentOverrides(request.Plan.NetworkAssignment))
 	if err != nil || !observation.Supported {
 		return projectruntime.ResourceObservation{Supported: observation.Supported, Resources: []domain.ResourceSnapshot{}}, err
 	}
@@ -522,6 +522,29 @@ func (runtime *Runtime) SettlePriorProcess(ctx context.Context, evidence domain.
 // Close delegates runtime shutdown to the GoForj supervisor.
 func (runtime *Runtime) Close(ctx context.Context) error {
 	return runtime.supervisor.Close(ctx)
+}
+
+// AdoptSession restores an exact surviving process without rerunning GoForj or changing its project environment.
+func (runtime *Runtime) AdoptSession(ctx context.Context, request projectruntime.SessionAdoptionRequest) (projectruntime.Handle, error) {
+	handle, err := runtime.supervisor.AdoptSession(ctx, request.Session, request.CheckoutRoot)
+	if errors.Is(err, projectprocess.ErrSessionAdoptionUnsupported) {
+		return nil, projectruntime.ErrSessionAdoptionUnsupported
+	}
+	if err != nil {
+		return nil, err
+	}
+	return projectHandle{handle: handle}, nil
+}
+
+// DetachSession retains the proven environment while releasing this daemon's local observation.
+func (runtime *Runtime) DetachSession(ctx context.Context, projectID domain.ProjectID, sessionID domain.SessionID) error {
+	return runtime.supervisor.DetachSession(ctx, projectID, sessionID)
+}
+
+// SettleSession includes the complete retained native scope when retiring an interrupted operation.
+func (runtime *Runtime) SettleSession(ctx context.Context, request projectruntime.SessionAdoptionRequest) (projectruntime.PriorProcessSettlement, error) {
+	settlement, err := runtime.supervisor.SettleSession(ctx, request.Session)
+	return projectruntime.PriorProcessSettlement{Outcome: priorProcessSettlementOutcome(settlement.Outcome)}, err
 }
 
 var _ projectruntime.Runtime = (*Runtime)(nil)

@@ -10,14 +10,16 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/goforj/harbor/internal/platform/windowsjob"
 	"golang.org/x/sys/windows"
 )
 
 // platformProcess owns the Windows Job Object and query handle for one launched command tree.
 type platformProcess struct {
-	mu      sync.Mutex
-	job     windows.Handle
-	process windows.Handle
+	mu            sync.Mutex
+	job           windows.Handle
+	process       windows.Handle
+	retainedScope bool
 }
 
 // jobObjectBasicAccountingInformation matches the stable Win32 layout needed to observe active descendants.
@@ -40,10 +42,10 @@ func preparePlatformProcess(command *exec.Cmd) (*platformProcess, error) {
 	}
 	information := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	information.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(
+	if err := windowsjob.Set(
 		job,
 		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&information)),
+		unsafe.Pointer(&information),
 		uint32(unsafe.Sizeof(information)),
 	); err != nil {
 		windows.CloseHandle(job)
@@ -58,7 +60,7 @@ func preparePlatformProcess(command *exec.Cmd) (*platformProcess, error) {
 // attach assigns the process tree to Harbor's Job Object and captures its creation time.
 func (process *platformProcess) attach(child *os.Process) (string, error) {
 	handle, err := windows.OpenProcess(
-		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE,
+		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.SYNCHRONIZE,
 		false,
 		uint32(child.Pid),
 	)
@@ -151,12 +153,11 @@ func (process *platformProcess) treeAlive(pid int) (bool, error) {
 		return false, nil
 	}
 	information := jobObjectBasicAccountingInformation{}
-	err := windows.QueryInformationJobObject(
+	err := windowsjob.Query(
 		process.job,
 		windows.JobObjectBasicAccountingInformation,
-		uintptr(unsafe.Pointer(&information)),
+		unsafe.Pointer(&information),
 		uint32(unsafe.Sizeof(information)),
-		nil,
 	)
 	if err != nil {
 		return false, err

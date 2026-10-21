@@ -295,11 +295,12 @@ func (journal *OutputBrokerJournal) Close() error {
 		return nil
 	}
 	journal.closed = true
+	// End-of-output also permits the supervisor to retire the file, which requires a closed handle on Windows.
+	err := journal.spool.close()
 	for id, subscription := range journal.subscribers {
 		subscription.closeLocked()
 		delete(journal.subscribers, id)
 	}
-	err := journal.spool.close()
 	journal.mu.Unlock()
 	return err
 }

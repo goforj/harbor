@@ -9,8 +9,8 @@ import (
 
 // TestObservePersistedOutputBrokerProcessEvidenceRequiresStableNativeIdentity proves restart adoption rereads more than a durable PID.
 func TestObservePersistedOutputBrokerProcessEvidenceRequiresStableNativeIdentity(t *testing.T) {
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		t.Skip("reviewed persisted process identity readers are Unix-only")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("this platform has no native persisted process identity reader")
 	}
 	captured, err := CaptureCurrentProcessEvidence()
 	if err != nil {

@@ -22,6 +22,8 @@ var (
 	ErrServiceChangeTransient = errors.New("project runtime service change observation is transient")
 	// ErrServiceObservationTransient means a complete service observation may succeed after a bounded retry.
 	ErrServiceObservationTransient = errors.New("project runtime service observation is transient")
+	// ErrSessionAdoptionUnsupported means the runtime has no restart-safe ownership boundary for this session.
+	ErrSessionAdoptionUnsupported = errors.New("project runtime session adoption is unsupported")
 )
 
 // NetworkAssignment identifies the private listener assignment Harbor reserves for a project runtime.
@@ -195,6 +197,27 @@ type Handle interface {
 	Done() <-chan struct{}
 	Result() (Exit, bool)
 	Wait(context.Context) (Exit, error)
+}
+
+// SessionAdoptionRequest binds restart recovery to the existing durable session and canonical checkout.
+type SessionAdoptionRequest struct {
+	Session      domain.ProjectSession
+	CheckoutRoot string
+}
+
+// SessionAdopter optionally restores observation and stop authority over an exact surviving process scope.
+type SessionAdopter interface {
+	AdoptSession(context.Context, SessionAdoptionRequest) (Handle, error)
+}
+
+// SessionDetacher optionally releases daemon-local observation while a durable broker retains a live session.
+type SessionDetacher interface {
+	DetachSession(context.Context, domain.ProjectID, domain.SessionID) error
+}
+
+// SessionSettler optionally retires a surviving native session scope for interrupted operations.
+type SessionSettler interface {
+	SettleSession(context.Context, SessionAdoptionRequest) (PriorProcessSettlement, error)
 }
 
 // Runtime owns project runtime launch, reset, supervision, and observation for the daemon lifetime.

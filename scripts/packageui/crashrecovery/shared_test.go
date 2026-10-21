@@ -563,3 +563,18 @@ func TestCreatePeerParentMatchesExistingCleanupBoundary(t *testing.T) {
 		}
 	}
 }
+
+// TestRestartContinuityRejectsReplacementGeneration distinguishes process adoption from a hidden fresh start.
+func TestRestartContinuityRejectsReplacementGeneration(t *testing.T) {
+	before := projectEvidence{ID: "project", Path: "/fixture", State: domain.ProjectReady, Host: "project.test", Address: "127.0.0.1", ProjectAddress: "127.77.0.2", SessionID: "session", SessionState: domain.SessionAwaitingAttach, Generation: 2, HTTPS200: true}
+	if err := restartContinuity(before, before); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*projectEvidence){func(e *projectEvidence) { e.Generation++ }, func(e *projectEvidence) { e.SessionID = "replacement" }, func(e *projectEvidence) { e.SessionState = domain.SessionAttached }, func(e *projectEvidence) { e.State = domain.ProjectFailed }, func(e *projectEvidence) { e.HTTPS200 = false }} {
+		changed := before
+		mutate(&changed)
+		if err := restartContinuity(before, changed); err == nil {
+			t.Fatal("replacement admitted as transparent recovery")
+		}
+	}
+}

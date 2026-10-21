@@ -90,12 +90,13 @@ func (launcher *OutputBrokerProcessLauncher) Launch(ctx context.Context, spec Ou
 		return nil, fmt.Errorf("create output broker attachment ticket: %w", err)
 	}
 	configPath, err := writeOutputBrokerLaunchConfig(outputDirectory, OutputBrokerLaunchConfig{
-		Version:           OutputBrokerProtocolVersion,
-		ProjectID:         spec.ProjectID,
-		SessionID:         spec.SessionID,
-		OutputDirectory:   spec.OutputDirectory,
-		EndpointReference: endpoint,
-		AttachmentTicket:  ticket,
+		Version:            OutputBrokerProtocolVersion,
+		ProjectID:          spec.ProjectID,
+		SessionID:          spec.SessionID,
+		OutputDirectory:    spec.OutputDirectory,
+		EndpointReference:  endpoint,
+		AttachmentTicket:   ticket,
+		RetainProcessScope: spec.RetainProcessScope,
 	})
 	if err != nil {
 		return nil, err
@@ -221,7 +222,7 @@ func writeOutputBrokerLaunchConfig(directory string, config OutputBrokerLaunchCo
 		return "", fmt.Errorf("create output broker launch config name: %w", err)
 	}
 	path := filepath.Join(directory, "output-broker-"+token+".json")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := createPrivateOutputBrokerManifest(path)
 	if err != nil {
 		return "", fmt.Errorf("create output broker launch config: %w", err)
 	}

@@ -20,7 +20,6 @@ import (
 const (
 	outputBrokerHandshakeTimeout    = 5 * time.Second
 	outputBrokerSubscriptionBuffer  = 256
-	outputBrokerCommandBuffer       = 4
 	outputBrokerProtocolErrorCode   = "protocol_error"
 	outputBrokerAuthenticationCode  = "authentication_failed"
 	outputBrokerJournalErrorCode    = "journal_unavailable"
@@ -211,10 +210,9 @@ func (server *OutputBrokerServer) serveAttachedConnection(
 	writer *rpc.FrameWriter,
 	subscription *OutputBrokerSubscription,
 ) error {
-	commands := make(chan OutputBrokerCommand, outputBrokerCommandBuffer)
+	clientClosed := make(chan struct{})
+	ackErrors := make(chan error, 1)
 	readErrors := make(chan error, 1)
-	serveDone := make(chan struct{})
-	defer close(serveDone)
 	go func() {
 		for {
 			envelope, err := ReadOutputBrokerEnvelope(reader)
@@ -226,11 +224,14 @@ func (server *OutputBrokerServer) serveAttachedConnection(
 				readErrors <- errors.New("output broker received a non-command after attachment")
 				return
 			}
-			select {
-			case commands <- *envelope.Command:
-			case <-ctx.Done():
+			if envelope.Command.Kind == OutputBrokerCommandClose {
+				close(clientClosed)
+				_ = connection.Close()
 				return
-			case <-serveDone:
+			}
+			// Acknowledgements must drain independently of outbound writes, especially on small Windows pipes.
+			if err := subscription.Ack(envelope.Command.Cursor); err != nil {
+				ackErrors <- err
 				return
 			}
 		}
@@ -245,22 +246,22 @@ func (server *OutputBrokerServer) serveAttachedConnection(
 				return nil
 			}
 			return fmt.Errorf("read output broker command: %w", err)
-		case command := <-commands:
-			switch command.Kind {
-			case OutputBrokerCommandClose:
-				return nil
-			case OutputBrokerCommandAck:
-				if err := subscription.Ack(command.Cursor); err != nil {
-					_ = server.writeProtocolError(writer, outputBrokerAcknowledgementCode, "output broker acknowledgement was rejected")
-					return err
-				}
-			}
+		case <-clientClosed:
+			return nil
+		case err := <-ackErrors:
+			_ = server.writeProtocolError(writer, outputBrokerAcknowledgementCode, "output broker acknowledgement was rejected")
+			return err
 		case record, open := <-subscription.Records():
 			if !open {
 				return nil
 			}
 			recordEnvelope := OutputBrokerEnvelope{Version: OutputBrokerProtocolVersion, Kind: OutputBrokerEnvelopeRecord, Record: &record}
 			if err := WriteOutputBrokerEnvelope(writer, recordEnvelope); err != nil {
+				select {
+				case <-clientClosed:
+					return nil
+				default:
+				}
 				return fmt.Errorf("write output broker record: %w", err)
 			}
 		}

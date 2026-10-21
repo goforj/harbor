@@ -160,6 +160,9 @@ type ProjectLifecycleCoordinator struct {
 	asyncErr            error
 	dispatched          map[domain.OperationID]struct{}
 	recoveredStarts     []state.OperationRecord
+	recoveredSessions   []recoveredProjectSession
+	preservedSessions   map[domain.SessionID]bool
+	closeDecisionDone   chan struct{}
 	handles             map[domain.ProjectID]projectruntime.Handle
 	wait                sync.WaitGroup
 }
@@ -252,6 +255,8 @@ func newProjectLifecycleCoordinator(
 		dispatched:          make(map[domain.OperationID]struct{}),
 		handles:             make(map[domain.ProjectID]projectruntime.Handle),
 		closeDone:           make(chan struct{}),
+		closeDecisionDone:   make(chan struct{}),
+		preservedSessions:   make(map[domain.SessionID]bool),
 	}
 }
 
@@ -913,7 +918,18 @@ func failedStartBeforeReadinessCause() error {
 
 // watchReadyProcess records a process loss only when no exact stop request owned the exit.
 func (coordinator *ProjectLifecycleCoordinator) watchReadyProcess(session domain.ProjectSession, handle projectruntime.Handle) {
-	exit, err := handle.Wait(context.Background())
+	exit, err := handle.Wait(coordinator.ctx)
+	if err != nil && coordinator.ctx.Err() != nil {
+		<-coordinator.closeDecisionDone
+		coordinator.mutex.Lock()
+		preserved := coordinator.preservedSessions[session.ID]
+		coordinator.mutex.Unlock()
+		if preserved {
+			coordinator.releaseHandle(session.ProjectID, handle)
+			return
+		}
+		exit, err = handle.Wait(context.Background())
+	}
 	if err != nil {
 		coordinator.recordAsyncError(fmt.Errorf("observe project %q process exit: %w", session.ProjectID, err))
 		coordinator.releaseHandle(session.ProjectID, handle)
@@ -2019,8 +2035,13 @@ func (coordinator *ProjectLifecycleCoordinator) Resume(ctx context.Context) erro
 	}
 	records := append([]state.OperationRecord(nil), coordinator.recoveredStarts...)
 	coordinator.recoveredStarts = nil
+	sessions := append([]recoveredProjectSession(nil), coordinator.recoveredSessions...)
+	coordinator.recoveredSessions = nil
 	coordinator.mutex.Unlock()
 
+	for _, recovered := range sessions {
+		coordinator.resumeRecoveredSession(recovered)
+	}
 	for _, record := range records {
 		coordinator.dispatch(record)
 	}
@@ -2036,15 +2057,20 @@ func (coordinator *ProjectLifecycleCoordinator) recoverTerminalProjectSession(
 	if (project.State != domain.ProjectReady && project.State != domain.ProjectDegraded && project.State != domain.ProjectFailed) || session.Process == nil {
 		return false, nil
 	}
+	if project.State != domain.ProjectFailed {
+		if recovered, err := coordinator.adoptRecoveredSession(ctx, project, session); recovered || err != nil {
+			return recovered, err
+		}
+	}
 	if coordinator.preserveAttachedManagedSession(ctx, session) {
 		// The durable attached fence and exact birth still identify the live process. Leave it in
 		// place so a fresh managed-session connection can replay the ephemeral publication authority.
 		return true, nil
 	}
-	_, err := coordinator.settleRecoveredProjectProcess(
+	_, err := coordinator.settleRecoveredProjectSession(
 		ctx,
 		fmt.Sprintf("project %q terminal session %q", project.ID, session.ID),
-		*session.Process,
+		session,
 	)
 	if err != nil {
 		if quarantineErr := coordinator.quarantineProcessBackedTerminalProjectSession(ctx, project, session); quarantineErr != nil {
@@ -2085,10 +2111,10 @@ func (coordinator *ProjectLifecycleCoordinator) recoverRunningProjectStart(
 	record state.OperationRecord,
 	session domain.ProjectSession,
 ) (bool, error) {
-	settlement, err := coordinator.settleRecoveredProjectProcess(
+	settlement, err := coordinator.settleRecoveredProjectSession(
 		ctx,
 		fmt.Sprintf("running project start operation %q", record.Operation.ID),
-		*session.Process,
+		session,
 	)
 	if err != nil {
 		if quarantineErr := coordinator.quarantineProjectProcessScope(
@@ -2207,6 +2233,8 @@ func (coordinator *ProjectLifecycleCoordinator) Err() error {
 
 // finishClose continues joined cleanup after a caller deadline so a later close can still observe the terminal result.
 func (coordinator *ProjectLifecycleCoordinator) finishClose(ctx context.Context) {
+	coordinator.detachReadySessions(ctx)
+	close(coordinator.closeDecisionDone)
 	err := coordinator.runtime.Close(ctx)
 	coordinator.wait.Wait()
 	coordinator.mutex.Lock()
