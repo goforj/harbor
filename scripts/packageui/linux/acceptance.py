@@ -206,6 +206,17 @@ def accessible_text(node):
         return ''
 
 
+def visible_text(label):
+    """visible_text handles WebKit static text exposed through Text instead of an accessible name."""
+    app = application()
+    if app is None:
+        return False
+    try:
+        return any(node.name == label or label in accessible_text(node) for node in nodes(app))
+    except GLib.GError:
+        return False
+
+
 def window(visible):
     result = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(process.pid), '--name', 'GoForj Harbor'], capture_output=True, text=True)
     clients = []
@@ -269,10 +280,10 @@ try:
     state('ready')
     https(row['slug'])
     click('Recheck')
-    element('Required tools are ready')
+    wait('native prerequisites are ready', lambda: visible_text('Required tools are ready'))
     click('Open app')
     activate()
-    element('4 of 4 steps complete')
+    wait('guide App opening completed', lambda: visible_text('4 of 4 steps complete'))
     capture('guide-complete')
     click('Finish setup')
     wait('guide dismissed after completion', lambda: not find('Dismiss getting started guide'))

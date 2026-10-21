@@ -15,6 +15,25 @@ def load_function(name, **namespace):
 
 
 class CreationDiagnosticsTests(unittest.TestCase):
+    def test_webkit_text_can_be_unnamed_or_exposed_as_an_accessible_name(self):
+        for name, text, expected in (('', 'Required tools are ready', True),
+                                     ('Required tools are ready', '', True),
+                                     ('', 'Checking local tools', False)):
+            with self.subTest(name=name, text=text):
+                node = SimpleNamespace(name=name)
+                visible = load_function('visible_text', application=lambda: object(), nodes=lambda _: [node],
+                                        accessible_text=lambda _: text, GLib=SimpleNamespace(GError=RuntimeError))
+                self.assertEqual(visible('Required tools are ready'), expected)
+
+    def test_webkit_text_waits_when_the_application_or_tree_is_unavailable(self):
+        visible = load_function('visible_text', application=lambda: None)
+        self.assertFalse(visible('4 of 4 steps complete'))
+        def retired_tree(_):
+            raise RuntimeError('retired accessibility tree')
+        visible = load_function('visible_text', application=lambda: object(), nodes=retired_tree,
+                                GLib=SimpleNamespace(GError=RuntimeError))
+        self.assertFalse(visible('4 of 4 steps complete'))
+
     def test_reported_creation_failure_does_not_wait_for_registration_timeout(self):
         for label in ('Review choices', 'Retry registration'):
             with self.subTest(label=label):

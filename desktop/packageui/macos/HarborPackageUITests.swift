@@ -70,18 +70,18 @@ final class HarborPackageUITests: XCTestCase {
         let identifier = try XCTUnwrap(registration["id"] as? String)
         let slug = try XCTUnwrap(registration["slug"] as? String)
         XCTAssertEqual(registration["state"] as? String, "stopped")
-        XCTAssertTrue(application.buttons["Dismiss getting started guide"].exists, "guided creation returns to Overview")
+        XCTAssertTrue(application.buttons["Dismiss getting started guide"].waitForExistence(timeout: 30), "guided creation returns to Overview")
         try click("Start project", timeout: 30)
         try awaitProject(identifier, state: "ready")
         try assertHTTPS(slug)
         try click("Recheck")
         try waitUntil("native prerequisites are ready") {
-            self.application.staticTexts["Required tools are ready"].firstMatch.exists
+            self.hasText("Required tools are ready")
         }
         try click("Open app", timeout: 30)
         application.activate()
         try waitUntil("guide App opening completed") {
-            self.application.staticTexts["4 of 4 steps complete"].firstMatch.exists
+            self.hasText("4 of 4 steps complete")
         }
         attach("guide-complete")
         try click("Finish setup")
@@ -280,6 +280,12 @@ final class HarborPackageUITests: XCTestCase {
         try waitUntil("visible enabled refresh command") { refresh.isEnabled && refresh.isHittable }
         refresh.click()
         try waitUntil("refresh command closes the menu") { !refresh.exists }
+    }
+
+    // hasText supports WebKit text carried by AXValue as well as AXLabel.
+    private func hasText(_ text: String) -> Bool {
+        application.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@ OR value == %@", text, text)).firstMatch.exists
     }
 
     private func click(_ label: String, timeout: TimeInterval = 20) throws {
