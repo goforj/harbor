@@ -34,6 +34,7 @@ import InteractiveTerminal from '@/components/harbor/InteractiveTerminal.vue'
 import ProjectConnectPanel from '@/components/harbor/ProjectConnectPanel.vue'
 import ProjectEnvironmentPanel from '@/components/harbor/ProjectEnvironmentPanel.vue'
 import ProjectFailurePanel from '@/components/harbor/ProjectFailurePanel.vue'
+import SupportDiagnostics from '@/components/harbor/SupportDiagnostics.vue'
 import PrerequisitePanel from '@/components/harbor/PrerequisitePanel.vue'
 import ResourceFavicon from '@/components/harbor/ResourceFavicon.vue'
 import ProjectIcon from '@/components/harbor/ProjectIcon.vue'
@@ -142,6 +143,7 @@ const {
   output: developmentOutput,
   outputResetKey: developmentOutputResetKey,
   error: developmentOutputError,
+  fresh: developmentOutputFresh,
   truncated: developmentOutputTruncated,
 } = useProjectActivity({
   projectId,
@@ -675,7 +677,7 @@ async function setupNetworkAndStartProject() {
               </Tooltip>
             </TooltipProvider>
           </div>
-          <span class="hidden shrink-0 text-[11px] text-muted-foreground sm:block" :title="`Updated ${updatedAt}`">{{ project.slug }}</span>
+          <SupportDiagnostics :source="{ connection: store.connectionState, stale: store.snapshotStale, status: store.daemonStatus, snapshot: store.snapshot, projectId, activity: projectActivity, output: developmentOutput, outputFresh: developmentOutputFresh, outputError: developmentOutputError, outputTruncated: developmentOutputTruncated }" :output-reset-key="developmentOutputResetKey" />
         </div>
       </header>
 

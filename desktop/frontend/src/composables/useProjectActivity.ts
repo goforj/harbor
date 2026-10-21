@@ -33,6 +33,7 @@ export function useProjectActivity(source: ProjectActivitySource) {
   const activity = ref<ProjectActivity | null>(null)
   const output = ref('')
   const error = ref<string | null>(null)
+  const fresh = ref(false)
   const truncated = ref(false)
   const historicalOutput = ref(false)
   const outputResetKey = ref(0)
@@ -71,6 +72,7 @@ export function useProjectActivity(source: ProjectActivitySource) {
   // invalidate retires every callback from the prior selection or connection generation.
   function invalidate(reset: boolean) {
     generation += 1
+    fresh.value = false
     clearTimer()
     requestInFlight = false
     immediateReadRequested = false
@@ -160,6 +162,7 @@ export function useProjectActivity(source: ProjectActivitySource) {
     }
     catch (cause) {
       if (!isCurrent(selectedGeneration)) return
+      fresh.value = false
       error.value = cause instanceof Error
         ? cause.message
         : 'Harbor could not read project output.'
@@ -187,6 +190,7 @@ export function useProjectActivity(source: ProjectActivitySource) {
     }
     activity.value = current
     error.value = null
+    fresh.value = true
     if (!current.session) return { hasMore: false, waitable: false }
     return applySession(current.session)
   }
@@ -270,5 +274,5 @@ export function useProjectActivity(source: ProjectActivitySource) {
     timer = null
   }
 
-  return { activity, output, outputResetKey, error, truncated }
+  return { activity, output, outputResetKey, error, fresh, truncated }
 }

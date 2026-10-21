@@ -1,5 +1,13 @@
 # Current Implementation State
 
+## Local support diagnostics preview (2026-10-21)
+
+Project details and Settings -> Daemon now offer Support diagnostics. The local report explicitly selects build/protocol, snapshot freshness, networking configuration, project state, and the last five startup observations. It excludes raw snapshots, operations, ownership proofs, helper tickets, resource URLs, checkout paths, and environment files. Development output is off by default. When selected, it uses only the existing authenticated activity feed for the selected session, with an explicit current/retained/unavailable label, at most 40 lines and 6,000 UTF-8 bytes. The entire report is capped at 16 KiB.
+
+The frozen preview is exactly what Copy report sends through the existing clipboard bridge. Live log appends do not silently change the reviewed text. Reconnect, stale snapshot, project/session replacement, output resets, failed activity reads, and output capability/availability changes clear the preview and require explicit refresh. Known checkout/home paths and common credentials are redacted before clipping; arbitrary private values or paths can remain in logs, so the preview asks users to review before sharing. No environment query, file reader, native API, daemon authority, automatic upload, or file-save integration was added.
+
+This frontend increment passes 91 focused tests, the production build/typecheck, and two Chromium flows including exact preview/copy parity, daemon-only scope, actual light/dark colors, and a narrow layout. The source is in `/tmp/harbor-support-diagnostics-20261020` on `feat/support-diagnostics-20261020`, and the nine frontend files were applied with exact byte parity to the active `/Users/cmiles/code/harbor-wails-v3` checkout. Its prior dirty work, daemon, and running projects are preserved. Evidence logs and previews use `/tmp/harbor-support-diagnostics-*`. This is local development work, separate from the installed-onboarding packages and published beta.1 preview. Service-log export and file sharing remain outside this initial preview/copy scope.
+
 ## Current-main integration checkpoint (2026-10-20)
 
 The integration branch is now pushed. Source CI and exact-source build-only package producers are running for updated installed onboarding acceptance. Native drivers check the guide, real prerequisite recheck, and App opening before the existing lifecycle proof. The package verifier accepts current normalized and exact legacy Debian names with full digest/provenance checks. Local package/harness checks pass; fresh installed results remain pending.

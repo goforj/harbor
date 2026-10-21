@@ -81,6 +81,32 @@ async function settle() {
 }
 
 describe('useProjectActivity', () => {
+  it('requires a newly authenticated activity read after disconnect and excludes failed reads', async () => {
+    const resumed = deferred<ProjectActivity>()
+    const denied = deferred<ProjectActivity>()
+    const read = vi.fn<ReadProjectActivity>()
+      .mockResolvedValueOnce(projectActivity('orders', 'session-orders', 'original', 8))
+      .mockReturnValueOnce(resumed.promise)
+    const wait = vi.fn<WaitProjectActivity>().mockReturnValueOnce(never()).mockReturnValueOnce(denied.promise)
+    const { connected, state, wrapper } = mountProjectActivity(read, wait)
+    await settle()
+    expect(state.fresh.value).toBe(true)
+    connected.value = false
+    await nextTick()
+    expect(state.fresh.value).toBe(false)
+    connected.value = true
+    await settle()
+    expect(state.fresh.value).toBe(false)
+    resumed.resolve(projectActivity('orders', 'session-orders', '', 8))
+    await settle()
+    expect(state.fresh.value).toBe(true)
+    denied.reject(new Error('Permission denied'))
+    await settle()
+    expect(state.fresh.value).toBe(false)
+    expect(state.output.value).toBe('original')
+    wrapper.unmount()
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
   })

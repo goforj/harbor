@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import NetworkSetupRecoveryCard from '@/components/harbor/NetworkSetupRecoveryCard.vue'
+import SupportDiagnostics from '@/components/harbor/SupportDiagnostics.vue'
 import { computed } from 'vue'
 import { Activity, Database, Network, RefreshCw, Server } from '@lucide/vue'
 import StatusBadge from '@/components/harbor/StatusBadge.vue'
@@ -21,7 +22,10 @@ const capturedAt = computed(() => store.snapshot?.captured_at
         <div class="flex items-center gap-2"><h1 id="system-title" class="truncate text-base font-semibold tracking-tight">Daemon</h1><StatusBadge v-if="store.daemonStatus" :status="store.daemonStatus.state" /></div>
         <p class="mt-1 text-xs text-muted-foreground">Harbor connection and snapshot details</p>
       </div>
-      <Button variant="outline" size="sm" :disabled="store.loading" @click="store.refresh"><RefreshCw :class="['size-3.5', store.loading && 'animate-spin']" />Refresh</Button>
+      <div class="flex flex-wrap justify-end gap-2">
+        <SupportDiagnostics :source="{ connection: store.connectionState, stale: store.snapshotStale, status: store.daemonStatus, snapshot: store.snapshot }" />
+        <Button variant="outline" size="sm" :disabled="store.loading" @click="store.refresh"><RefreshCw :class="['size-3.5', store.loading && 'animate-spin']" />Refresh</Button>
+      </div>
     </header>
 
     <div class="space-y-5 p-5 lg:p-7">

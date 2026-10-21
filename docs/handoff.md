@@ -1,5 +1,13 @@
 # Development Handoff
 
+## Support diagnostics continuation (2026-10-21)
+
+The next frontend slice is implemented in `/tmp/harbor-support-diagnostics-20261020`, branch `feat/support-diagnostics-20261020`. Support diagnostics opens from project details and Settings -> Daemon. Its allowlisted, bounded local preview copies exactly the reviewed text; optional redacted development output requires a freshly authenticated matching session. Stale connections, selected-source changes, failed reads, and revoked output access invalidate a preview. Environment files, raw snapshots/operations, helper authority, and arbitrary filesystem access are excluded. No backend or native binding changed.
+
+Focused validation passes 91 tests in four files, the production build/typecheck, and two Chromium flows. Logs: `/tmp/harbor-support-diagnostics-tests.log`, `/tmp/harbor-support-diagnostics-build.log`, `/tmp/harbor-support-diagnostics-browser.log`. Screenshots: `/tmp/harbor-support-diagnostics-dark.png` and `/tmp/harbor-support-diagnostics-light.png`. The nine frontend files were applied to the active checkout with byte parity and a pre-application backup at `/tmp/harbor-support-diagnostics-active-backup`. Prior work and running environments were preserved.
+
+HARBOR-31 is In Progress in Plane, in Working Now. Do not claim this slice is included in the installed packages or beta.1 preview. The installed-onboarding branch remains separate at `/tmp/harbor-onboarding-integration-20261020`; source CI, package producers, macOS GUI, and Windows GUI pass. Linux run `39550502411` is investigating an accessibility-driver failure despite the real browser and four completed guide steps being visible in the preceding receipt. Finish that gate and record its exact result before calling HARBOR-30 complete. The support increment can then be integrated without repeating unrelated platform work for its frontend-only scope.
+
 Status: four local product slices integrated with current main; updated installed-flow verification remains
 
 Last updated: 2026-10-20

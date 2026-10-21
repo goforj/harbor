@@ -1,0 +1,45 @@
+import { expect, test } from '@playwright/test'
+
+test('previews bounded project diagnostics before copying and fits both themes', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: async (text: string) => { (window as unknown as { supportCopied: string }).supportCopied = text },
+    } })
+  })
+  await page.goto('/#/projects/orders-api', { waitUntil: 'domcontentloaded' })
+  await page.getByRole('button', { name: 'Support diagnostics', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  const preview = dialog.getByLabel('Support diagnostics preview')
+  await expect(preview).toContainText('Project state: ready')
+  await expect(preview).toContainText('Development output: not included.')
+  await dialog.getByRole('checkbox').click()
+  await expect(preview).toContainText('Recent output (up to 40 lines / 6000 UTF-8 bytes):')
+  const text = await preview.textContent()
+  await dialog.getByRole('button', { name: 'Copy report', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: 'Copied', exact: true })).toBeVisible()
+  expect(await page.evaluate(() => (window as unknown as { supportCopied: string }).supportCopied)).toBe(text)
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  await expect(dialog).toHaveCSS('background-color', 'rgb(13, 13, 13)')
+  await page.screenshot({ path: '/tmp/harbor-support-diagnostics-dark.png' })
+  await page.emulateMedia({ colorScheme: 'light' })
+  await expect(page.locator('html')).not.toHaveClass(/dark/)
+  await page.screenshot({ path: '/tmp/harbor-support-diagnostics-light.png' })
+  await page.setViewportSize({ width: 430, height: 800 })
+  await expect(dialog.getByRole('button', { name: 'Copied', exact: true })).toBeVisible()
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+  const bounds = await dialog.boundingBox()
+  expect(bounds!.x).toBeGreaterThanOrEqual(0)
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(430)
+})
+
+test('offers a daemon summary without collecting project output', async ({ page }) => {
+  await page.goto('/#/settings/daemon', { waitUntil: 'domcontentloaded' })
+  await page.getByRole('button', { name: 'Support diagnostics', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByLabel('Support diagnostics preview')).toContainText('Daemon version:')
+  await expect(dialog.getByLabel('Support diagnostics preview')).not.toContainText('Project state:')
+  await expect(dialog.getByRole('checkbox')).toHaveCount(0)
+  await dialog.getByRole('button', { name: 'Close', exact: true }).first().click()
+  await expect(dialog).toHaveCount(0)
+})
