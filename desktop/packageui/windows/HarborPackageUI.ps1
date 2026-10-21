@@ -350,10 +350,15 @@ try {
     Invoke-PreauthorizedNetworking 'setup'
     Wait-Until 'secure networking configured' { (Get-Snapshot).network_setup.configured -eq $true } 120
     Invoke-Button 'New project'
-    $null = Await-Control 'Recheck' ([System.Windows.Automation.ControlType]::Button)
-    Save-Observation 'creation-prerequisites-before-recheck'
-    # Exercise the offered repair action after preserving the first cold-tool observation.
-    Invoke-Button 'Recheck'
+    Wait-Until 'creation form or prerequisite guidance' {
+        $null -ne (Find-Control 'Project name' ([System.Windows.Automation.ControlType]::Edit)) -or
+        $null -ne (Find-Control 'Recheck' ([System.Windows.Automation.ControlType]::Button))
+    }
+    if ($null -eq (Find-Control 'Project name' ([System.Windows.Automation.ControlType]::Edit))) {
+        Save-Observation 'creation-prerequisites-before-recheck'
+        # Exercise the offered repair action after preserving the first cold-tool observation.
+        Invoke-Button 'Recheck'
+    }
     Set-Field 'Project name' 'Harbor Installed Windows UI'
     Set-Field 'Go module' 'example.com/harbor-installed-windows-ui'
     Set-Field 'Project directory' $projectDirectory
