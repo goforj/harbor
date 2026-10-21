@@ -220,9 +220,11 @@ def accessible_text(node, depth=0):
             if character == '\ufffc':
                 index = hypertext.getLinkIndex(offset)
                 if index >= 0:
-                    child = hypertext.getLink(index).get_object(0)
-                    if child is not None:
-                        character = accessible_text(child, depth + 1) or child.name
+                    link = hypertext.getLink(index)
+                    if link is not None:
+                        child = link.get_object(0)
+                        if child is not None:
+                            character = accessible_text(child, depth + 1) or child.name
             parts.append(character)
         return ''.join(parts)
     except (NotImplementedError, GLib.GError):
@@ -235,7 +237,8 @@ def visible_text(label):
     if app is None:
         return False
     try:
-        return any(node.name == label or label in accessible_text(node) for node in nodes(app))
+        expected = ''.join(label.split())
+        return any(node.name == label or expected in ''.join(accessible_text(node).split()) for node in nodes(app))
     except GLib.GError:
         return False
 

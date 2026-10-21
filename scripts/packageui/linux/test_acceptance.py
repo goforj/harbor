@@ -61,6 +61,10 @@ class CreationDiagnosticsTests(unittest.TestCase):
         read = load_function('accessible_text', GLib=SimpleNamespace(GError=RuntimeError))
         self.assertEqual(read(node), '\ufffc of 4 steps complete')
         self.assertEqual(read(node, 4), '\ufffc of 4 steps complete')
+        node.queryHypertext = lambda: SimpleNamespace(getLinkIndex=lambda _: 0, getLink=lambda _: None)
+        self.assertEqual(read(node), '\ufffc of 4 steps complete')
+        node.queryHypertext = lambda: SimpleNamespace(getLinkIndex=lambda _: 0, getLink=lambda _: SimpleNamespace(get_object=lambda _: None))
+        self.assertEqual(read(node), '\ufffc of 4 steps complete')
 
     def test_browser_preference_preserves_other_helpers_and_restores_prior_bytes(self):
         configure = load_function('configure_browser_preference', re=re)
@@ -173,6 +177,14 @@ class CreationDiagnosticsTests(unittest.TestCase):
     def test_webkit_text_waits_when_the_application_or_tree_is_unavailable(self):
         visible = load_function('visible_text', application=lambda: None)
         self.assertFalse(visible('4 of 4 steps complete'))
+
+    def test_webkit_inline_progress_ignores_layout_whitespace_without_changing_the_words(self):
+        for text, expected in [('4of 4 steps complete', True), ('4 \n of 4 steps complete', True), ('3 of 4 steps complete', False)]:
+            with self.subTest(text=text):
+                visible = load_function('visible_text', application=lambda: object(),
+                    nodes=lambda _: [SimpleNamespace(name='')], accessible_text=lambda _: text,
+                    GLib=SimpleNamespace(GError=RuntimeError))
+                self.assertEqual(visible('4 of 4 steps complete'), expected)
         def retired_tree(_):
             raise RuntimeError('retired accessibility tree')
         visible = load_function('visible_text', application=lambda: object(), nodes=retired_tree,
