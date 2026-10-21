@@ -542,7 +542,7 @@ func (store *Store) FailProjectStart(ctx context.Context, request FailProjectSta
 		if err != nil {
 			return err
 		}
-		if err := deleteExactProjectSession(tx, session); err != nil {
+		if err := deleteExactProjectSession(tx, session, request.Exit.ExitedAt); err != nil {
 			return err
 		}
 		nextProject := failedProjectProjection(project.Project, request.Exit.ExitedAt)
@@ -774,7 +774,7 @@ func (store *Store) CompleteProjectStop(ctx context.Context, request CompletePro
 			return err
 		}
 		if request.OperationKind == domain.OperationKindProjectRestart {
-			if err := deleteExactProjectSession(tx, session); err != nil {
+			if err := deleteExactProjectSession(tx, session, request.Exit.ExitedAt); err != nil {
 				return err
 			}
 			nextProject := stoppedProjectProjection(project.Project, request.Exit.ExitedAt)
@@ -789,7 +789,7 @@ func (store *Store) CompleteProjectStop(ctx context.Context, request CompletePro
 		if err != nil {
 			return err
 		}
-		if err := deleteExactProjectSession(tx, session); err != nil {
+		if err := deleteExactProjectSession(tx, session, request.Exit.ExitedAt); err != nil {
 			return err
 		}
 		nextProject := stoppedProjectProjection(project.Project, request.Exit.ExitedAt)
@@ -849,7 +849,7 @@ func (store *Store) RecordUnexpectedProjectExit(ctx context.Context, request Rec
 		if err := requireNoCompetingProjectOperation(tx, request.ProjectID, ""); err != nil {
 			return err
 		}
-		if err := deleteExactProjectSession(tx, session); err != nil {
+		if err := deleteExactProjectSession(tx, session, request.Exit.ExitedAt); err != nil {
 			return err
 		}
 		result, err = persistLifecycleProject(tx, failedProjectProjection(project.Project, request.Exit.ExitedAt))
@@ -1321,7 +1321,7 @@ func nullableProjectSessionInt(value null.Int) any {
 }
 
 // deleteExactProjectSession removes only the process authority whose generation was joined by the caller.
-func deleteExactProjectSession(tx *gorm.DB, session domain.ProjectSession) error {
+func deleteExactProjectSession(tx *gorm.DB, session domain.ProjectSession, endedAt time.Time) error {
 	deleted := tx.Where(
 		"session_id = ? AND project_id = ? AND generation = ?",
 		string(session.ID),
@@ -1334,7 +1334,11 @@ func deleteExactProjectSession(tx *gorm.DB, session domain.ProjectSession) error
 	if deleted.RowsAffected != 1 {
 		return staleSessionGeneration(session.ProjectID, session.ID, session.Generation, 0)
 	}
-	return nil
+	// The receipt contains no process evidence or credentials, so retiring authority does not discard diagnostics.
+	return tx.Exec(`INSERT INTO project_output_history (project_id, session_id, generation, ended_at)
+		VALUES (?, ?, ?, ?) ON CONFLICT (project_id) DO UPDATE SET
+		session_id = excluded.session_id, generation = excluded.generation, ended_at = excluded.ended_at`,
+		string(session.ProjectID), string(session.ID), session.Generation, endedAt).Error
 }
 
 // validateConfirmedSessionExit matches both generation and immutable birth evidence before retirement.

@@ -58,6 +58,10 @@ var projectStoreReadTestSchema = []string{
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	)`,
+	`CREATE TABLE project_output_history (
+		project_id TEXT NOT NULL PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
+		session_id TEXT NOT NULL, generation INTEGER NOT NULL, ended_at DATETIME NOT NULL
+	)`,
 	`CREATE TABLE project_apps (
 		id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
 		project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,

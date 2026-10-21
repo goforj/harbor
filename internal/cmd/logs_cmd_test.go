@@ -97,6 +97,21 @@ func TestLogsCommandPrintsProjectOutput(t *testing.T) {
 	}
 }
 
+// TestLogsCommandPrintsRetainedFailureWithoutFollowing retires the stream after printing completed-session diagnostics.
+func TestLogsCommandPrintsRetainedFailureWithoutFollowing(t *testing.T) {
+	connection := &fakeDaemonControlClient{projectActivity: projectActivityLogFixture("port is already allocated\n")}
+	connection.projectActivity.Session.Output.Available = false
+	connection.projectActivity.Session.Output.Historical = true
+	command, output := newLogsCommandFixture(t, connection, false)
+	command.Follow = true
+	if err := command.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "port is already allocated\n" || connection.projectActivityCalls != 1 {
+		t.Fatal("retained failure disappeared or was followed as live output")
+	}
+}
+
 // TestLogsCommandSelectsProjectServiceByStableID verifies service output cannot escape the selected project scope.
 func TestLogsCommandSelectsProjectServiceByStableID(t *testing.T) {
 	connection := &fakeDaemonControlClient{

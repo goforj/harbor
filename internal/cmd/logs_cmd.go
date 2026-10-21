@@ -71,13 +71,13 @@ func (command *LogsCmd) runProjectLogs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !session.Output.Available {
+	if !session.Output.Available && !session.Output.Historical {
 		return fmt.Errorf("project logs: current session output is unavailable (state %s)", session.State)
 	}
 	if err := writeProjectLogChunk(command.output, session.Output); err != nil {
 		return err
 	}
-	if !command.Follow {
+	if !command.Follow || session.Output.Historical {
 		return nil
 	}
 

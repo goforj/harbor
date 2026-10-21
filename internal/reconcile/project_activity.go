@@ -91,7 +91,7 @@ func readCurrentProjectActivity(
 	if err != nil {
 		var missing *state.ProjectSessionNotFoundError
 		if errors.As(err, &missing) {
-			return ProjectActivity{ProjectID: request.ProjectID}, nil
+			return readRetainedProjectActivity(ctx, source, reader, project, request)
 		}
 		return ProjectActivity{}, err
 	}
@@ -172,6 +172,65 @@ func readCurrentProjectActivity(
 			Diagnostics: diagnostics,
 		},
 	}, nil
+}
+
+// readRetainedProjectActivity keeps completed-session diagnostics separate from live process selection.
+func readRetainedProjectActivity(ctx context.Context, source projectActivityState, reader projectActivityOutputReader, project state.ProjectRecord, request ProjectActivityRequest) (ProjectActivity, error) {
+	activity := ProjectActivity{ProjectID: request.ProjectID}
+	if project.Project.State != domain.ProjectFailed && project.Project.State != domain.ProjectStopped {
+		return activity, nil
+	}
+	selector, supported := source.(interface {
+		RetainedProjectOutput(context.Context, domain.ProjectID) (*state.ProjectOutputHistory, error)
+	})
+	historyReader, readable := reader.(projectActivityHistoryReader)
+	if !supported || !readable {
+		return activity, nil
+	}
+	history, err := selector.RetainedProjectOutput(ctx, request.ProjectID)
+	if err != nil {
+		return activity, err
+	}
+	if history == nil || history.ProjectID != request.ProjectID || !history.EndedAt.Equal(project.Project.UpdatedAt) {
+		return activity, nil
+	}
+	if err := history.SessionID.Validate(); err != nil {
+		return activity, err
+	}
+	if history.Generation == 0 || history.Generation > uint64(domain.MaximumSequence) {
+		return activity, errors.New("retained project output generation is invalid")
+	}
+	cursor := request.Cursor
+	changed := request.SessionID != "" && request.SessionID != history.SessionID
+	if changed {
+		cursor = 0
+	}
+	output, err := historyReader.ReadOutputHistory(request.ProjectID, history.SessionID, cursor)
+	if ctx.Err() != nil {
+		return activity, ctx.Err()
+	}
+	if err != nil || !output.Historical || output.Available {
+		return activity, nil
+	}
+	if changed {
+		output.Reset = true
+	}
+	activity.Session = &ProjectSessionActivity{ID: history.SessionID, State: domain.SessionDisconnected, Generation: history.Generation, Output: output}
+	if observer, ok := reader.(interface {
+		ReadStartupProgress(domain.ProjectID, domain.SessionID) *projectruntime.StartupProgress
+	}); ok {
+		activity.Session.Startup = observer.ReadStartupProgress(request.ProjectID, history.SessionID)
+	}
+	if project.Project.State == domain.ProjectFailed {
+		if observer, ok := reader.(interface {
+			ObserveLaunchDiagnostics(context.Context, string) (*projectruntime.LaunchDiagnostics, error)
+		}); ok {
+			diagnosticContext, cancel := context.WithTimeout(ctx, 2*time.Second)
+			activity.Session.Diagnostics, _ = observer.ObserveLaunchDiagnostics(diagnosticContext, project.Project.Path)
+			cancel()
+		}
+	}
+	return activity, nil
 }
 
 // validateProjectActivityRequest rejects history selection and non-portable cursors before durable reads.

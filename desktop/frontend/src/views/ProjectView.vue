@@ -936,7 +936,7 @@ async function setupNetworkAndStartProject() {
             <template #notices><p v-if="developmentOutputError" class="border-b px-4 py-2 text-xs text-destructive">{{ developmentOutputError }}</p></template>
             <template #viewport-notices>
               <p v-if="developmentOutputTruncated" class="mb-2 text-amber-700 dark:text-amber-300">Earlier output is no longer retained. Search covers retained output only.</p>
-              <p v-if="projectActivitySession?.output.historical" class="mb-2 text-amber-700 dark:text-amber-300">Showing retained output from before Harbor reconnected; live output will resume when the process is reattached.</p>
+              <p v-if="projectActivitySession?.output.historical" class="mb-2 text-amber-700 dark:text-amber-300">{{ project?.state === 'failed' || project?.state === 'stopped' ? 'Showing retained output from the last run.' : 'Showing retained output from before Harbor reconnected; live output will resume when the process is reattached.' }}</p>
             </template>
             <template #empty>
               <p v-if="projectActivitySession?.output.historical" class="text-muted-foreground">No retained output was recorded before Harbor reconnected.</p>

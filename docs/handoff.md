@@ -1,5 +1,19 @@
 # Development Handoff
 
+## Local launch failure fixed; Overnight module ready (2026-10-21)
+
+User priority shifted to the first real local launch failing with only a trace-path placeholder, then requested an Overnight module to run a future goal against. The module is [Overnight](https://plane.goforj.dev/goforj/projects/093ece1d-aa7b-4c5c-a77f-b5774f898111/modules/b887918b-3159-4d9d-a2e1-34a800633dd0/), with 13 ordered issues and a complete goal objective. No automatic goal, new release, tag, PR, or merge was started by preparing that queue.
+
+Actual cause: retained failed-session output recorded Docker allocation errors for MySQL 3306 and Mailpit 1025. Four fast failed attempts retired their active session rows, making the existing activity API lose access to retained output. The following retry was Ready and correctly loopback-bound. The older running daemon was eddf2dc from Monday; do not treat this as proof that source age caused the port conflict. HARBOR-50 explicitly owns reconciling the active checkout/runtime with accepted source.
+
+The in-flight root fix and tests are in `/tmp/harbor-support-diagnostics-20261020` after 704e4c5 and applied to `/Users/cmiles/code/harbor-wails-v3`. A generated embedded harbord/default migration adds a separate diagnostic-only correlation receipt; process retirement and receipt publication are atomic. Activity selects matching retained history without keeping live process/broker authority or accepting arbitrary trace paths. Source schema/Go versions/dependency pins are otherwise unchanged. Preserve all prior active dirty changes. Backup and applied file manifest: `/tmp/harbor-local-start-failure-20261021/active-before` and `files.json`.
+
+Local proof completed through the production control API: normal Stop of Test, owned labeled Docker port-conflict fixture, actual failed Start, actual retained error read after retirement, exact fixture cleanup, normal Start, Ready, and trusted HTTPS 200. All other registered projects were observed stopped and preserved. Receipt: `/tmp/harbor-local-start-failure-20261021/installed-local-proof.json`. The active watcher rebuilt/migrated the patched backend; Test is left running. Do not stop it again merely to repeat this evidence.
+
+Checks: focused root suites and real-child/SQLite regression pass; affected reconciliation/control/CLI/migrations packages pass; state passes under UTC. Three unrelated local-time state-fixture failures are queued as HARBOR-54, with names and observed timezone in Plane. Frontend ProjectView/activity checks pass 51 tests. Logs: `/tmp/harbor-local-failure-focused.log`, `/tmp/harbor-failed-output-real-process.log`, `/tmp/harbor-retained-output-packages.log`, `/tmp/harbor-retained-output-state-utc.log`, `/tmp/harbor-retained-output-frontend.log`. Earlier 704e4c5 build-only producer runs 39554547098/39554550241 and source CI 39554515199 predate this runtime change and cannot establish its package parity.
+
+The overnight work order starts HARBOR-14, HARBOR-50, HARBOR-51, HARBOR-12, HARBOR-52, HARBOR-9, HARBOR-11, HARBOR-53, HARBOR-54, HARBOR-55, HARBOR-3, HARBOR-4, HARBOR-32. HARBOR-53 records the separately reproduced clean-source `forj harbord make:migration` Wire/trust.New failure; direct Go builds work. HARBOR-32 guide is committed at 704e4c5 but not merged/released. Goal execution must preserve exact source/artifact distinctions and keep broader signing/consent/reboot gates open.
+
 Status: installed onboarding accepted on three hosted profiles; local diagnostics ready
 
 Last updated: 2026-10-21

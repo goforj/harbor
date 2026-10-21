@@ -207,6 +207,7 @@ func TestProjectLifecycleMutationsCommitStartAndStopWithExactReplay(t *testing.T
 	if snapshot, snapshotErr := store.Snapshot(t.Context()); snapshotErr != nil || len(snapshot.Projects) != 1 || snapshot.Projects[0].State != domain.ProjectStopped || len(snapshot.Projects[0].Resources) != 0 || len(snapshot.RecentResourceIDs) != 0 {
 		t.Fatalf("Snapshot() after stop = %#v, %v", snapshot, snapshotErr)
 	}
+	assertProjectOutputHistory(t, store, project.ID, session.ID, stopping.Session.Generation, stoppedAt)
 	sequenceAfterStopped := projectStoreMutationSequence(t, store)
 	replayedStopped, err := store.CompleteProjectStop(t.Context(), completeStopRequest)
 	if err != nil || !reflect.DeepEqual(replayedStopped, stopped) || projectStoreMutationSequence(t, store) != sequenceAfterStopped {
@@ -532,6 +533,7 @@ func TestProjectLifecycleFailureAndUnexpectedExitRetireOnlyConfirmedProcessAutho
 		if failed.Operation.Operation.State != domain.OperationFailed || !projectMatchesInactiveState(failed.Project.Project, domain.ProjectFailed, failure.Exit.ExitedAt) {
 			t.Fatalf("FailProjectStart() = %#v", failed)
 		}
+		assertProjectOutputHistory(t, store, project.ID, session.ID, session.Generation, failure.Exit.ExitedAt)
 		sequence := projectStoreMutationSequence(t, store)
 		replayed, err := store.FailProjectStart(t.Context(), failure)
 		if err != nil || !reflect.DeepEqual(replayed, failed) || projectStoreMutationSequence(t, store) != sequence {
@@ -556,6 +558,7 @@ func TestProjectLifecycleFailureAndUnexpectedExitRetireOnlyConfirmedProcessAutho
 		if !projectMatchesInactiveState(failed.Project, domain.ProjectFailed, exitedAt) {
 			t.Fatalf("RecordUnexpectedProjectExit() = %#v", failed)
 		}
+		assertProjectOutputHistory(t, store, project.ID, session.ID, session.Generation, exitedAt)
 		sequence := projectStoreMutationSequence(t, store)
 		replayed, err := store.RecordUnexpectedProjectExit(t.Context(), request)
 		if err != nil || !reflect.DeepEqual(replayed, failed) || projectStoreMutationSequence(t, store) != sequence {
