@@ -104,6 +104,47 @@ func TestReconcileObservedNativeServiceRoutesPublishesMySQLOnTheProjectAddress(t
 	}
 }
 
+// TestObservedNativeServiceRoutesKeepsListeningServicesAvailableBeforeComposeHealth catches the startup DNS gap for a running MySQL container.
+func TestObservedNativeServiceRoutesKeepsListeningServicesAvailableBeforeComposeHealth(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		state     domain.EntityState
+		available bool
+		want      int
+	}{
+		{name: "healthy", state: domain.EntityReady, available: true, want: 1},
+		{name: "health starting", state: domain.EntityWorking, available: true, want: 1},
+		{name: "working without publication", state: domain.EntityWorking},
+		{name: "failed", state: domain.EntityFailed, available: true},
+		{name: "stopped", state: domain.EntityStopped, available: true},
+		{name: "unavailable", state: domain.EntityUnavailable, available: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			project := projectNativeRouteTestProject()
+			project.Services[0].State = test.state
+			primary := netip.MustParseAddr("127.77.59.75")
+			runtime := &projectNativeRouteTestRuntime{observations: map[domain.ServiceID]projectprocess.ServicePortObservation{
+				"mysql": {
+					Supported: true,
+					Available: test.available,
+					Ports: []projectprocess.ServicePort{{
+						Address: primary.String(), Private: 3306, Public: 3306, Protocol: "tcp", Replica: 1,
+					}},
+				},
+			}}
+			coordinator := &ProjectLifecycleCoordinator{runtimeCapabilities: runtime}
+			routes, err := coordinator.observedNativeServiceRoutes(t.Context(), project.ID, project.Slug,
+				projectNativeRouteTestSession(project.ID), primary, project.Services, project.Resources)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(routes) != test.want {
+				t.Fatalf("native routes = %#v, want %d", routes, test.want)
+			}
+		})
+	}
+}
+
 // TestReconcileObservedNativeServiceRoutesLeavesHTTPServiceNamesOnSharedIngress prevents conflicting Mailpit DNS authority.
 func TestReconcileObservedNativeServiceRoutesLeavesHTTPServiceNamesOnSharedIngress(t *testing.T) {
 	project := projectNativeRouteTestProject()

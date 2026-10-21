@@ -121,9 +121,10 @@ func (coordinator *ProjectLifecycleCoordinator) observedNativeServiceRoutes(
 	for _, service := range services {
 		if service.Owner != domain.ServiceOwnerCompose ||
 			service.Selection != domain.ServiceSelected ||
-			service.State != domain.EntityReady {
+			(service.State != domain.EntityReady && service.State != domain.EntityWorking) {
 			continue
 		}
+		// Compose health can lag authenticated App readiness; the controller still proves the published TCP listener.
 		host, err := projectServiceEndpointHost(projectSlug, string(service.ID))
 		if err != nil {
 			return nil, fmt.Errorf("publish observed native service %q: %w", service.ID, err)
