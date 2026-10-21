@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -334,18 +333,6 @@ func assertGeneratedComposeRetainedFailure(
 		t.Fatalf("final custom-hook error missing beyond first cursor page (%d bytes)", output.Len())
 	}
 	t.Logf("real generated custom-hook failure retained %d bytes across process retirement and fresh reader", output.Len())
-	if directory := strings.TrimSpace(os.Getenv(projectIdentityAcceptanceProductEvidenceDirectoryEnvironment)); directory != "" {
-		payload, err := json.Marshal(map[string]any{"project_id": project.id, "output_bytes": output.Len(), "final_error_visible": true, "historical_only": true, "fresh_reader": true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(directory, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(directory, "retained-failure.json"), payload, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 }
 
 // assertGeneratedComposeEventRefresh proves a test-controlled Compose replacement reaches Harbor through the event wake path.
