@@ -43,6 +43,25 @@ def browser_reader(*, executable='/usr/bin/epiphany', address='https://project.t
 
 
 class CreationDiagnosticsTests(unittest.TestCase):
+    def test_webkit_embedded_objects_preserve_inline_progress_text(self):
+        child = SimpleNamespace(name='', queryText=lambda: SimpleNamespace(getText=lambda *_: '4'))
+        parent = SimpleNamespace(
+            queryText=lambda: SimpleNamespace(getText=lambda *_: '\ufffc of 4 steps complete'),
+            queryHypertext=lambda: SimpleNamespace(getLinkIndex=lambda _: 0,
+                getLink=lambda _: SimpleNamespace(get_object=lambda _: child)))
+        namespace = {'GLib': SimpleNamespace(GError=RuntimeError)}
+        read = load_function('accessible_text', **namespace)
+        read.__globals__['accessible_text'] = read
+        self.assertEqual(read(parent), '4 of 4 steps complete')
+
+    def test_webkit_embedded_objects_remain_bounded_and_tolerate_retired_links(self):
+        def unsupported():
+            raise NotImplementedError()
+        node = SimpleNamespace(queryText=lambda: SimpleNamespace(getText=lambda *_: '\ufffc of 4 steps complete'), queryHypertext=unsupported)
+        read = load_function('accessible_text', GLib=SimpleNamespace(GError=RuntimeError))
+        self.assertEqual(read(node), '\ufffc of 4 steps complete')
+        self.assertEqual(read(node, 4), '\ufffc of 4 steps complete')
+
     def test_browser_preference_preserves_other_helpers_and_restores_prior_bytes(self):
         configure = load_function('configure_browser_preference', re=re)
         restore = load_function('restore_browser_preference')

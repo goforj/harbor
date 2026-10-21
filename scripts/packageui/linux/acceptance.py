@@ -163,6 +163,9 @@ def capture(name):
                 rows = []
                 for node in nodes(app):
                     rows.append(node.getRoleName() + ': ' + node.name + ' states=' + str(node.getState().getStates()))
+                    text = accessible_text(node)
+                    if text:
+                        rows.append('  text: ' + repr(text[:4096]))
                     if node.name == 'Creation output':
                         output = accessible_text(node)
                         if not output:
@@ -202,11 +205,28 @@ def launch():
     wait('window visible', visible, 60)
 
 
-def accessible_text(node):
+def accessible_text(node, depth=0):
+    """accessible_text expands WebKit embedded-object characters using their native hypertext anchors."""
     try:
-        return node.queryText().getText(0, -1)
+        text = node.queryText().getText(0, -1)
     except (NotImplementedError, GLib.GError):
         return ''
+    if '\ufffc' not in text or depth >= 4:
+        return text
+    try:
+        hypertext = node.queryHypertext()
+        parts = []
+        for offset, character in enumerate(text):
+            if character == '\ufffc':
+                index = hypertext.getLinkIndex(offset)
+                if index >= 0:
+                    child = hypertext.getLink(index).get_object(0)
+                    if child is not None:
+                        character = accessible_text(child, depth + 1) or child.name
+            parts.append(character)
+        return ''.join(parts)
+    except (NotImplementedError, GLib.GError):
+        return text
 
 
 def visible_text(label):
