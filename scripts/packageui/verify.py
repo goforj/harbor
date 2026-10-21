@@ -59,7 +59,7 @@ def verify_assets(directory, run):
 def test_only_path(name):
     """test_only_path excludes only the verification harness and documentation from product-source matching."""
     return (name.startswith(("desktop/packageui/", "scripts/packageui/", "docs/"))
-            or name in ("README.md", ".github/workflows/ci.yml",
+            or name in ("README.md", "desktop/frontend/e2e/harbor.spec.ts", ".github/workflows/ci.yml",
                         ".github/workflows/docker-project-diagnostics.yml",
                         "internal/reconcile/project_docker_acceptance_test.go",
                         "internal/reconcile/project_docker_diagnostics_test.go",
