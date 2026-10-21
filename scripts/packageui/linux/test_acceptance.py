@@ -43,6 +43,50 @@ def browser_reader(*, executable='/usr/bin/epiphany', address='https://project.t
 
 
 class CreationDiagnosticsTests(unittest.TestCase):
+    def test_document_selection_requires_exact_displayed_progress_after_clearing_the_clipboard(self):
+        for text, expected in [('4 of 4 steps complete', True), ('4of 4 steps complete', True),
+                               ('3 of 4 steps complete', False), ('Harbor UI probe cleared', False),
+                               ('https://project.test', False)]:
+            with self.subTest(text=text):
+                activate, key, run, command = Mock(), Mock(), Mock(), Mock(return_value=text)
+                read = load_function('selected_document_text', activate=activate, key=key,
+                    subprocess=SimpleNamespace(run=run, CalledProcessError=subprocess.CalledProcessError),
+                    time=SimpleNamespace(sleep=lambda _: None), command=command)
+                self.assertEqual(read('4 of 4 steps complete'), expected)
+                activate.assert_called_once_with()
+                run.assert_called_once_with(['xclip', '-selection', 'clipboard', '-in'],
+                    input='Harbor UI probe cleared', text=True, check=True, timeout=5)
+                self.assertEqual(key.call_args_list, [call('ctrl+a'), call('ctrl+c')])
+
+    def test_document_selection_does_not_substitute_cached_text_when_copy_is_unavailable(self):
+        read = load_function('selected_document_text', activate=Mock(), key=Mock(), subprocess=subprocess,
+            time=SimpleNamespace(sleep=lambda _: None), command=Mock(side_effect=subprocess.CalledProcessError(1, ['xclip'])))
+        with unittest.mock.patch.object(subprocess, 'run'):
+            self.assertFalse(read('4 of 4 steps complete'))
+
+    def test_webkit_embedded_objects_preserve_inline_progress_text(self):
+        child = SimpleNamespace(name='', queryText=lambda: SimpleNamespace(getText=lambda *_: '4'))
+        parent = SimpleNamespace(
+            queryText=lambda: SimpleNamespace(getText=lambda *_: '\ufffc of 4 steps complete'),
+            queryHypertext=lambda: SimpleNamespace(getLinkIndex=lambda _: 0,
+                getLink=lambda _: SimpleNamespace(get_object=lambda _: child)))
+        namespace = {'GLib': SimpleNamespace(GError=RuntimeError)}
+        read = load_function('accessible_text', **namespace)
+        read.__globals__['accessible_text'] = read
+        self.assertEqual(read(parent), '4 of 4 steps complete')
+
+    def test_webkit_embedded_objects_remain_bounded_and_tolerate_retired_links(self):
+        def unsupported():
+            raise NotImplementedError()
+        node = SimpleNamespace(queryText=lambda: SimpleNamespace(getText=lambda *_: '\ufffc of 4 steps complete'), queryHypertext=unsupported)
+        read = load_function('accessible_text', GLib=SimpleNamespace(GError=RuntimeError))
+        self.assertEqual(read(node), '\ufffc of 4 steps complete')
+        self.assertEqual(read(node, 4), '\ufffc of 4 steps complete')
+        node.queryHypertext = lambda: SimpleNamespace(getLinkIndex=lambda _: 0, getLink=lambda _: None)
+        self.assertEqual(read(node), '\ufffc of 4 steps complete')
+        node.queryHypertext = lambda: SimpleNamespace(getLinkIndex=lambda _: 0, getLink=lambda _: SimpleNamespace(get_object=lambda _: None))
+        self.assertEqual(read(node), '\ufffc of 4 steps complete')
+
     def test_browser_preference_preserves_other_helpers_and_restores_prior_bytes(self):
         configure = load_function('configure_browser_preference', re=re)
         restore = load_function('restore_browser_preference')
@@ -154,6 +198,14 @@ class CreationDiagnosticsTests(unittest.TestCase):
     def test_webkit_text_waits_when_the_application_or_tree_is_unavailable(self):
         visible = load_function('visible_text', application=lambda: None)
         self.assertFalse(visible('4 of 4 steps complete'))
+
+    def test_webkit_inline_progress_ignores_layout_whitespace_without_changing_the_words(self):
+        for text, expected in [('4of 4 steps complete', True), ('4 \n of 4 steps complete', True), ('3 of 4 steps complete', False)]:
+            with self.subTest(text=text):
+                visible = load_function('visible_text', application=lambda: object(),
+                    nodes=lambda _: [SimpleNamespace(name='')], accessible_text=lambda _: text,
+                    GLib=SimpleNamespace(GError=RuntimeError))
+                self.assertEqual(visible('4 of 4 steps complete'), expected)
         def retired_tree(_):
             raise RuntimeError('retired accessibility tree')
         visible = load_function('visible_text', application=lambda: object(), nodes=retired_tree,

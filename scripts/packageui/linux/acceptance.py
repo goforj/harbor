@@ -163,6 +163,9 @@ def capture(name):
                 rows = []
                 for node in nodes(app):
                     rows.append(node.getRoleName() + ': ' + node.name + ' states=' + str(node.getState().getStates()))
+                    text = accessible_text(node)
+                    if text:
+                        rows.append('  text: ' + repr(text[:4096]))
                     if node.name == 'Creation output':
                         output = accessible_text(node)
                         if not output:
@@ -202,11 +205,30 @@ def launch():
     wait('window visible', visible, 60)
 
 
-def accessible_text(node):
+def accessible_text(node, depth=0):
+    """accessible_text expands WebKit embedded-object characters using their native hypertext anchors."""
     try:
-        return node.queryText().getText(0, -1)
+        text = node.queryText().getText(0, -1)
     except (NotImplementedError, GLib.GError):
         return ''
+    if '\ufffc' not in text or depth >= 4:
+        return text
+    try:
+        hypertext = node.queryHypertext()
+        parts = []
+        for offset, character in enumerate(text):
+            if character == '\ufffc':
+                index = hypertext.getLinkIndex(offset)
+                if index >= 0:
+                    link = hypertext.getLink(index)
+                    if link is not None:
+                        child = link.get_object(0)
+                        if child is not None:
+                            character = accessible_text(child, depth + 1) or child.name
+            parts.append(character)
+        return ''.join(parts)
+    except (NotImplementedError, GLib.GError):
+        return text
 
 
 def visible_text(label):
@@ -215,9 +237,27 @@ def visible_text(label):
     if app is None:
         return False
     try:
-        return any(node.name == label or label in accessible_text(node) for node in nodes(app))
+        expected = ''.join(label.split())
+        return any(node.name == label or expected in ''.join(accessible_text(node).split()) for node in nodes(app))
     except GLib.GError:
         return False
+
+
+def selected_document_text(label):
+    """selected_document_text observes rendered WebKit text that GTK omits from the accessibility tree."""
+    activate()
+    # Retire the browser's clipboard value before copying the actual Harbor
+    # document. An unchanged or unavailable selection cannot satisfy this check.
+    subprocess.run(['xclip', '-selection', 'clipboard', '-in'], input='Harbor UI probe cleared',
+                   text=True, check=True, timeout=5)
+    key('ctrl+a')
+    key('ctrl+c')
+    time.sleep(.1)
+    try:
+        text = command('xclip', '-selection', 'clipboard', '-out', '-target', 'UTF8_STRING')
+    except subprocess.CalledProcessError:
+        return False
+    return ''.join(label.split()) in ''.join(text.split())
 
 
 def configure_browser_preference(home):
@@ -379,7 +419,7 @@ try:
     browser = wait('real browser opened the project address', lambda: opened_browser('https://' + row['slug'] + '.test'), 60)
     (EVIDENCE / 'browser-open.json').write_text(json.dumps(browser, indent=2) + '\n')
     activate()
-    wait('guide App opening completed', lambda: visible_text('4 of 4 steps complete'))
+    wait('guide App opening completed', lambda: selected_document_text('4 of 4 steps complete'))
     capture('guide-complete')
     click('Finish setup')
     wait('guide dismissed after completion', lambda: not find('Dismiss getting started guide'))
