@@ -18,15 +18,18 @@ def load_function(name, **namespace):
     return namespace[name]
 
 
-def browser_reader(*, executable='/usr/bin/epiphany', address='https://project.test/', uid=1001, geometry='WIDTH=1024\nHEIGHT=768'):
+def browser_reader(*, executable='/usr/bin/epiphany', address='https://project.test/', uid=1001, geometry='WIDTH=1024\nHEIGHT=768', active_window='7'):
     """browser_reader supplies native observations while retaining the real window and address admission logic."""
     paths = {'epiphany': '/usr/bin/epiphany', '/proc/123/exe': executable}
     responses = {
         ('pgrep', '-x', 'epiphany'): '123',
-        ('xdotool', 'search', '--onlyvisible', '--pid', '123', '--name', '.'): '7',
-        ('xdotool', 'getwindowgeometry', '--shell', '7'): geometry,
-        ('xdotool', 'windowactivate', '--sync', '7'): '',
-        ('xclip', '-selection', 'clipboard', '-out'): address,
+        ('xprop', '-root', '_NET_CLIENT_LIST'): '_NET_CLIENT_LIST(WINDOW): window id # 0x7',
+        ('xdotool', 'getwindowpid', '0x7'): '123',
+        ('xdotool', 'getwindowgeometry', '--shell', '0x7'): geometry,
+        ('xdotool', 'windowactivate', '--sync', '0x7'): '',
+        ('xdotool', 'getactivewindow'): active_window,
+        ('xclip', '-selection', 'clipboard', '-out', '-target', 'UTF8_STRING'): address,
+        ('xclip', '-selection', 'clipboard', '-out', '-target', 'text/plain;charset=utf-8'): address,
     }
     command = Mock(side_effect=lambda *args: responses[args])
     key = Mock()
@@ -34,7 +37,7 @@ def browser_reader(*, executable='/usr/bin/epiphany', address='https://project.t
         Path=lambda path: SimpleNamespace(resolve=lambda: paths[path]),
         shutil=SimpleNamespace(which=lambda _: 'epiphany'), urlsplit=urlsplit,
         os=SimpleNamespace(stat=lambda _: SimpleNamespace(st_uid=uid), getuid=lambda: 1001),
-        subprocess=subprocess, time=SimpleNamespace(sleep=lambda _: None), command=command, key=key,
+        subprocess=subprocess, re=re, time=SimpleNamespace(sleep=lambda _: None), command=command, key=key,
         record_browser_probe=Mock())
     return opened, key, command
 
@@ -91,16 +94,44 @@ class CreationDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(opened('https://project.test') is not None, expected)
                 if expected:
                     self.assertEqual(key.call_args_list, [call('ctrl+l'), call('ctrl+c'), call('Escape')])
-                    command.assert_any_call('xclip', '-selection', 'clipboard', '-out')
+                    command.assert_any_call('xclip', '-selection', 'clipboard', '-out', '-target', 'UTF8_STRING')
                 if executable != '/usr/bin/epiphany':
                     key.assert_not_called()
 
     def test_browser_address_rejects_foreign_users_and_popup_windows(self):
-        for options in ({'uid': 2000}, {'geometry': 'WIDTH=300\nHEIGHT=200'}, {'geometry': 'WIDTH=invalid'}):
+        for options in ({'uid': 2000}, {'geometry': 'WIDTH=300\nHEIGHT=200'}, {'geometry': 'WIDTH=invalid'}, {'active_window': '8'}, {'active_window': 'unavailable'}):
             with self.subTest(options=options):
                 opened, key, _ = browser_reader(**options)
                 self.assertIsNone(opened('https://project.test'))
                 key.assert_not_called()
+
+    def test_browser_address_accepts_the_standard_gtk_utf8_mime_target(self):
+        opened, key, command = browser_reader()
+        normal = command.side_effect
+        def read(*args):
+            if args == ('xclip', '-selection', 'clipboard', '-out', '-target', 'UTF8_STRING'):
+                raise subprocess.CalledProcessError(1, args)
+            return normal(*args)
+        command.side_effect = read
+        self.assertIsNotNone(opened('https://project.test'))
+        command.assert_any_call('xclip', '-selection', 'clipboard', '-out', '-target', 'text/plain;charset=utf-8')
+
+    def test_browser_address_ignores_unmanaged_or_foreign_client_windows(self):
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                opened, key, command = browser_reader()
+                normal = command.side_effect
+                def read(*args):
+                    if args == ('xprop', '-root', '_NET_CLIENT_LIST'):
+                        return '_NET_CLIENT_LIST(WINDOW): window id # 0x6, 0x7'
+                    if args == ('xdotool', 'getwindowpid', '0x6'):
+                        if missing:
+                            raise subprocess.CalledProcessError(1, args)
+                        return '456'
+                    return normal(*args)
+                command.side_effect = read
+                self.assertIsNotNone(opened('https://project.test'))
+                self.assertEqual(key.call_args_list, [call('ctrl+l'), call('ctrl+c'), call('Escape')])
 
     def test_browser_address_waits_for_native_query_turnover(self):
         for failure in (OSError('retired process'), subprocess.CalledProcessError(1, ['pgrep'])):

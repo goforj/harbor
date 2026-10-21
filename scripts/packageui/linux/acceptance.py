@@ -266,16 +266,32 @@ def opened_browser(url):
                 if os.stat(f'/proc/{pid}').st_uid != os.getuid():
                     continue
                 observation['stage'] = 'finding_window'
-                for identifier in command('xdotool', 'search', '--onlyvisible', '--pid', pid, '--name', '.').split():
+                clients = re.findall(r'0x[0-9a-fA-F]+', command('xprop', '-root', '_NET_CLIENT_LIST'))
+                for identifier in clients:
+                    try:
+                        if command('xdotool', 'getwindowpid', identifier).strip() != pid:
+                            continue
+                    except subprocess.SubprocessError:
+                        continue
                     geometry = dict(line.split('=', 1) for line in command('xdotool', 'getwindowgeometry', '--shell', identifier).splitlines() if '=' in line)
                     if int(geometry.get('WIDTH', '0')) < 420 or int(geometry.get('HEIGHT', '0')) < 520:
                         continue
                     observation.update(window_id=identifier, stage='copying_address')
                     command('xdotool', 'windowactivate', '--sync', identifier)
+                    active = command('xdotool', 'getactivewindow').strip()
+                    observation['active_window'] = active
+                    if int(active, 0) != int(identifier, 0):
+                        continue
                     key('ctrl+l')
                     time.sleep(.1)
                     key('ctrl+c')
-                    address = command('xclip', '-selection', 'clipboard', '-out').strip().rstrip('/')
+                    observation['clipboard_target'] = 'UTF8_STRING'
+                    try:
+                        address = command('xclip', '-selection', 'clipboard', '-out', '-target', 'UTF8_STRING')
+                    except subprocess.CalledProcessError:
+                        observation['clipboard_target'] = 'text/plain;charset=utf-8'
+                        address = command('xclip', '-selection', 'clipboard', '-out', '-target', 'text/plain;charset=utf-8')
+                    address = address.strip().rstrip('/')
                     observation['stage'] = 'checking_address'
                     if address in (url.rstrip('/'), host):
                         key('Escape')
