@@ -95,16 +95,18 @@ func needsDevelopmentArtifacts(platform string, dev, release bool) bool {
 	return platform == "darwin" && (dev || !release)
 }
 
-// buildArguments keeps Linux on the existing GTK3/WebKit 4.1 package baseline during the beta trial.
+// buildArguments preserves release reproducibility while retaining available development source provenance.
 func buildArguments(platform, output, extraLDFlags string, dev, release bool) []string {
 	tags := "production"
 	if release {
 		tags += ",release"
 	}
 	ldflags := "-w -s"
+	vcs := "-buildvcs=false"
 	if dev {
 		tags = "dev"
 		ldflags = ""
+		vcs = "-buildvcs=auto"
 	}
 	if platform == "linux" {
 		tags += ",gtk3"
@@ -118,7 +120,7 @@ func buildArguments(platform, output, extraLDFlags string, dev, release bool) []
 	if platform == "darwin" {
 		ldflags += " -extldflags=-mmacosx-version-min=" + darwinDeploymentTarget(runtime.Version())
 	}
-	return []string{"build", "-trimpath", "-buildvcs=false", "-tags", tags, "-ldflags", ldflags, "-o", output, "."}
+	return []string{"build", "-trimpath", vcs, "-tags", tags, "-ldflags", ldflags, "-o", output, "."}
 }
 
 // command inherits process-local build configuration without shell interpretation.

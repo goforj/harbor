@@ -14,8 +14,11 @@ func TestBuildArguments(t *testing.T) {
 		for _, dev := range []bool{false, true} {
 			for _, release := range []bool{false, true} {
 				args := buildArguments(platform, "output with spaces", "-X example.version=1.2.3", dev, release)
-				if !reflect.DeepEqual(args[:3], []string{"build", "-trimpath", "-buildvcs=false"}) || args[len(args)-2] != "output with spaces" {
+				if !reflect.DeepEqual(args[:2], []string{"build", "-trimpath"}) || args[len(args)-2] != "output with spaces" {
 					t.Fatal(args)
+				}
+				if dev && args[2] != "-buildvcs=auto" || !dev && args[2] != "-buildvcs=false" {
+					t.Fatal("development lost source provenance or release gained ambient VCS input", args)
 				}
 				tags, flags := args[4], args[6]
 				if dev == strings.Contains(tags, "production") || strings.Contains(tags, "release") != (!dev && release) {
