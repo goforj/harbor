@@ -100,7 +100,7 @@ Windows resolves ProgramData and Program Files through native Known Folder APIs 
 Wire's cached loader can omit a constructor defined in a local cgo file, producing `undefined: trust.New` while direct Go builds succeed. [Wire PR #31](https://github.com/goforj/wire/pull/31) fixes the loader; it is not yet a published tool release. Native maintainers exercising the affected source can install its exact reviewed source temporarily:
 
 ```sh
-go install github.com/goforj/wire/cmd/wire@b913fce3791c52fb7c9d158e536dffa3388f1c35
+go install github.com/goforj/wire/cmd/wire@5027efedad598786df3012ad311f30cb26fd224b
 forj harbord make:migration example_change --connection default --no-open
 ```
 

@@ -239,6 +239,15 @@ jobs:
           mkdir -p harbor-package-ui-evidence
           /usr/bin/harbor daemon snapshot > harbor-package-ui-evidence/final-snapshot.json 2>&1 || true
           journalctl --user -u harbord.service --no-pager > harbor-package-ui-evidence/daemon-journal.txt 2>&1 || true
+          sudo -n journalctl -u polkit.service --lines=120 --no-pager > harbor-package-ui-evidence/polkit-journal.txt 2>&1 || true
+          sudo -n stat --format='%n type=%F uid=%u gid=%g mode=%a links=%h' \
+            /usr/libexec/harbor-helper /usr/bin/pkexec /usr/sbin/nft \
+            /var/lib/goforj/harbor /var/lib/goforj/harbor/tickets \
+            /var/lib/goforj/harbor/tickets/pending /var/lib/goforj/harbor/tickets/claims \
+            > harbor-package-ui-evidence/helper-boundary-metadata.txt 2>&1 || true
+          getcap /usr/sbin/nft > harbor-package-ui-evidence/nft-capabilities.txt 2>&1 || true
+          timeout 5s sudo -n /usr/sbin/nft --json list table inet goforj_harbor \
+            > harbor-package-ui-evidence/low-port-table.json 2>&1 || true
 
       - name: Recover owned resources after failed GUI check
         if: failure() && steps.install.outcome == 'success'

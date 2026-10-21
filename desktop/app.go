@@ -884,6 +884,9 @@ func (a *App) approveNetworkDataPlaneLowPorts(
 	outcome, err := runner.ExecuteLowPorts(ctx, request)
 	if networkDataPlaneLowPortNeedsPrerequisiteRepair(outcome, err) {
 		if repairErr := a.setupPrerequisite.Ensure(ctx); repairErr != nil {
+			if errors.Is(repairErr, networkprerequisite.ErrUnavailable) {
+				return networkDataPlaneLowPortRepairUnavailableError(outcome, err)
+			}
 			return fmt.Errorf("install Harbor privileged networking support: %w", repairErr)
 		}
 		outcome, err = runner.ExecuteLowPorts(ctx, request)
@@ -911,6 +914,30 @@ func (a *App) approveNetworkDataPlaneLowPorts(
 		return errors.New("validate Harbor network data-plane low-port confirmation: result crossed the selected operation revision")
 	}
 	return nil
+}
+
+// networkDataPlaneLowPortRepairUnavailableError preserves the first safe failure category when packaged builds cannot repair themselves.
+func networkDataPlaneLowPortRepairUnavailableError(outcome networkdataplaneapproval.LowPortOutcome, err error) error {
+	reason := "unclassified low-port approval failure"
+	var wireError rpc.WireError
+	switch {
+	case errors.As(err, &wireError) && wireError.Code == rpc.ErrorCodePrivilegedHelperRequired:
+		reason = "the helper ticket directory is missing"
+	case errors.As(err, &wireError) && wireError.Code == rpc.ErrorCodePrivilegedHelperUnsafe:
+		reason = "the helper ticket directory has unsafe ownership or permissions"
+	case outcome.State == networkdataplaneapproval.Unavailable:
+		reason = "native helper launch is unavailable"
+	case outcome.State == networkdataplaneapproval.HelperFailed && outcome.HelperFailure != nil:
+		switch {
+		case outcome.HelperFailure.Code == helper.ErrorCodeAuthenticationFailed:
+			reason = "the helper could not authenticate the low-port ticket"
+		case outcome.HelperFailure.Code == helper.ErrorCodeMutationFailed && outcome.HelperFailure.Message == "helper operation failed: low-port ensure verification-failed":
+			reason = "low-port ensure verification failed"
+		case outcome.HelperFailure.Code == helper.ErrorCodeMutationFailed && outcome.HelperFailure.Message == "helper operation failed: low-port ensure observation-changed":
+			reason = "the low-port observation changed during setup"
+		}
+	}
+	return fmt.Errorf("Harbor low-port setup failed: %s; %w. Check the installed package and native authorization before retrying", reason, networkprerequisite.ErrUnavailable)
 }
 
 // networkDataPlaneTrustNeedsPrerequisiteRepair recognizes only reviewed evidence that the shared helper boundary needs repair.
