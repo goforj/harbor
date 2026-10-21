@@ -2,9 +2,12 @@
 
 import ast
 from pathlib import Path
+import re
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
+from urllib.parse import urlsplit
 
 
 def load_function(name, **namespace):
@@ -15,6 +18,73 @@ def load_function(name, **namespace):
 
 
 class CreationDiagnosticsTests(unittest.TestCase):
+    def test_browser_preference_preserves_other_helpers_and_restores_prior_bytes(self):
+        configure = load_function('configure_browser_preference', re=re)
+        restore = load_function('restore_browser_preference')
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            path = home / '.config/xfce4/helpers.rc'
+            path.parent.mkdir(parents=True)
+            original = b'# owned desktop preferences\nWebBrowser=previous\nMailReader=mail\n'
+            path.write_bytes(original)
+            receipt = configure(home)
+            self.assertEqual(path.read_bytes(), original.replace(b'WebBrowser=previous', b'WebBrowser=epiphany'))
+            restore(receipt)
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_browser_preference_restores_absence_and_rejects_links_and_other_writers(self):
+        configure = load_function('configure_browser_preference', re=re)
+        restore = load_function('restore_browser_preference')
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            receipt = configure(home)
+            path = receipt[0]
+            self.assertEqual(path.read_text(), 'WebBrowser=epiphany\n')
+            restore(receipt)
+            self.assertFalse(path.exists())
+            target = home / 'unrelated'
+            target.write_text('untouched')
+            path.symlink_to(target)
+            with self.assertRaisesRegex(RuntimeError, 'direct regular file'):
+                configure(home)
+            self.assertEqual(target.read_text(), 'untouched')
+            path.unlink()
+            path.mkdir()
+            with self.assertRaisesRegex(RuntimeError, 'direct regular file'):
+                configure(home)
+            path.rmdir()
+            receipt = configure(home)
+            path.write_text('WebBrowser=other-writer\n')
+            with self.assertRaisesRegex(RuntimeError, 'outside the fixture'):
+                restore(receipt)
+            self.assertEqual(path.read_text(), 'WebBrowser=other-writer\n')
+
+    def test_browser_address_requires_the_selected_executable_and_project(self):
+        for executable, address, expected in (('/usr/bin/epiphany', 'https://project.test/', True),
+                                               ('/usr/bin/epiphany', 'project.test', True),
+                                               ('/usr/bin/epiphany', 'other.test', False),
+                                               ('/usr/bin/unrelated', 'project.test', False)):
+            with self.subTest(executable=executable, address=address):
+                paths = {'epiphany': '/usr/bin/epiphany', '/proc/123/exe': executable}
+                app = SimpleNamespace(get_process_id=lambda: 123)
+                node = SimpleNamespace(getRoleName=lambda: 'entry')
+                opened = load_function('opened_browser',
+                    Path=lambda path: SimpleNamespace(resolve=lambda: paths[path]),
+                    shutil=SimpleNamespace(which=lambda _: 'epiphany'), urlsplit=urlsplit,
+                    pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda _: [app])),
+                    nodes=lambda _: [node], accessible_text=lambda _: address,
+                    GLib=SimpleNamespace(GError=RuntimeError))
+                self.assertEqual(opened('https://project.test') is not None, expected)
+
+    def test_browser_address_waits_for_accessibility_tree_turnover(self):
+        desktop = Mock(side_effect=RuntimeError('retired tree'))
+        opened = load_function('opened_browser',
+            Path=lambda _: SimpleNamespace(resolve=lambda: '/usr/bin/epiphany'),
+            shutil=SimpleNamespace(which=lambda _: 'epiphany'), urlsplit=urlsplit,
+            pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=desktop)),
+            GLib=SimpleNamespace(GError=RuntimeError))
+        self.assertIsNone(opened('https://project.test'))
+
     def test_webkit_text_can_be_unnamed_or_exposed_as_an_accessible_name(self):
         for name, text, expected in (('', 'Required tools are ready', True),
                                      ('Required tools are ready', '', True),

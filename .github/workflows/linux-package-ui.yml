@@ -118,7 +118,7 @@ jobs:
           sudo -n apt-get update
           sudo -n apt-get install --yes xfce4 xfce4-notifyd xvfb xdotool scrot python3-pyatspi \
             at-spi2-core libatk-adaptor dbus-user-session libcap2-bin libgtk-3-0 \
-            libwebkit2gtk-4.1-0 nftables policykit-1 systemd-resolved
+            libwebkit2gtk-4.1-0 nftables policykit-1 systemd-resolved epiphany-browser
           sudo -n systemctl enable --now systemd-resolved.service
           sudo -n ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
           sudo -n setcap cap_net_admin=ep /usr/sbin/nft
@@ -127,7 +127,7 @@ jobs:
           printf 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" >> "$GITHUB_ENV"
           sudo -n systemctl start "user@$(id -u).service"
           mkdir -p harbor-package-ui-evidence
-          dpkg-query -W xfce4-session xfwm4 libgtk-3-0t64 libwebkit2gtk-4.1-0 at-spi2-core xvfb > harbor-package-ui-evidence/runtime-versions.txt
+          dpkg-query -W xfce4-session xfwm4 libgtk-3-0t64 libwebkit2gtk-4.1-0 at-spi2-core xvfb epiphany-browser > harbor-package-ui-evidence/runtime-versions.txt
           cat /etc/os-release >> harbor-package-ui-evidence/runtime-versions.txt
           uname -a >> harbor-package-ui-evidence/runtime-versions.txt
           printf 'ImageOS=%s\nImageVersion=%s\n' "$ImageOS" "$ImageVersion" >> harbor-package-ui-evidence/runtime-versions.txt

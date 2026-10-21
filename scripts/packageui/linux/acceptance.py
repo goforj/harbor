@@ -3,9 +3,12 @@
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 import pyatspi
 from gi.repository import GLib
@@ -217,6 +220,55 @@ def visible_text(label):
         return False
 
 
+def configure_browser_preference(home):
+    """configure_browser_preference gives the disposable XFCE desktop a real browser and retains its prior setting."""
+    path = home / '.config/xfce4/helpers.rc'
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise RuntimeError('browser preference must be a direct regular file')
+    original = path.read_bytes() if path.exists() else None
+    text = original.decode() if original is not None else ''
+    updated, count = re.subn(r'(?m)^[ \t]*WebBrowser=.*$', 'WebBrowser=epiphany', text)
+    if not count:
+        updated = text.rstrip('\n') + ('\n' if text else '') + 'WebBrowser=epiphany\n'
+    expected = updated.encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(expected)
+    return path, original, expected
+
+
+def restore_browser_preference(receipt):
+    """restore_browser_preference preserves another writer's changes instead of overwriting an unexpected setting."""
+    path, original, expected = receipt
+    if path.is_symlink() or path.read_bytes() != expected:
+        raise RuntimeError('browser preference changed outside the fixture')
+    if original is None:
+        path.unlink()
+    else:
+        path.write_bytes(original)
+
+
+def opened_browser(url):
+    """opened_browser observes the installed browser's address field after the native resource handoff."""
+    expected_executable = Path(shutil.which('epiphany')).resolve()
+    host = urlsplit(url).netloc
+    try:
+        for app in pyatspi.Registry.getDesktop(0):
+            try:
+                pid = app.get_process_id()
+                if Path(f'/proc/{pid}/exe').resolve() != expected_executable:
+                    continue
+                for node in nodes(app):
+                    if node.getRoleName() in ('entry', 'text'):
+                        address = accessible_text(node).strip().rstrip('/')
+                        if address in (url.rstrip('/'), host):
+                            return {'pid': pid, 'executable': str(expected_executable), 'address': address}
+            except (OSError, GLib.GError):
+                continue
+    except GLib.GError:
+        return None
+    return None
+
+
 def window(visible):
     result = subprocess.run(['xdotool', 'search', '--onlyvisible', '--pid', str(process.pid), '--name', 'GoForj Harbor'], capture_output=True, text=True)
     clients = []
@@ -251,7 +303,10 @@ def quit_ui():
 
 root = Path(tempfile.mkdtemp(prefix='harbor-package-ui-', dir='/tmp'))
 directory = root / 'project'
+browser_preference = None
 try:
+    assert shutil.which('epiphany'), 'the disposable desktop requires its installed browser'
+    browser_preference = configure_browser_preference(Path.home())
     launch()
     element('Dismiss getting started guide', ['push button'])
     capture('installed-first-launch')
@@ -282,6 +337,8 @@ try:
     click('Recheck')
     wait('native prerequisites are ready', lambda: visible_text('Required tools are ready'))
     click('Open app')
+    browser = wait('real browser opened the project address', lambda: opened_browser('https://' + row['slug'] + '.test'), 60)
+    (EVIDENCE / 'browser-open.json').write_text(json.dumps(browser, indent=2) + '\n')
     activate()
     wait('guide App opening completed', lambda: visible_text('4 of 4 steps complete'))
     capture('guide-complete')
@@ -341,6 +398,7 @@ try:
         'fixture': 'Ubuntu 24.04 x86_64, XFCE X11 desktop on Xvfb, AT-SPI, GTK/WebKit',
         'creation': 'production graphical wizard', 'start': 'ready and system-trusted HTTPS 200',
         'onboarding': 'installed first-project guide, native tool recheck, and published App opening completed',
+        'browser': browser,
         'close': 'hidden with project ready', 'reopen': 'original process restored',
         'quit': 'native GTK menu, same daemon PID and project ready',
         'quit_method': 'native GTK menu',
@@ -391,3 +449,5 @@ finally:
     (EVIDENCE / 'ui-child-settlement.json').write_text(json.dumps([
         {'pid': child.pid, 'returncode': child.poll()} for child in children
     ], indent=2) + '\n')
+    if browser_preference is not None:
+        restore_browser_preference(browser_preference)
