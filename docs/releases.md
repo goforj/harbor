@@ -2,6 +2,8 @@
 
 Harbor uses short-lived feature branches, pull requests into `main`, and immutable version tags. A release rehearsal builds and verifies native packages without publication. A rehearsal does not create a tag or GitHub release.
 
+For public downloads, tested profiles, setup, and practical troubleshooting, start with [Beta support and recovery](./beta-support.md).
+
 ## Published preview
 
 [v0.1.0-beta.1](https://github.com/goforj/harbor/releases/tag/v0.1.0-beta.1) is Harbor's first public unsigned development preview. Its immutable tag points to `1e71ce47e5aaa07eeeb0f615a822dd49ca46770b`, which passed [main push CI](https://github.com/goforj/harbor/actions/runs/39519520985). [Release run 39520200187](https://github.com/goforj/harbor/actions/runs/39520200187) passed preflight, both native package gates, assembly, and publication.
@@ -48,7 +50,7 @@ This path publishes development previews, not a signed product release or automa
 
 The GUI workflows admit exact package bytes from successful package runs, verify checksums and provenance, and require product source to match the package source. Harness and documentation changes may differ. Product changes require a fresh package rehearsal.
 
-The macOS workflow drives the installed Wails window through XCTest in a GitHub-hosted macOS 26 Apple-silicon graphical session. The Ubuntu workflow drives the installed GTK/WebKit executable through AT-SPI and native input in Ubuntu 24.04 XFCE/X11 on Xvfb. Its passing quit action is the native menu; the pinned GTK runtime does not implement Ctrl+Q. These profiles do not prove genuine consent or failure recovery. macOS final trust-root removal and full trust-store restoration remain unproved. Ubuntu X11 evidence does not establish GNOME Wayland behavior.
+The macOS workflow drives the installed Wails window through XCTest in a GitHub-hosted macOS 26 Apple-silicon graphical session. The Ubuntu workflow drives the installed GTK/WebKit executable through AT-SPI and native input in Ubuntu 24.04 XFCE/X11 on Xvfb. Its passing quit action is the native menu; the pinned GTK runtime does not implement Ctrl+Q. Current full installed receipts additionally prove the specific daemon-crash continuity and interrupted-start recovery in [current state](./current-state.md#installed-onboarding-accepted-2026-10-21). They do not prove genuine consent, reboot continuity, or every failure mode. macOS final trust-root removal and full trust-store restoration remain unproved. Ubuntu X11 evidence does not establish GNOME Wayland behavior.
 
 The Windows gate uses the exact package from the Windows development package workflow. Its hosted Server 2025 profile is a functional fixture, not a supported Windows client/UAC or genuine secure-desktop consent profile. The focused native menu probe [39407787846](https://github.com/goforj/harbor/actions/runs/39407787846) verifies real Ctrl+Q, UI-process exit, daemon survival, and cleanup. The accepted full GUI run completes normal cleanup, but does not establish a supported Windows client/UAC profile or genuine GUI consent. Actual product-token facts and protected machine/IPC probes remain mandatory. The extra cross-high observer is limited to the standalone profile; the product receipt explicitly records it as skipped and makes no containment claim. Do not report GUI-consent evidence from the preauthorized fixture.
 

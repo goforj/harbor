@@ -19,7 +19,7 @@ Before Phase 0 can claim a platform result, Harbor needs a versioned test fleet 
 - infrastructure provisions a clean VM or supported dedicated host image, obtains a just-in-time one-job runner registration, and destroys or reprovisions the machine after the job; GitHub's `ephemeral` runner flag alone is not machine destruction;
 - runner groups are restricted to this repository and named workflows, and privileged jobs execute only a maintainer-approved exact head SHA;
 - workers expose no cloud metadata, internal network access, signing credentials, package-publishing credentials, or reusable GitHub token;
-- images, local Docker provider and Engine versions, browsers, resolver backend, trust store, Wails v2, Node, Vue/Vite, GTK/WebKit, tray dependencies, and interactive-session setup are versioned;
+- images, local Docker provider and Engine versions, browsers, resolver backend, trust store, pinned Wails v3, Node, Vue/Vite, GTK/WebKit, tray dependencies, and interactive-session setup are versioned;
 - capacity has a named maintainer, budget, provisioning timeout, and hosted control-plane preflight; a required product job is dispatched only after its exact JIT worker is provisioned and reserved;
 - provisioning, job, cleanup, and destruction evidence is retained out of band and tied to the exact head SHA.
 
@@ -40,7 +40,7 @@ Use versioned Ubuntu, macOS, and Windows labels and record GitHub's attested run
 - HTTP/TLS router and TCP relay tests on high ports;
 - state migration and reconciliation tests;
 - CLI/daemon IPC and process supervision;
-- Wails v2 desktop builds, `vue-tsc`, Vitest/Vue Test Utils, production Vite builds, and Playwright browser runs where the image provides the pinned toolchain;
+- pinned Wails v3 desktop builds, `vue-tsc`, Vitest/Vue Test Utils, production Vite builds, and Playwright browser runs where the image provides the pinned toolchain;
 - race-enabled Go tests;
 - package construction and non-privileged smoke tests.
 
@@ -396,7 +396,7 @@ The initial full-mode product profiles are deliberately narrow enough to prove:
 | Profile | Initial target family | Required product environment |
 |---|---|---|
 | macOS | macOS 15 on Apple silicon | `/etc/resolver`, login-keychain trust, launchd socket activation and unprivileged relay lifecycle, system WebKit, Safari plus pinned Chrome/Firefox, a local Docker-compatible Engine 28+, interactive login session. |
-| Linux | Ubuntu 24.04 LTS on x86-64 | NetworkManager with systemd-resolved, nftables, system CA integration, GNOME Wayland, GTK3 and WebKit2GTK 4.1 with Wails v2's `webkit2_41` build tag, pinned Chrome/Firefox, a local Docker-compatible Engine 28+, systemd user service. |
+| Linux | Ubuntu 24.04 LTS on x86-64 | NetworkManager with systemd-resolved, nftables, system CA integration, GNOME Wayland, GTK3 and WebKit2GTK 4.1 with Wails v3's `gtk3` compatibility build tag, pinned Chrome/Firefox, a local Docker-compatible Engine 28+, systemd user service. |
 | Windows | Windows 11 24H2 on x86-64 | NRPT, `CurrentUser\Root`, WebView2, pinned Edge/Chrome/Firefox, a local Docker-compatible Engine 28+, interactive local-administrator account running Harbor at medium integrity with UAC. |
 
 Intel macOS, Linux ARM64, and other distributions, desktops, resolver stacks, or Wails runtime combinations remain preview until equivalent dedicated evidence exists. This is an architecture/support statement, not a cross-compilation limitation.

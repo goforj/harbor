@@ -359,15 +359,15 @@ Its status summarizes whether Harbor is ready, busy, degraded, or unavailable. `
 
 Closing the window hides it by default and keeps the desktop process alive. `Quit Harbor UI` exits that process only; the daemon and projects continue. Native failure/recovery notifications are best-effort while the UI process is alive and the user has granted permission. Harbor does not add a fifth background notifier merely to make notification delivery unconditional.
 
-`Quit Harbor UI` is also present in the native application menu and bound to `Cmd+Q` on macOS and `Ctrl+Q` on Windows/Linux, so it never depends on a tray. The first close explains once that Harbor remains available in the background and points to both the reopen and explicit Quit paths; this notice does not repeat after acknowledgment.
+`Quit Harbor UI` is also present in the native application menu, with `Cmd+Q` on macOS and `Ctrl+Q` on Windows. The pinned GTK3 implementation uses the native menu on Linux because its `Ctrl+Q` accelerator is not implemented; Quit never depends on a tray. The first close explains once that Harbor remains available in the background and points to both the reopen and explicit Quit paths; this notice does not repeat after acknowledgment.
 
 Linux desktop environments differ in tray and notification support. Harbor must remain fully usable when no tray is available; relaunching the desktop focuses its hidden single instance, and the CLI exposes every essential action.
 
-The tray implementation follows the process and dependency decision in [Architecture](./architecture.md): `fyne.io/systray` is the preferred Wails v2 candidate, same-process integration requires native proof on all three platforms, and a stateless `harbor-tray` daemon client is the fallback if the native event loops conflict.
+The tray implementation follows [Architecture](./architecture.md): pinned Wails v3.0.0-beta.32 owns the integrated native tray, without a second GUI toolkit. Open Harbor and Quit Harbor UI are the current bounded surface. Native evidence remains specific to its tested profiles; a separate stateless tray client remains a fallback design rather than an implemented extra process.
 
 ## CLI
 
-Essential GUI behavior has a CLI equivalent and structured output where automation is useful:
+The following catalog is the target CLI surface, not a list of currently implemented commands. Use `harbor --help` and the source-checked commands in [Beta support and recovery](./beta-support.md) for the current build. The target gives essential GUI behavior a CLI equivalent and structured output where useful:
 
 ```text
 harbor add [path] [--json]
@@ -397,7 +397,7 @@ The CLI is a daemon client. It does not mutate Harbor's database, resolver files
 
 ## Doctor
 
-`harbor doctor` is one evidence-based diagnostic path used by the CLI and desktop. Machine checks include:
+The doctor target is one evidence-based diagnostic path for CLI and desktop, with the machine checks below. The current `harbor doctor` reports authenticated control-plane facts only; the source-only desktop support preview is a separate bounded projection. A passing current report does not establish all of these target checks:
 
 - daemon endpoint, lock, protocol, and version;
 - privileged helper integrity and owned host configuration;

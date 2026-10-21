@@ -8,7 +8,7 @@ Harbor keeps project ownership intact: each project retains its own GoForj Apps,
 
 ## Preview downloads
 
-[Harbor v0.1.0-beta.1](https://github.com/goforj/harbor/releases/tag/v0.1.0-beta.1) includes an Apple-silicon macOS PKG and an Ubuntu 24.04 amd64 DEB, with checksums and package provenance. The macOS package is unsigned and unnotarized. Windows passed its hosted installed-app checks, but public installers remain gated on production code signing. See the release notes for the exact tested profiles and preview limits.
+[Harbor v0.1.0-beta.1](https://github.com/goforj/harbor/releases/tag/v0.1.0-beta.1) includes an Apple-silicon macOS PKG and an Ubuntu 24.04 amd64 DEB, with checksums and package provenance. The macOS package is unsigned and unnotarized. Windows passed its hosted installed-app checks, but public installers remain gated on production code signing. See [Beta support and recovery](./docs/beta-support.md) for tested profiles, installation, conflicts, diagnostics, and safe recovery.
 
 ## Target
 
@@ -43,6 +43,7 @@ See [source development](./docs/development.md) for current prerequisites, daemo
 
 ## Documentation
 
+- [Beta support and recovery](./docs/beta-support.md): public downloads, tested profiles, practical setup, and troubleshooting.
 - [Current implementation state](./docs/current-state.md): implemented behavior and known gaps.
 - [Development handoff](./docs/handoff.md): current worktree boundary, reproduction context, and next goal.
 - [Product design](./docs/product-design.md): user model, workflows, UI, and first-release scope.

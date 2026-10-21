@@ -1,5 +1,11 @@
 # Current Implementation State
 
+## Beta support guide and integration (2026-10-21)
+
+[Beta support and recovery](./beta-support.md) now separates the public beta.1 downloads from newer source-only features and named native test profiles. It covers verified package/checksum names, setup and tool checks, wildcard conflicts, pending setup and legacy pool expansion, control-plane diagnostics, restart continuity, optional reviewed support reports, and owned removal/uninstall. It names the remaining consent, signing, Docker Desktop, additional desktop/OS, reboot, and signed-update gates rather than turning a hosted result into a wider support promise.
+
+Current Wails references in the documentation index, architecture, test/plan surfaces, and tray design match the pinned v3.0.0-beta.32 source. Historical research remains historical. The CLI catalog and complete doctor checklist are explicitly target design; the user guide uses implemented commands and does not present a control-plane doctor result as host-health proof. The combined source checkout is `/tmp/harbor-support-diagnostics-20261020`; public beta.1 and the active developer installation are unchanged. Main integration and a fresh build-only package rehearsal are the current work, separate from the earlier accepted guide packages.
+
 ## Local support diagnostics preview (2026-10-21)
 
 Project details and Settings -> Daemon now offer Support diagnostics. The local report explicitly selects build/protocol, snapshot freshness, networking configuration, project state, and the last five startup observations. It excludes raw snapshots, operations, ownership proofs, helper tickets, resource URLs, checkout paths, and environment files. Development output is off by default. When selected, it uses only the existing authenticated activity feed for the selected session, with an explicit current/retained/unavailable label, at most 40 lines and 6,000 UTF-8 bytes. The entire report is capped at 16 KiB.

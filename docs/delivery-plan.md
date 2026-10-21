@@ -13,7 +13,7 @@ CI product environment
     → DNS/TLS/HTTP/native ingress
     → GoForj descriptor and managed session
     → three-project acceptance on every OS
-    → Wails v2 desktop, Vue/shadcn frontend, and Go tray integration
+    → pinned Wails v3 desktop, Vue/shadcn frontend, and integrated native tray
     → installers, recovery, signed update, release
 ```
 
@@ -247,7 +247,7 @@ The work that can invalidate the product is intentionally first:
 7. split Compose/App assignment precedence across `forj dev` and generated App loading;
 8. existing Compose identity/data adoption;
 9. one authoritative resource projection;
-10. Wails v2 packaging and cross-platform tray integration.
+10. Pinned Wails v3 packaging and cross-platform native tray integration.
 
 UI polish, notifications, and convenience actions must not pull effort ahead of these proofs.
 

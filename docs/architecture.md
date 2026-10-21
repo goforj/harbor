@@ -8,7 +8,7 @@ Harbor is daemon-first. The desktop is a control surface, not the process that k
 
 ```mermaid
 flowchart LR
-    UI[Wails v2 desktop and Go tray client] -->|owner-only IPC| D[harbord]
+    UI[Wails v3 desktop and native tray client] -->|owner-only IPC| D[harbord]
     CLI[harbor CLI] -->|owner-only IPC| D
     F[forj dev managed session] <-->|session protocol| D
 
@@ -36,7 +36,7 @@ Four executable roles participate in normal operation. A fifth one-shot lifecycl
 |---|---|---|
 | `harbord` | Desired state, reconciliation, DNS, ingress, managed-session process-scope ownership, read-only container observation, events, logs, and diagnostics. | Inner App/watcher lifecycle policy, Compose mutation, project semantics, arbitrary privileged operations. |
 | `harbor` CLI | Human and automation client for the daemon. | Direct state, Docker/Compose, resolver, or project-file mutation. |
-| Harbor desktop | Wails v2 window, Go tray integration, notifications, and settings client. | Durable runtime state or privileged host work. |
+| Harbor desktop | Pinned Wails v3 window, integrated native tray, notifications, and settings client. | Durable runtime state or privileged host work. |
 | `harbor-helper` | Apply one approved host mutation with only the OS authority that operation requires, then exit. | Network access, project execution, Docker access, arbitrary commands, or long-lived state. |
 | `harbor-installer` | Independently verify and atomically apply one signed Harbor component bundle to fixed product locations, then exit. | Project execution, Docker access, arbitrary destinations, unsigned components, update download, or long-lived state. |
 
@@ -93,7 +93,7 @@ cmd/helper/             bespoke one-shot `harbor-helper` entrypoint
 
 cmd/installer/          bespoke one-shot `harbor-installer` entrypoint
 
-desktop/                nested Wails v2 module and frontend
+desktop/                nested Wails v3 module and frontend
 ├── go.mod             isolates Wails and native desktop dependencies
 ├── main.go
 ├── wails.json

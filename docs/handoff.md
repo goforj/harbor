@@ -4,6 +4,12 @@ Status: installed onboarding accepted on three hosted profiles; local diagnostic
 
 Last updated: 2026-10-21
 
+## Current integration and beta guide (2026-10-21)
+
+The clean `feat/support-diagnostics-20261020` branch at `/tmp/harbor-support-diagnostics-20261020` includes the accepted onboarding branch, the source-only support diagnostics increment, and the HARBOR-32 beta support/recovery guide. It is ready for one reviewed integration into main. No new product code was added after the 91 focused diagnostics tests, production build, and two Chromium checks. Documentation-only changes source-check CLI signatures, tool/build pins, package filenames/uninstaller, and installed evidence; release-policy tests pass. Do not repeat unrelated local suites for the guide.
+
+The guide is `docs/beta-support.md`, linked from both README surfaces and releases. It keeps the public beta.1 source separate from newer source and observed hosted profiles. Stale current Wails v2 references and target-only CLI/doctor presentation are reconciled without changing the approved release gates. HARBOR-32 is In Progress until the guide is integrated. The support product differs from the earlier sealed source `2332dd8`, so a fresh package rehearsal is required before native GUI admission for this combined source. Never reuse the old package bytes while claiming they contain diagnostics. No public release or tag has been requested in this integration step.
+
 ## Support diagnostics continuation (2026-10-21)
 
 The next frontend slice is implemented in `/tmp/harbor-support-diagnostics-20261020`, branch `feat/support-diagnostics-20261020`. Support diagnostics opens from project details and Settings -> Daemon. Its allowlisted, bounded local preview copies exactly the reviewed text; optional redacted development output requires a freshly authenticated matching session. Stale connections, selected-source changes, failed reads, and revoked output access invalidate a preview. Environment files, raw snapshots/operations, helper authority, and arbitrary filesystem access are excluded. No backend or native binding changed.
