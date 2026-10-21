@@ -331,7 +331,7 @@ func TestQuarantineProjectProcessScopeRejectsStateAndSessionMismatches(t *testin
 		fixture := newPlannedStartQuarantineFixture(t, "project-quarantine-state")
 		if err := fixture.connection.Model(&models.Project{}).
 			Where("project_id = ?", string(fixture.project.ID)).
-			Update("state", string(domain.ProjectStopped)).Error; err != nil {
+			UpdateColumn("state", string(domain.ProjectStopped)).Error; err != nil {
 			t.Fatalf("change project state: %v", err)
 		}
 		if _, err := fixture.store.QuarantineProjectProcessScope(t.Context(), fixture.request); err == nil ||
