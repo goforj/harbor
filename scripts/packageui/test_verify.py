@@ -122,6 +122,7 @@ class PackageVerificationTests(unittest.TestCase):
             verify.verify_product(expected, dict(expected, **{f".github/workflows/{name}": "new"}))
         verify.verify_product(expected, dict(expected, **{"internal/platform/loopback/backend_windows_diagnostic_integration_test.go": "new"}))
         for path in ("internal/reconcile/project_docker_acceptance_test.go", "internal/reconcile/project_docker_diagnostics_test.go",
+                     "internal/reconcile/project_session_continuity_fault_test.go",
                      "internal/testkit/goforjproject/project.go", "internal/testkit/goforjproject/project_test.go",
                      "internal/network/dataplane/integration_test.go",
                      "internal/platformproof/project_identity_test.go"):
@@ -136,6 +137,7 @@ class PackageVerificationTests(unittest.TestCase):
                         dict(expected, **{"internal/testkit/goforjproject/snapshot.go": "changed"}),
                         dict(expected, **{"internal/testkit/goforjproject/doc.go": "changed"}),
                         dict(expected, **{"internal/reconcile/project_docker.go": "changed"}),
+                        dict(expected, **{"internal/reconcile/project_session_continuity.go": "changed"}),
                         dict(expected, **{"internal/network/dataplane/runtime.go": "changed"}),
                         dict(expected, **{"internal/platformproof/project_identity.go": "changed"}),
                         dict(expected, **{"internal/projectprocess/output_broker_server.go": "changed"}),

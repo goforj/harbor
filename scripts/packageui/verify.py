@@ -64,6 +64,7 @@ def test_only_path(name):
                         ".github/workflows/docker-project-diagnostics.yml",
                         "internal/reconcile/project_docker_acceptance_test.go",
                         "internal/reconcile/project_docker_diagnostics_test.go",
+                        "internal/reconcile/project_session_continuity_fault_test.go",
                         "internal/testkit/goforjproject/project.go",
                         "internal/testkit/goforjproject/project_test.go",
                         "internal/network/dataplane/integration_test.go",
