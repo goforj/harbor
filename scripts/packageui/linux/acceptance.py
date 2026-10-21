@@ -243,6 +243,23 @@ def visible_text(label):
         return False
 
 
+def selected_document_text(label):
+    """selected_document_text observes rendered WebKit text that GTK omits from the accessibility tree."""
+    activate()
+    # Retire the browser's clipboard value before copying the actual Harbor
+    # document. An unchanged or unavailable selection cannot satisfy this check.
+    subprocess.run(['xclip', '-selection', 'clipboard', '-in'], input='Harbor UI probe cleared',
+                   text=True, check=True, timeout=5)
+    key('ctrl+a')
+    key('ctrl+c')
+    time.sleep(.1)
+    try:
+        text = command('xclip', '-selection', 'clipboard', '-out', '-target', 'UTF8_STRING')
+    except subprocess.CalledProcessError:
+        return False
+    return ''.join(label.split()) in ''.join(text.split())
+
+
 def configure_browser_preference(home):
     """configure_browser_preference gives the disposable XFCE desktop a real browser and retains its prior setting."""
     path = home / '.config/xfce4/helpers.rc'
@@ -402,7 +419,7 @@ try:
     browser = wait('real browser opened the project address', lambda: opened_browser('https://' + row['slug'] + '.test'), 60)
     (EVIDENCE / 'browser-open.json').write_text(json.dumps(browser, indent=2) + '\n')
     activate()
-    wait('guide App opening completed', lambda: visible_text('4 of 4 steps complete'))
+    wait('guide App opening completed', lambda: selected_document_text('4 of 4 steps complete'))
     capture('guide-complete')
     click('Finish setup')
     wait('guide dismissed after completion', lambda: not find('Dismiss getting started guide'))

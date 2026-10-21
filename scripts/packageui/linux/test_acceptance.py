@@ -43,6 +43,27 @@ def browser_reader(*, executable='/usr/bin/epiphany', address='https://project.t
 
 
 class CreationDiagnosticsTests(unittest.TestCase):
+    def test_document_selection_requires_exact_displayed_progress_after_clearing_the_clipboard(self):
+        for text, expected in [('4 of 4 steps complete', True), ('4of 4 steps complete', True),
+                               ('3 of 4 steps complete', False), ('Harbor UI probe cleared', False),
+                               ('https://project.test', False)]:
+            with self.subTest(text=text):
+                activate, key, run, command = Mock(), Mock(), Mock(), Mock(return_value=text)
+                read = load_function('selected_document_text', activate=activate, key=key,
+                    subprocess=SimpleNamespace(run=run, CalledProcessError=subprocess.CalledProcessError),
+                    time=SimpleNamespace(sleep=lambda _: None), command=command)
+                self.assertEqual(read('4 of 4 steps complete'), expected)
+                activate.assert_called_once_with()
+                run.assert_called_once_with(['xclip', '-selection', 'clipboard', '-in'],
+                    input='Harbor UI probe cleared', text=True, check=True, timeout=5)
+                self.assertEqual(key.call_args_list, [call('ctrl+a'), call('ctrl+c')])
+
+    def test_document_selection_does_not_substitute_cached_text_when_copy_is_unavailable(self):
+        read = load_function('selected_document_text', activate=Mock(), key=Mock(), subprocess=subprocess,
+            time=SimpleNamespace(sleep=lambda _: None), command=Mock(side_effect=subprocess.CalledProcessError(1, ['xclip'])))
+        with unittest.mock.patch.object(subprocess, 'run'):
+            self.assertFalse(read('4 of 4 steps complete'))
+
     def test_webkit_embedded_objects_preserve_inline_progress_text(self):
         child = SimpleNamespace(name='', queryText=lambda: SimpleNamespace(getText=lambda *_: '4'))
         parent = SimpleNamespace(
