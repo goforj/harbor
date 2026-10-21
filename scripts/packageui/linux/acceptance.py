@@ -123,9 +123,8 @@ def choose_project_location(parent, expected):
     click('Choose project location')
     dialog = wait('native folder chooser', native_folder_dialog)
     dialog_button(dialog, 'Cancel')
-    wait('native folder cancellation', lambda: native_folder_dialog() is None)
-    if element('Project directory').queryText().getText(0, -1) != previous:
-        raise RuntimeError('native picker cancellation changed the entered directory')
+    wait('native picker cancellation preserves the directory', lambda: native_folder_dialog() is None
+         and element('Project directory', ['entry']).queryText().getText(0, -1) == previous)
     click('Choose project location')
     dialog = wait('native folder chooser', native_folder_dialog)
     if command('xdotool', 'getwindowpid', command('xdotool', 'getactivewindow')) != str(process.pid):
@@ -142,7 +141,7 @@ def choose_project_location(parent, expected):
     except RuntimeError:
         dialog_button(wait('native folder chooser', native_folder_dialog), 'Open')
     wait('selected project directory returned', lambda: native_folder_dialog() is None
-         and element('Project directory').queryText().getText(0, -1) == str(expected))
+         and element('Project directory', ['entry']).queryText().getText(0, -1) == str(expected))
     capture('native-directory-picker-selected')
 
 

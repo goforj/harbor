@@ -176,7 +176,7 @@ final class HarborPackageUITests: XCTestCase {
         let previous = parent.appendingPathComponent("unchanged-before-picker").path
         try fill("Project directory", with: previous)
         try click("Choose project location")
-        let panel = application.sheets.firstMatch
+        let panel = application.sheets["open-panel"]
         XCTAssertTrue(panel.waitForExistence(timeout: 20), "native folder sheet did not open\n\(application.debugDescription)")
         panel.buttons["Cancel"].click()
         try waitUntil("native picker cancellation") { !panel.exists }
@@ -184,16 +184,19 @@ final class HarborPackageUITests: XCTestCase {
         try click("Choose project location")
         XCTAssertTrue(panel.waitForExistence(timeout: 20))
         panel.typeKey("g", modifierFlags: [.command, .shift])
-        try waitUntil("native Go to Folder field") {
-            panel.comboBoxes.firstMatch.exists || panel.textFields.firstMatch.exists
+        var focusedLocation: XCUIElement?
+        try waitUntil("focused native Go to Folder field") {
+            let candidates = panel.comboBoxes.allElementsBoundByIndex + panel.textFields.allElementsBoundByIndex
+            focusedLocation = candidates.first { $0.value(forKey: "hasKeyboardFocus") as? Bool == true }
+            return focusedLocation != nil
         }
-        let location = panel.comboBoxes.firstMatch.exists ? panel.comboBoxes.firstMatch : panel.textFields.firstMatch
+        let location = try XCTUnwrap(focusedLocation)
         location.typeKey("a", modifierFlags: .command)
         location.typeText(parent.path)
         location.typeKey("\r", modifierFlags: [])
-        try waitUntil("Go to Folder navigation completed") { !location.exists || !location.isHittable }
-        try waitUntil("native folder selection") { panel.buttons["Open"].isEnabled }
-        panel.buttons["Open"].click()
+        let accept = panel.buttons["OKButton"]
+        try waitUntil("native folder selection") { accept.exists && accept.isEnabled && accept.isHittable }
+        accept.click()
         try waitUntil("selected directory returned to creation") {
             !panel.exists && (field.value as? String) == expected.path
         }
