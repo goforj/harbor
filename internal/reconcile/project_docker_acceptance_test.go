@@ -6,6 +6,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +28,7 @@ import (
 	"github.com/goforj/harbor/internal/projectprocess"
 	"github.com/goforj/harbor/internal/state"
 	"github.com/goforj/harbor/internal/testkit/goforjproject"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -118,9 +121,10 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	registerProjectIdentityAcceptanceProjects(t, store, projects)
 	initializeProjectIdentityAcceptanceNetwork(t, store, configuration.prefix, configuration.addresses, projects)
 
+	spoolDirectory := filepath.Join(t.TempDir(), "project-output")
 	supervisor := projectprocess.New(projectprocess.Options{
 		GracePeriod:          3 * time.Second,
-		OutputSpoolDirectory: filepath.Join(t.TempDir(), "project-output"),
+		OutputSpoolDirectory: spoolDirectory,
 		Environment:          projectEnvironment,
 		ContainerRuntime:     runtime,
 		ServiceLogIdlePeriod: time.Second,
@@ -198,6 +202,8 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 	waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, stopped.id, stopIntent, domain.ProjectStopped)
 	assertGeneratedComposePeerSurvival(t, ctx, store, projects[1:])
 	assertProjectIdentityAcceptanceEndpoints(t, ctx, store, projects[1:], ready[1:], configuration.addresses[1:])
+	assertGeneratedComposeRetainedFailure(t, ctx, store, journal, supervisor, coordinator, stopped, spoolDirectory)
+	assertGeneratedComposePeerSurvival(t, ctx, store, projects[1:])
 
 	restartIntent := domain.IntentID("intent-restart-compose-orders")
 	queued, restartErr := coordinator.Start(ctx, ProjectStartRequest{
@@ -241,6 +247,103 @@ func TestNativeGeneratedMySQLProjectsExposeComposeServices(t *testing.T) {
 		waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, intentID, domain.ProjectStopped)
 		if resetErr := supervisor.Down(ctx, projectprocess.DownRequest{CheckoutRoot: project.project.Root}); resetErr != nil {
 			t.Fatalf("final reset generated Compose project %q: %v", project.id, resetErr)
+		}
+	}
+}
+
+// assertGeneratedComposeRetainedFailure keeps a real custom-hook failure readable after its process authority retires.
+func assertGeneratedComposeRetainedFailure(
+	t *testing.T,
+	ctx context.Context,
+	store *state.Store,
+	journal *state.OperationJournal,
+	supervisor *projectprocess.Supervisor,
+	coordinator *ProjectLifecycleCoordinator,
+	project projectIdentityAcceptanceProject,
+	spoolDirectory string,
+) {
+	t.Helper()
+	configurationPath := filepath.Join(project.project.Root, ".goforj.yml")
+	original, err := os.ReadFile(configurationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.WriteFile(configurationPath, original, 0o600); err != nil {
+			t.Errorf("restore test-owned development hooks: %v", err)
+		}
+	}()
+	var configuration map[string]any
+	if err := yaml.Unmarshal(original, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	dev, ok := configuration["dev"].(map[string]any)
+	if !ok {
+		t.Fatal("generated fixture has no development graph")
+	}
+	hookDirectory := filepath.Join(project.project.Root, "_data", "harbor-retained-probe")
+	if err := os.MkdirAll(hookDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const marker = "HARBOR_GENERATED_HOOK_FAILED_AFTER_OUTPUT_PAGE"
+	const hook = "package main\nimport (\"fmt\"; \"os\"; \"strings\")\nfunc main() { fmt.Print(strings.Repeat(\"owned failure padding line\\n\", 6000)); fmt.Fprintln(os.Stderr, \"" + marker + "\"); os.Exit(73) }\n"
+	if err := os.WriteFile(filepath.Join(hookDirectory, "main.go"), []byte(hook), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dev["pre"] = []map[string]string{{"name": "Retained custom hook failure", "cmd": "go run ./_data/harbor-retained-probe/main.go"}}
+	changed, err := yaml.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configurationPath, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const intent = domain.IntentID("intent-generated-retained-failure")
+	if _, err := coordinator.Start(ctx, ProjectStartRequest{ProjectID: project.id, OperationID: "operation-generated-retained-failure", IntentID: intent}); err != nil {
+		t.Fatal(err)
+	}
+	waitForProjectIdentityAcceptanceState(t, ctx, store, journal, supervisor, project.id, intent, domain.ProjectFailed)
+	var missing *state.ProjectSessionNotFoundError
+	if _, err := store.ActiveProjectSession(ctx, project.id); !errors.As(err, &missing) {
+		t.Fatalf("failed hook retained active process authority: %v", err)
+	}
+	fresh := projectprocess.New(projectprocess.Options{OutputSpoolDirectory: spoolDirectory})
+	defer func() { _ = fresh.Close(context.Background()) }()
+	request := ProjectActivityRequest{ProjectID: project.id}
+	var output strings.Builder
+	for {
+		activity, err := readCurrentProjectActivity(ctx, store, fresh, request)
+		if err != nil || activity.Session == nil {
+			t.Fatalf("fresh failed-project reader = %#v, %v", activity, err)
+		}
+		chunk := activity.Session.Output
+		if chunk.Available || !chunk.Historical {
+			t.Fatalf("retired output claimed live process authority: %#v", chunk)
+		}
+		output.WriteString(chunk.Text)
+		if !chunk.HasMore {
+			break
+		}
+		if chunk.NextCursor <= request.Cursor {
+			t.Fatal("retained failure did not advance its cursor")
+		}
+		request.SessionID = activity.Session.ID
+		request.Cursor = chunk.NextCursor
+	}
+	if output.Len() <= projectprocess.MaximumOutputChunkBytes || !strings.Contains(output.String(), marker) {
+		t.Fatalf("final custom-hook error missing beyond first cursor page (%d bytes)", output.Len())
+	}
+	t.Logf("real generated custom-hook failure retained %d bytes across process retirement and fresh reader", output.Len())
+	if directory := strings.TrimSpace(os.Getenv(projectIdentityAcceptanceProductEvidenceDirectoryEnvironment)); directory != "" {
+		payload, err := json.Marshal(map[string]any{"project_id": project.id, "output_bytes": output.Len(), "final_error_visible": true, "historical_only": true, "fresh_reader": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "retained-failure.json"), payload, 0o600); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
@@ -499,18 +602,18 @@ func generatedDockerProductRuntimeEvidence(ctx context.Context, forj string) (pr
 		return productproof.RuntimeEvidence{}, productproof.DependencyEvidence{}, err
 	}
 	return productproof.RuntimeEvidence{
-			GOOS:               runtime.GOOS,
-			GOARCH:             runtime.GOARCH,
-			Commit:             commit,
-			RunnerName:         runnerName,
-			RunnerImage:        runnerImage,
-			RunnerImageVersion: runnerVersion,
-		}, productproof.DependencyEvidence{
-			GoForjVersion: projectIdentityAcceptanceGoForjVersion,
-			GoForjDigest:  forjDigest,
-			EngineKind:    engineKind,
-			EngineVersion: engineVersion,
-		}, nil
+		GOOS:               runtime.GOOS,
+		GOARCH:             runtime.GOARCH,
+		Commit:             commit,
+		RunnerName:         runnerName,
+		RunnerImage:        runnerImage,
+		RunnerImageVersion: runnerVersion,
+	}, productproof.DependencyEvidence{
+		GoForjVersion: projectIdentityAcceptanceGoForjVersion,
+		GoForjDigest:  forjDigest,
+		EngineKind:    engineKind,
+		EngineVersion: engineVersion,
+	}, nil
 }
 
 // generatedDockerEngineVersion reads the server version through Docker's read-only CLI metadata endpoint.
