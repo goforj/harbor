@@ -74,9 +74,19 @@ func restartContinuity(before, after projectEvidence) error {
 	return nil
 }
 
+// diagnosticOnlySession admits only validated, disconnected history with no live output attachment.
+func diagnosticOnlySession(session *control.ProjectSessionActivity) bool {
+	return session != nil && session.Validate() == nil && session.State == domain.SessionDisconnected && session.Output.Historical && !session.Output.Available
+}
+
+// retiredActivitySession preserves project identity while allowing diagnostics after live authority retires.
+func retiredActivitySession(id domain.ProjectID, activity control.ProjectActivity) bool {
+	return activity.ProjectID == id && (activity.Session == nil || diagnosticOnlySession(activity.Session))
+}
+
 // settledProject requires affirmative retirement of every process-owned public projection.
 func settledProject(project domain.ProjectSnapshot, activity control.ProjectActivity) error {
-	if project.State != domain.ProjectFailed || activity.ProjectID != project.ID || activity.Session != nil || len(project.Resources) != 0 {
+	if project.State != domain.ProjectFailed || !retiredActivitySession(project.ID, activity) || len(project.Resources) != 0 {
 		return errors.New("crash recovery has not retired the failed project's session and resources")
 	}
 	for _, app := range project.Apps {
@@ -116,7 +126,7 @@ func inactiveIdentity(before, after projectEvidence) error {
 	return nil
 }
 
-// settledObservation rejects a restarted or retained session in the final independently read observation.
+// settledObservation rejects live session authority in the final independently read observation.
 func settledObservation(project projectEvidence) error {
 	if project.State != domain.ProjectFailed || project.SessionID != "" || project.SessionState != "" || project.Generation != 0 {
 		return errors.New("final crash settlement observation retains a session or is no longer Failed")

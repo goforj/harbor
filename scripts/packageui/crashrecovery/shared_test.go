@@ -349,6 +349,72 @@ func TestSettledProjectRejectsQuarantineAndRetainedRuntime(t *testing.T) {
 	}
 }
 
+// TestDiagnosticOnlySessionRejectsLiveAndMalformedActivity prevents history from hiding process authority.
+func TestDiagnosticOnlySessionRejectsLiveAndMalformedActivity(t *testing.T) {
+	retained := control.ProjectSessionActivity{ID: "retained", State: domain.SessionDisconnected, Generation: 2, Output: control.ProjectOutputChunk{Historical: true, Text: "failed", NextCursor: 6}}
+	if !diagnosticOnlySession(&retained) || diagnosticOnlySession(nil) {
+		t.Fatal("diagnostic classification does not preserve the disconnected history contract")
+	}
+	for name, mutate := range map[string]func(*control.ProjectSessionActivity){
+		"live output":         func(s *control.ProjectSessionActivity) { s.Output.Available = true },
+		"no history":          func(s *control.ProjectSessionActivity) { s.Output.Historical = false },
+		"attached":            func(s *control.ProjectSessionActivity) { s.State = domain.SessionAttached },
+		"awaiting attachment": func(s *control.ProjectSessionActivity) { s.State = domain.SessionAwaitingAttach },
+		"invalid state":       func(s *control.ProjectSessionActivity) { s.State = "invalid" },
+		"invalid identity":    func(s *control.ProjectSessionActivity) { s.ID = "" },
+		"zero generation":     func(s *control.ProjectSessionActivity) { s.Generation = 0 },
+		"unsafe generation":   func(s *control.ProjectSessionActivity) { s.Generation = uint64(domain.MaximumSequence) + 1 },
+		"invalid cursor":      func(s *control.ProjectSessionActivity) { s.Output.NextCursor = 0 },
+		"oversized output": func(s *control.ProjectSessionActivity) {
+			s.Output.Text = strings.Repeat("x", 64*1024+1)
+			s.Output.NextCursor = uint64(len(s.Output.Text))
+		},
+		"invalid UTF-8": func(s *control.ProjectSessionActivity) { s.Output.Text = string([]byte{0xff}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := retained
+			mutate(&changed)
+			if diagnosticOnlySession(&changed) || retiredActivitySession("peer", control.ProjectActivity{ProjectID: "peer", Session: &changed}) {
+				t.Fatal("live or malformed history admitted as retired")
+			}
+		})
+	}
+	if retiredActivitySession("peer", control.ProjectActivity{ProjectID: "other", Session: &retained}) {
+		t.Fatal("cross-project history admitted")
+	}
+}
+
+// TestRetainedDiagnosticsRemainVisibleWithoutSatisfyingLiveContinuity separates historical receipt fields.
+func TestRetainedDiagnosticsRemainVisibleWithoutSatisfyingLiveContinuity(t *testing.T) {
+	session := &control.ProjectSessionActivity{ID: "retained", State: domain.SessionDisconnected, Generation: 2, Output: control.ProjectOutputChunk{Historical: true}}
+	project := domain.ProjectSnapshot{ID: "peer", State: domain.ProjectFailed, Apps: []domain.AppSnapshot{{State: domain.EntityStopped}}, Services: []domain.ServiceSnapshot{{State: domain.EntityStopped}}}
+	if err := settledProject(project, control.ProjectActivity{ProjectID: project.ID, Session: session}); err != nil {
+		t.Fatal(err)
+	}
+	observed := projectEvidence{ID: project.ID, State: project.State}
+	observed.recordSession(session)
+	if observed.RetainedSessionID != session.ID || observed.RetainedGeneration != session.Generation || observed.SessionID != "" || observed.SessionState != "" || observed.Generation != 0 {
+		t.Fatalf("historical projection: %#v", observed)
+	}
+	if err := settledObservation(observed); err != nil {
+		t.Fatal(err)
+	}
+	if processBackedSession(observed) || restartContinuity(observed, observed) == nil {
+		t.Fatal("historical output satisfied live continuity")
+	}
+	for _, session := range []*control.ProjectSessionActivity{nil, {ID: "live", State: domain.SessionAttached, Generation: 3, Output: control.ProjectOutputChunk{Available: true}}} {
+		var observed projectEvidence
+		observed.recordSession(session)
+		if session == nil {
+			if observed.SessionID != "" || observed.RetainedSessionID != "" {
+				t.Fatal("absent session gained authority")
+			}
+		} else if !processBackedSession(observed) || observed.SessionID != session.ID || observed.RetainedSessionID != "" {
+			t.Fatalf("live session lost its evidence: %#v", observed)
+		}
+	}
+}
+
 // TestInterruptedStartRequiresExactRetryableFailure rejects unrelated operations and recovery quarantine.
 func TestInterruptedStartRequiresExactRetryableFailure(t *testing.T) {
 	before := domain.Operation{ID: "operation", ProjectID: "peer", IntentID: "intent", Kind: domain.OperationKindProjectStart}
