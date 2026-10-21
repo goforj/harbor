@@ -112,6 +112,62 @@ func TestLogsCommandPrintsRetainedFailureWithoutFollowing(t *testing.T) {
 	}
 }
 
+// TestLogsCommandDrainsRetainedFailurePages reaches final errors even when the child exited before the reader subscribed.
+func TestLogsCommandDrainsRetainedFailurePages(t *testing.T) {
+	for _, scenario := range []string{"read", "follow", "replacement", "stalled", "retired while following"} {
+		t.Run(scenario, func(t *testing.T) {
+			connection := &fakeDaemonControlClient{}
+			command, output := newLogsCommandFixture(t, connection, false)
+			command.Follow = scenario == "follow" || scenario == "retired while following"
+			call := 0
+			connection.projectActivityHook = func(_ context.Context, request control.ProjectActivityRequest) (control.ProjectActivity, error) {
+				call++
+				activity := projectActivityLogFixture("final port conflict\n")
+				activity.Session.Output.Available = false
+				activity.Session.Output.Historical = true
+				activity.Session.Output.NextCursor += uint64(len("earlier page\n"))
+				if call == 1 {
+					activity = projectActivityLogFixture("earlier page\n")
+					activity.Session.Output.Available = scenario == "retired while following"
+					activity.Session.Output.Historical = !activity.Session.Output.Available
+					activity.Session.Output.HasMore = scenario != "retired while following"
+				} else {
+					wantWait := uint32(0)
+					if scenario == "retired while following" {
+						wantWait = control.MaximumProjectActivityWaitMilliseconds
+					}
+					if request.SessionID != "session-orders" || request.Cursor != uint64(len("earlier page\n")) || request.WaitMilliseconds != wantWait {
+						t.Fatalf("page request = %#v", request)
+					}
+					if scenario == "replacement" {
+						activity.Session.ID = "session-new"
+					}
+					if scenario == "stalled" {
+						activity.Session.Output.HasMore = true
+						activity.Session.Output.NextCursor = request.Cursor
+					}
+				}
+				if call > 2 {
+					t.Fatal("completed output was followed or stalled")
+				}
+				return activity, nil
+			}
+			err := command.Run(t.Context())
+			wantError := scenario == "replacement" || scenario == "stalled"
+			if (err != nil) != wantError {
+				t.Fatal(err)
+			}
+			want := "earlier page\n"
+			if !wantError {
+				want += "final port conflict\n"
+			}
+			if output.String() != want || call != 2 {
+				t.Fatalf("output = %q, reads = %d", output.String(), call)
+			}
+		})
+	}
+}
+
 // TestLogsCommandSelectsProjectServiceByStableID verifies service output cannot escape the selected project scope.
 func TestLogsCommandSelectsProjectServiceByStableID(t *testing.T) {
 	connection := &fakeDaemonControlClient{

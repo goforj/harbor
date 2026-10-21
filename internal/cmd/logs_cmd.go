@@ -71,27 +71,30 @@ func (command *LogsCmd) runProjectLogs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !session.Output.Available && !session.Output.Historical {
-		return fmt.Errorf("project logs: current session output is unavailable (state %s)", session.State)
-	}
-	if err := writeProjectLogChunk(command.output, session.Output); err != nil {
-		return err
-	}
-	if !command.Follow || session.Output.Historical {
-		return nil
-	}
-
-	cursor := session.Output.NextCursor
 	sessionID := session.ID
 	for {
+		if !session.Output.Available && !session.Output.Historical {
+			return fmt.Errorf("project logs: current session output is unavailable (state %s)", session.State)
+		}
+		if err := writeProjectLogChunk(command.output, session.Output); err != nil {
+			return err
+		}
+		if !session.Output.HasMore && (!command.Follow || session.Output.Historical) {
+			return nil
+		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		cursor := session.Output.NextCursor
+		wait := uint32(0)
+		if command.Follow && session.Output.Available && !session.Output.HasMore {
+			wait = control.MaximumProjectActivityWaitMilliseconds
 		}
 		activity, err := command.client.ProjectActivity(ctx, control.ProjectActivityRequest{
 			ProjectID:        command.ProjectID,
 			SessionID:        sessionID,
 			Cursor:           cursor,
-			WaitMilliseconds: control.MaximumProjectActivityWaitMilliseconds,
+			WaitMilliseconds: wait,
 		})
 		if err != nil {
 			return fmt.Errorf("follow project logs: %w", err)
@@ -101,16 +104,13 @@ func (command *LogsCmd) runProjectLogs(ctx context.Context) error {
 			return err
 		}
 		if session.ID != sessionID {
-			cursor = 0
+			if !command.Follow {
+				return errors.New("project logs: session changed while reading retained output; retry for the current run")
+			}
 			sessionID = session.ID
+		} else if session.Output.HasMore && !session.Output.Reset && session.Output.NextCursor <= cursor {
+			return errors.New("project logs: retained output did not advance its cursor")
 		}
-		if !session.Output.Available {
-			return fmt.Errorf("project logs: current session output is unavailable (state %s)", session.State)
-		}
-		if err := writeProjectLogChunk(command.output, session.Output); err != nil {
-			return err
-		}
-		cursor = session.Output.NextCursor
 	}
 }
 

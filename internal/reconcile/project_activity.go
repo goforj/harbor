@@ -127,7 +127,7 @@ func readCurrentProjectActivity(
 		if err != nil {
 			return ProjectActivity{}, err
 		}
-		if waitErr == nil && waitedOutput.Available && activity.Session != nil && activity.Session.ID == session.ID {
+		if waitErr == nil && waitedOutput.Available && activity.Session != nil && activity.Session.ID == session.ID && !activity.Session.Output.Historical {
 			activity.Session.Output = waitedOutput
 		}
 		return activity, nil

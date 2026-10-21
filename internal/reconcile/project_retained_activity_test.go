@@ -23,6 +23,23 @@ func (source *retainedActivityTestState) RetainedProjectOutput(context.Context, 
 	return source.history, source.historyErr
 }
 
+// TestRetainedProjectActivityDoesNotRestoreLiveAuthorityAfterWake preserves retirement during a held read.
+func TestRetainedProjectActivityDoesNotRestoreLiveAuthorityAfterWake(t *testing.T) {
+	project := projectActivityTestProject()
+	session := projectActivityTestSession()
+	source := &retainedActivityTestState{projectActivityTestState: projectActivityTestState{project: project, session: session}, history: &state.ProjectOutputHistory{ProjectID: project.Project.ID, SessionID: session.ID, Generation: session.Generation, EndedAt: project.Project.UpdatedAt}}
+	reader := &projectActivityHistoryTestReader{historyOutput: projectprocess.OutputChunk{Historical: true, Text: "failure\n", NextCursor: 8}}
+	reader.waitOutput = projectprocess.OutputChunk{Available: true, Text: "failure\n", NextCursor: 8}
+	reader.wait = func() {
+		source.project.Project.State = domain.ProjectFailed
+		source.sessionErr = &state.ProjectSessionNotFoundError{ProjectID: project.Project.ID}
+	}
+	activity, err := readCurrentProjectActivity(t.Context(), source, reader, ProjectActivityRequest{ProjectID: project.Project.ID, SessionID: session.ID, Wait: time.Second})
+	if err != nil || activity.Session == nil || activity.Session.Output.Available || !activity.Session.Output.Historical || activity.Session.Output.Text != "failure\n" {
+		t.Fatalf("retired wake restored live authority: %#v, %v", activity, err)
+	}
+}
+
 // TestRetainedProjectActivityShowsFailedLogsWithoutProcessAuthority covers the missing-session production failure.
 func TestRetainedProjectActivityShowsFailedLogsWithoutProcessAuthority(t *testing.T) {
 	for _, scenario := range []string{"failed", "stopped", "missing", "wrong project", "stale", "bad generation", "bad session", "state error", "corrupt spool", "missing spool", "live spoof", "same cursor", "foreign cursor"} {
