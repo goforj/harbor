@@ -919,6 +919,7 @@ async function setupNetworkAndStartProject() {
         <TabsContent value="connect" class="m-0">
           <ProjectConnectPanel
             :active="selectedDetailTab === 'connect'"
+            :fresh="daemonConnected && !store.snapshotStale"
             :project="project"
             :sequence="snapshotSequence"
           />

@@ -396,6 +396,17 @@
   .harbor-illustration {
     display: none;
   }
+
+  :focus-visible {
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px;
+  }
+
+  [role="radiogroup"] input:checked + div,
+  [role="radiogroup"] input:focus-visible + div {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
 }
 
 @media (min-width: 700px) {

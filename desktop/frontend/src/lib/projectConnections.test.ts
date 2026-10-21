@@ -24,14 +24,14 @@ function projectFixture(): ProjectSnapshot {
         name: 'Mailpit inbox',
         kind: 'mail',
         owner: { kind: 'service', service_id: 'mailpit' },
-        url: 'http://127.77.59.75:8025/',
+        url: 'https://mailpit.test.test',
       },
       {
         id: 'victoria-metrics',
         name: 'VictoriaMetrics',
         kind: 'observability',
         owner: { kind: 'service', service_id: 'victoriametrics' },
-        url: 'http://127.77.59.75:8428/select/0/prometheus',
+        url: 'https://victoria-metrics.test.test/select/0/prometheus',
       },
     ],
   }
@@ -89,5 +89,31 @@ describe('projectServiceConnections', () => {
     expect(rows[0]?.connections.map((connection) => connection.endpoint)).toEqual([
       'mysql.test.test:3306',
     ])
+  })
+
+  it('preserves the exact admitted URL, including its scheme, port, query and fragment', () => {
+    const project = projectFixture()
+    project.resources[0]!.url = 'http://127.77.59.75:8025/inbox?view=recent#messages'
+
+    const connection = projectServiceConnections(project, {})[1]!.connections[0]!
+
+    expect(connection).toMatchObject({
+      endpoint: 'http://127.77.59.75:8025/inbox?view=recent#messages',
+      hostname: '127.77.59.75',
+      port: 8025,
+      protocol: 'HTTP',
+    })
+  })
+
+  it('keeps a framework-selected hostname instead of deriving one from a resource ID', () => {
+    const project = projectFixture()
+    project.resources[0]!.url = 'https://inbox.example.test/review?folder=all'
+
+    expect(projectServiceConnections(project, {})[1]!.connections[0]).toMatchObject({
+      endpoint: 'https://inbox.example.test/review?folder=all',
+      hostname: 'inbox.example.test',
+      port: 443,
+      protocol: 'HTTPS',
+    })
   })
 })
