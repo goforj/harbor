@@ -128,7 +128,7 @@ func (store *Store) RefreshProjectRuntime(
 		return ProjectRecord{}, err
 	}
 
-	request.Services = append([]domain.ServiceSnapshot(nil), request.Services...)
+	request.Services = append(make([]domain.ServiceSnapshot, 0, len(request.Services)), request.Services...)
 	request.Resources = append([]domain.ResourceSnapshot(nil), request.Resources...)
 	var result ProjectRecord
 	err := store.mutations.mutate(ctx, "refresh project runtime", func(tx *gorm.DB) error {
