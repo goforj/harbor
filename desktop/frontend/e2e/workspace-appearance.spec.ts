@@ -87,3 +87,22 @@ test('Connect copies the daemon URL and drops stale connections on reconnect', a
   await expect(page.getByText('Waiting for a fresh Harbor connection before showing service addresses.')).toBeVisible()
   await expect(copy).toHaveCount(0)
 })
+
+test('daemon diagnostics and missing selections stay legible at narrow widths', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 430, height: 820 })
+  await page.goto('/#/settings/daemon', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('heading', { name: 'Daemon', exact: true })).toBeVisible()
+  await page.evaluate(async () => {
+    const { useHarborStore } = await import('/src/stores/harbor.ts')
+    const status = useHarborStore().daemonStatus!
+    status.build.version = `v0.1.0-beta.1.0.20261021082336-${'abcdef12'.repeat(5)}`
+  })
+  expect(await page.locator('main').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('daemon-narrow.png') })
+  for (const [path, heading] of [['/services/orders-api/missing-service', 'Service not found'], ['/projects/missing-project', 'Project not found']]) {
+    await page.goto(`/#${path}`)
+    await expect(page.getByText(heading, { exact: true })).toBeVisible()
+    expect(await page.locator('main').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+    await expect(page.getByRole('link', { name: /^Back to/ }).first()).toBeVisible()
+  }
+})

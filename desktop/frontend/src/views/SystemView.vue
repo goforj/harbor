@@ -45,14 +45,14 @@ const capturedAt = computed(() => store.snapshot?.captured_at
         <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Server class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Daemon status</CardTitle></div></CardHeader>
         <CardContent class="p-0">
           <dl v-if="store.daemonStatus" class="divide-y text-xs">
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">State</dt><dd><StatusBadge :status="store.daemonStatus.state" /></dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Build version</dt><dd class="font-mono">{{ store.daemonStatus.build.version }}</dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Revision</dt><dd class="break-all font-mono">{{ store.daemonStatus.build.revision || 'Not embedded' }}</dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Modified build</dt><dd>{{ store.daemonStatus.build.modified ? 'Yes' : 'No' }}</dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Protocol</dt><dd class="font-mono">{{ store.daemonStatus.protocol.major }}.{{ store.daemonStatus.protocol.minor }}</dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Capabilities</dt><dd class="flex flex-wrap gap-1"><Badge v-for="capability in store.daemonStatus.capabilities" :key="capability" variant="outline">{{ capability }}</Badge></dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Snapshot schema</dt><dd>{{ store.daemonStatus.snapshot_schema_version }}</dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Sequence</dt><dd>{{ store.daemonStatus.sequence }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">State</dt><dd><StatusBadge :status="store.daemonStatus.state" /></dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Build version</dt><dd class="break-all font-mono">{{ store.daemonStatus.build.version }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Revision</dt><dd class="break-all font-mono">{{ store.daemonStatus.build.revision || 'Not embedded' }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Modified build</dt><dd>{{ store.daemonStatus.build.modified ? 'Yes' : 'No' }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Protocol</dt><dd class="font-mono">{{ store.daemonStatus.protocol.major }}.{{ store.daemonStatus.protocol.minor }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Capabilities</dt><dd class="flex flex-wrap gap-1"><Badge v-for="capability in store.daemonStatus.capabilities" :key="capability" variant="outline" class="max-w-full justify-start whitespace-normal break-all">{{ capability }}</Badge></dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Snapshot schema</dt><dd>{{ store.daemonStatus.snapshot_schema_version }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Sequence</dt><dd>{{ store.daemonStatus.sequence }}</dd></div>
           </dl>
           <p v-else class="px-4 py-8 text-center text-sm text-muted-foreground">Daemon status has not been received.</p>
         </CardContent>
@@ -62,12 +62,12 @@ const capturedAt = computed(() => store.snapshot?.captured_at
         <CardHeader class="border-b px-4 py-3"><div class="flex items-center gap-2"><Database class="size-4 text-muted-foreground" /><CardTitle class="text-sm">Snapshot</CardTitle></div></CardHeader>
         <CardContent class="p-0">
           <dl v-if="store.snapshot" class="divide-y text-xs">
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Schema version</dt><dd>{{ store.snapshot.schema_version }}</dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Sequence</dt><dd>{{ store.snapshot.sequence }}</dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Captured</dt><dd>{{ capturedAt }}</dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Projects</dt><dd>{{ store.projects.length }}</dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Operations</dt><dd>{{ store.operations.length }}</dd></div>
-            <div class="grid grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Recent resources</dt><dd>{{ store.recentResources.length }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Schema version</dt><dd>{{ store.snapshot.schema_version }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Sequence</dt><dd>{{ store.snapshot.sequence }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Captured</dt><dd>{{ capturedAt }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Projects</dt><dd>{{ store.projects.length }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Operations</dt><dd>{{ store.operations.length }}</dd></div>
+            <div class="grid grid-cols-1 sm:grid-cols-[10rem_minmax(0,1fr)] gap-3 px-4 py-3"><dt class="text-muted-foreground">Recent resources</dt><dd>{{ store.recentResources.length }}</dd></div>
           </dl>
           <p v-else class="px-4 py-8 text-center text-sm text-muted-foreground">No snapshot has been received.</p>
         </CardContent>
