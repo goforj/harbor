@@ -242,6 +242,7 @@ root = Path(tempfile.mkdtemp(prefix='harbor-package-ui-', dir='/tmp'))
 directory = root / 'project'
 try:
     launch()
+    element('Dismiss getting started guide', ['push button'])
     capture('installed-first-launch')
     # Overview can expose New project before its networking setup card finishes rendering.
     wait('first-run UI', lambda: find('Set up secure networking') or find('New project'), 60)
@@ -263,9 +264,18 @@ try:
     click('Create project')
     row = wait('created registration', created_project, 300)
     assert row['state'] == 'stopped'
+    element('Dismiss getting started guide', ['push button'])
     click('Start project')
     state('ready')
     https(row['slug'])
+    click('Recheck')
+    element('Required tools are ready')
+    click('Open app')
+    activate()
+    element('4 of 4 steps complete')
+    capture('guide-complete')
+    click('Finish setup')
+    wait('guide dismissed after completion', lambda: not find('Dismiss getting started guide'))
     capture('project-ready')
     daemon_pid = command('systemctl', '--user', 'show', 'harbord.service', '--property=MainPID', '--value')
     assert int(daemon_pid) > 1
@@ -319,6 +329,7 @@ try:
         'application': APP, 'project_directory': str(directory), 'project_id': row['id'],
         'fixture': 'Ubuntu 24.04 x86_64, XFCE X11 desktop on Xvfb, AT-SPI, GTK/WebKit',
         'creation': 'production graphical wizard', 'start': 'ready and system-trusted HTTPS 200',
+        'onboarding': 'installed first-project guide, native tool recheck, and published App opening completed',
         'close': 'hidden with project ready', 'reopen': 'original process restored',
         'quit': 'native GTK menu, same daemon PID and project ready',
         'quit_method': 'native GTK menu',

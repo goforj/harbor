@@ -2,6 +2,8 @@
 
 ## Current-main integration checkpoint (2026-10-20)
 
+The integration branch is now pushed. Source CI and exact-source build-only package producers are running for updated installed onboarding acceptance. Native drivers check the guide, real prerequisite recheck, and App opening before the existing lifecycle proof. The package verifier accepts current normalized and exact legacy Debian names with full digest/provenance checks. Local package/harness checks pass; fresh installed results remain pending.
+
 The following local product features are combined with current main `f82be98fe875b03e17271e9e3b5e26ba866ea72e` in `/tmp/harbor-onboarding-integration-20261020`, on `feat/project-onboarding-20261020`. All newer installed-platform and transparent-restart backend changes are preserved. The active development checkout and live daemon remain untouched by this reconciliation. Combined evidence is 229 focused frontend tests, the production build, six Chromium flows, focused native contracts/creation checks, root GoForj/creation tests, stable fixture generation, and read-only installed GoForj v0.35.1/Go 1.27.0 probes. Earlier local slice notes below retain their original scope and counts. This integration checkpoint is local, separate from the public preview and its installed acceptance receipts; the updated installed-flow check remains open under HARBOR-30.
 
 ## Local first-project guide (2026-10-20)

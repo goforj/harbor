@@ -31,7 +31,11 @@ def verify_assets(directory, run):
     version = prepare.validate_version(provenance["version"])
     base, channel = version.split("-", 1)
     package = f"GoForj-Harbor-macos-arm64-{version}.pkg"
-    linux_package = f"goforj-harbor_{base}~{channel}-1_amd64.deb"
+    linux_package = f"goforj-harbor_{base}.{channel}-1_amd64.deb"
+    legacy_linux_package = f"goforj-harbor_{base}~{channel}-1_amd64.deb"
+    # Earlier sealed rehearsals retain the Debian spelling; current exports use GitHub-safe names.
+    if set(provenance.get("packages", {})) == {package, legacy_linux_package}:
+        linux_package = legacy_linux_package
     names = [package, linux_package]
     if set(provenance.get("packages", {})) != set(names):
         raise ValueError("unexpected package publication set")

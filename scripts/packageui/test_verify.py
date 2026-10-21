@@ -20,6 +20,7 @@ class PackageVerificationTests(unittest.TestCase):
             (root / (name + ".sha256")).write_text(f"{digest}  {name}\n")
         revision = "a" * 40
         verify.prepare.seal_assets(root, version, revision, "https://github.com/goforj/harbor/actions/runs/123")
+        names = [name.replace("~", ".") for name in names]
         run = {"id": 123, "head_sha": revision, "repository": {"full_name": "goforj/harbor"},
                "path": ".github/workflows/release.yml", "status": "completed", "conclusion": "success"}
         return run, names
@@ -29,6 +30,30 @@ class PackageVerificationTests(unittest.TestCase):
             root = Path(directory)
             run, names = self.fixture(root)
             self.assertEqual(verify.verify_assets(root, run), ("a" * 40, *names))
+
+    def test_accepts_exact_legacy_sealed_debian_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run, names = self.fixture(root)
+            current = names[1]
+            legacy = current.replace("0.1.0.beta", "0.1.0~beta")
+            (root / current).rename(root / legacy)
+            (root / (current + ".sha256")).rename(root / (legacy + ".sha256"))
+            for name in (legacy + ".sha256", "SHA256SUMS", "provenance.json"):
+                path = root / name
+                path.write_text(path.read_text().replace(current, legacy))
+            self.assertEqual(verify.verify_assets(root, run), ("a" * 40, names[0], legacy))
+
+    def test_rejects_a_manifest_containing_both_debian_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run, names = self.fixture(root)
+            path = root / "provenance.json"
+            data = json.loads(path.read_text())
+            data["packages"][names[1].replace("0.1.0.beta", "0.1.0~beta")] = data["packages"][names[1]]
+            path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "unexpected package publication set"):
+                verify.verify_assets(root, run)
 
     def test_outputs_only_admitted_platform_packages(self):
         with tempfile.TemporaryDirectory() as directory:

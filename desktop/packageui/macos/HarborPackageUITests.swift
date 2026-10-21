@@ -33,6 +33,7 @@ final class HarborPackageUITests: XCTestCase {
         try launchInstalledApplication("first-launch")
         try awaitWindow()
         try assertInstalledBundle()
+        XCTAssertTrue(application.buttons["Dismiss getting started guide"].waitForExistence(timeout: 30))
         attach("installed-first-launch")
 
         let setup = application.buttons["Set up secure networking"]
@@ -69,9 +70,22 @@ final class HarborPackageUITests: XCTestCase {
         let identifier = try XCTUnwrap(registration["id"] as? String)
         let slug = try XCTUnwrap(registration["slug"] as? String)
         XCTAssertEqual(registration["state"] as? String, "stopped")
+        XCTAssertTrue(application.buttons["Dismiss getting started guide"].exists, "guided creation returns to Overview")
         try click("Start project", timeout: 30)
         try awaitProject(identifier, state: "ready")
         try assertHTTPS(slug)
+        try click("Recheck")
+        try waitUntil("native prerequisites are ready") {
+            self.application.staticTexts["Required tools are ready"].firstMatch.exists
+        }
+        try click("Open app", timeout: 30)
+        application.activate()
+        try waitUntil("guide App opening completed") {
+            self.application.staticTexts["4 of 4 steps complete"].firstMatch.exists
+        }
+        attach("guide-complete")
+        try click("Finish setup")
+        XCTAssertFalse(application.buttons["Dismiss getting started guide"].exists)
         attach("project-ready")
 
         let originalProcess = try installedProcess()
@@ -130,6 +144,7 @@ final class HarborPackageUITests: XCTestCase {
             "project_directory": projectDirectory.path,
             "project_id": identifier,
             "creation": "production graphical wizard",
+            "onboarding": "installed first-project guide, native tool recheck, and published App opening completed",
             "start": "ready with system-trusted HTTPS 200",
             "window_close": "project remains ready",
             "window_reopen": "ordinary macOS open restores the original process and visible window",
@@ -268,7 +283,7 @@ final class HarborPackageUITests: XCTestCase {
     }
 
     private func click(_ label: String, timeout: TimeInterval = 20) throws {
-        let button = application.buttons[label]
+        let button = application.buttons[label].firstMatch
         XCTAssertTrue(button.waitForExistence(timeout: timeout), "missing button: \(label)\n\(application.debugDescription)")
         try waitUntil("enabled button \(label)") { button.isEnabled }
         button.click()
