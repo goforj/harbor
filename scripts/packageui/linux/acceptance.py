@@ -129,18 +129,20 @@ def choose_project_location(parent, expected):
     dialog = wait('native folder chooser', native_folder_dialog)
     if command('xdotool', 'getwindowpid', command('xdotool', 'getactivewindow')) != str(process.pid):
         raise RuntimeError('native chooser is not the foreground installed process')
+    # GTK's empty Recent view cannot accept a folder, even after typing a location.
+    key('alt+Home')
+    wait('native chooser has a selectable current folder', lambda: any(
+        node.getRoleName() == 'push button' and node.name.replace('_', '') == 'Open'
+        and node.getState().contains(pyatspi.STATE_ENABLED) for node in nodes(dialog)))
     key('ctrl+l')
-    wait('native folder location field', lambda: next((node for node in nodes(dialog)
+    location = wait('native folder location field', lambda: next((node for node in nodes(dialog)
         if node.getRoleName() in ['entry', 'text'] and node.getState().contains(pyatspi.STATE_EDITABLE)
         and node.getState().contains(pyatspi.STATE_FOCUSED)), None))
     key('ctrl+a')
     command('xdotool', 'type', '--clearmodifiers', '--delay', '1', str(parent) + '/')
+    wait('native folder location matches the owned directory', lambda:
+         location.queryText().getText(0, -1) == str(parent) + '/')
     key('Return')
-    # GTK can accept the location directly or navigate there before its Open response.
-    try:
-        wait('native chooser accepted the typed directory', lambda: native_folder_dialog() is None, 3)
-    except RuntimeError:
-        dialog_button(wait('native folder chooser', native_folder_dialog), 'Open')
     wait('selected project directory returned', lambda: native_folder_dialog() is None
          and element('Project directory', ['entry']).queryText().getText(0, -1) == str(expected))
     capture('native-directory-picker-selected')

@@ -220,11 +220,12 @@ jobs:
           PY
           shasum -a 256 "$HOME/Library/Application Support/GoForj/Harbor/harbor.db" > "$RUNNER_TEMP/harbor-ui-retained.sha256"
           python3 - <<'PY'
-          import json, subprocess, os
+          import json, subprocess, os, sys
           from pathlib import Path
+          sys.path.insert(0, 'scripts/packageui')
+          from cleanup_macos import fixture_root
           data = json.loads(Path('harbor-package-ui-evidence/installed-ui.json').read_text())
-          project = Path(data['project_directory'])
-          assert str(project).startswith('/tmp/harbor-package-ui-')
+          project = fixture_root({'path': data['project_directory']})
           with open(os.environ['RUNNER_TEMP'] + '/harbor-ui-retained.sha256', 'a') as output:
               subprocess.run(['shasum', '-a', '256', str(project / '.goforj.yml'), str(project / 'go.mod')], stdout=output, check=True)
           PY
