@@ -93,27 +93,40 @@ function Find-FolderDialog {
         [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, 'Choose a location for the new project'),
         [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
     )
-    $matches = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
-        [System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.AndCondition]::new($conditions))
+    $matches = $script:window.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.AndCondition]::new($conditions))
     if ($matches.Count -gt 1) { throw 'multiple native folder dialogs match the selected product' }
     if ($matches.Count -eq 1 -and -not $matches[0].Current.IsOffscreen) { return $matches[0] }
     return $null
 }
 # Find-DialogControl keeps native control IDs scoped to the admitted chooser rather than the web form.
-function Find-DialogControl($Dialog, [string]$Identifier, [System.Windows.Automation.ControlType]$Type) {
-    $conditions = [System.Windows.Automation.Condition[]]@(
-        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $Identifier),
-        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $Type)
-    )
-    $control = $Dialog.FindFirst([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.AndCondition]::new($conditions))
+function Find-DialogControl($Dialog, [ValidateSet("1","2","1152")][string]$Identifier) {
+    $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $Identifier)
+    $control = $Dialog.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
     if ($null -eq $control -or -not $control.Current.IsEnabled) {
         $rows = @($Dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | Select-Object -First 150 | ForEach-Object {
-            @{ name=$_.Current.Name; id=$_.Current.AutomationId; type=$_.Current.ControlType.ProgrammaticName }
+            @{ name=$_.Current.Name; id=$_.Current.AutomationId; type=$_.Current.ControlType.ProgrammaticName; patterns=@($_.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }) }
         })
         ConvertTo-Json -InputObject $rows | Set-Content (Join-Path $EvidenceDirectory 'native-folder-controls.json') -Encoding UTF8
         throw "native folder control $Identifier is missing or disabled"
     }
     return $control
+}
+# Invoke-DialogButton supports the legacy accessibility provider used by the native shell dialog.
+function Invoke-DialogButton($Dialog, [ValidateSet("1","2")][string]$Identifier) {
+    $control = Find-DialogControl $Dialog $Identifier
+    $pattern = $null
+    if ($control.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) { $pattern.Invoke(); return }
+    if ($control.TryGetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern, [ref]$pattern)) { $pattern.DoDefaultAction(); return }
+    throw "native folder button $Identifier has no accessible action"
+}
+# Set-DialogLocation targets the shell's folder-name edit through its supported native accessibility provider.
+function Set-DialogLocation($Dialog, [string]$Path) {
+    $control = Find-DialogControl $Dialog '1152'
+    $pattern = $null
+    if ($control.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { $pattern.SetValue($Path); return }
+    if ($control.TryGetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern, [ref]$pattern)) { $pattern.SetValue($Path); return }
+    throw 'native folder location has no accessible value provider'
 }
 # Select-ProjectLocation checks Cancel and Select using the native folder dialog before graphical creation.
 function Select-ProjectLocation {
@@ -122,18 +135,15 @@ function Select-ProjectLocation {
     Invoke-Button 'Choose project location'
     Wait-Until 'native folder chooser' { $null -ne (Find-FolderDialog) }
     $dialog = Find-FolderDialog
-    $cancel = Find-DialogControl $dialog '2' ([System.Windows.Automation.ControlType]::Button)
-    $cancel.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    Invoke-DialogButton $dialog '2'
     Wait-Until 'native picker cancellation' { $null -eq (Find-FolderDialog) }
     $field = Await-Control 'Project directory' ([System.Windows.Automation.ControlType]::Edit)
     if ($field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -cne $previous) { throw 'native picker cancellation changed the entered directory' }
     Invoke-Button 'Choose project location'
     Wait-Until 'native folder chooser reopened' { $null -ne (Find-FolderDialog) }
     $dialog = Find-FolderDialog
-    $location = Find-DialogControl $dialog '1152' ([System.Windows.Automation.ControlType]::Edit)
-    $location.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($projectRoot)
-    $accept = Find-DialogControl $dialog '1' ([System.Windows.Automation.ControlType]::Button)
-    $accept.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    Set-DialogLocation $dialog $projectRoot
+    Invoke-DialogButton $dialog '1'
     Wait-Until 'selected parent returned to creation' {
         $null -eq (Find-FolderDialog) -and [string]::Equals(
             $field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value,
