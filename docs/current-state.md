@@ -1,5 +1,13 @@
 # Current Implementation State
 
+## Native folder selection and URL copying (2026-10-21)
+
+The existing installed-app workflows now open the actual OS folder picker, cancel and verify that the entered directory is preserved, then select an owned parent directory and create the project at the returned destination. They also clear the system clipboard, click Copy project URL, and require the exact daemon-published application URL plus visible copied feedback. Dedicated `project-url-clipboard.json` receipts accompany the graphical creation evidence.
+
+Full runs pass on [macOS 26 Apple silicon](https://github.com/goforj/harbor/actions/runs/39697961860), [Ubuntu 24.04 XFCE/X11](https://github.com/goforj/harbor/actions/runs/39697966458), and [restricted Windows Server 2025](https://github.com/goforj/harbor/actions/runs/39698222931). Downloaded receipts confirm the native controls, existing restart/lifecycle assertions, owned cleanup/uninstall, and preservation of the user database and project files. Changes are confined to test drivers, existing workflow checks, and documentation; strict product-tree matching admits the unchanged sealed product `1b3e305558708bcd3be485765c91253aca99310a`.
+
+macOS uses the canonical path returned by its picker and the existing narrow fixture-path guard during cleanup. GTK leaves its empty Recent view before selecting a directory. Windows confines its native-control fallback to the retained installed process's dialog, fixed control IDs, and standard window classes. Windows producer [39695723910](https://github.com/goforj/harbor/actions/runs/39695723910) supplies a fresh disposable-signed test installer after the previous certificate expired; signature admission remains required. This adds named folder/clipboard evidence to HARBOR-16, while broader tray, theme, consent, and additional-profile checks remain open. No Harbor release or active-host installation changed.
+
 ## Overnight integration accepted (2026-10-21)
 
 [PR #19](https://github.com/goforj/harbor/pull/19) is merged into `main` at `8d7e81f08ccd79b4c31225dd9d9077c5dbe41185`. Its tree is identical to tested head `1706ab6b7fe647b2fad74a116c0acae3b03c5710`. The sealed packaged product is `1b3e305558708bcd3be485765c91253aca99310a`; later changes are admitted tests, native UI drivers, workflows, and documentation. The public Harbor download remains beta.1. This integration created no Harbor release or tag.

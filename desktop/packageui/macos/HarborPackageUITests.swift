@@ -27,8 +27,9 @@ final class HarborPackageUITests: XCTestCase {
     }
 
     func testInstalledCreationStartAndReopen() throws {
-        let root = URL(fileURLWithPath: "/tmp/harbor-package-ui-" + UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        let temporaryRoot = URL(fileURLWithPath: "/tmp/harbor-package-ui-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: false)
+        let root = try canonicalFixtureDirectory(temporaryRoot)
         let projectDirectory = root.appendingPathComponent("project", isDirectory: true)
         try launchInstalledApplication("first-launch")
         try awaitWindow()
@@ -45,9 +46,10 @@ final class HarborPackageUITests: XCTestCase {
         }
 
         try click("New project")
+        try fill("Project name", with: "Project")
+        try exerciseDirectoryPicker(parent: root, expected: projectDirectory)
         try fill("Project name", with: projectName)
         try fill("Go module", with: "example.com/harbor-installed-ui")
-        try fill("Project directory", with: projectDirectory.path)
         try click("Continue")
         let minimalComponents: Set<String> = ["CLI", "Web API", "Web UI"]
         for label in ["CLI", "Docker", "Mail", "Auth", "OAuth", "Web API", "Web UI", "Metrics", "Observability", "Grafana", "Database (MySQL)", "Database (Postgres)", "Database (SQLite)", "Scheduler", "Cache", "Events", "File Storage", "Background Jobs"] {
@@ -140,6 +142,7 @@ final class HarborPackageUITests: XCTestCase {
         }
         try assertHTTPS(slug)
         attach("daemon-crash-recovered-live-ui")
+        try assertProjectURLClipboard(identifier)
         try click("Stop project", timeout: 30)
         try awaitProject(identifier, state: "stopped")
         attach("project-stopped-registration-retained")
@@ -150,6 +153,8 @@ final class HarborPackageUITests: XCTestCase {
             "project_directory": projectDirectory.path,
             "project_id": identifier,
             "creation": "production graphical wizard",
+            "directory_picker": "native sheet cancellation preserves choices; selected parent produces the registered destination",
+            "clipboard": "native pasteboard exactly matches the daemon-published application URL",
             "onboarding": "installed first-project guide, native tool recheck, and published App opening completed",
             "start": "ready with system-trusted HTTPS 200",
             "window_close": "project remains ready",
@@ -164,6 +169,72 @@ final class HarborPackageUITests: XCTestCase {
         ]
         try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
             .write(to: URL(fileURLWithPath: "/tmp/harbor-package-ui-evidence.json"), options: .withoutOverwriting)
+    }
+
+    // canonicalFixtureDirectory retains the kernel spelling returned by NSOpenPanel instead of Foundation's /tmp alias.
+    private func canonicalFixtureDirectory(_ directory: URL) throws -> URL {
+        guard let resolved = realpath(directory.path, nil) else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        defer { free(resolved) }
+        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+    }
+
+    // exerciseDirectoryPicker proves both native cancellation and the actual selected parent before creation.
+    private func exerciseDirectoryPicker(parent: URL, expected: URL) throws {
+        let field = application.textFields["Project directory"]
+        let previous = parent.appendingPathComponent("unchanged-before-picker").path
+        try fill("Project directory", with: previous)
+        try click("Choose project location")
+        let panel = application.sheets["open-panel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 20), "native folder sheet did not open\n\(application.debugDescription)")
+        panel.buttons["Cancel"].click()
+        try waitUntil("native picker cancellation") { !panel.exists }
+        XCTAssertEqual(field.value as? String, previous, "cancellation must preserve the entered path")
+        try click("Choose project location")
+        XCTAssertTrue(panel.waitForExistence(timeout: 20))
+        panel.typeKey("g", modifierFlags: [.command, .shift])
+        var focusedLocation: XCUIElement?
+        try waitUntil("focused native Go to Folder field") {
+            let candidates = panel.comboBoxes.allElementsBoundByIndex + panel.textFields.allElementsBoundByIndex
+            focusedLocation = candidates.first { $0.value(forKey: "hasKeyboardFocus") as? Bool == true }
+            return focusedLocation != nil
+        }
+        let location = try XCTUnwrap(focusedLocation)
+        location.typeKey("a", modifierFlags: .command)
+        location.typeText(parent.path)
+        location.typeKey("\r", modifierFlags: [])
+        let accept = panel.buttons["OKButton"]
+        try waitUntil("native folder selection") { accept.exists && accept.isEnabled && accept.isHittable }
+        accept.click()
+        try waitUntil("selected directory returned to creation") {
+            !panel.exists && (field.value as? String) == expected.path
+        }
+        XCTAssertEqual(application.textFields["Project name"].value as? String, "Project")
+        attach("native-directory-picker-selected")
+    }
+
+    // assertProjectURLClipboard observes the real pasteboard after clearing unrelated earlier values.
+    private func assertProjectURLClipboard(_ identifier: String) throws {
+        let projects = try snapshot()["projects"] as? [[String: Any]] ?? []
+        let selected = try XCTUnwrap(projects.first { $0["id"] as? String == identifier })
+        let resources = selected["resources"] as? [[String: Any]] ?? []
+        let urls = resources.filter { $0["kind"] as? String == "application" }
+        XCTAssertEqual(urls.count, 1)
+        let expected = try XCTUnwrap(urls.first?["url"] as? String)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Harbor clipboard probe cleared", forType: .string))
+        let cleared = pasteboard.changeCount
+        try click("Copy project URL")
+        try waitUntil("native clipboard receives the published project URL") {
+            pasteboard.changeCount > cleared && pasteboard.string(forType: .string) == expected
+        }
+        XCTAssertTrue(application.buttons["Project URL copied"].exists)
+        let receipt: [String: Any] = ["project_id": identifier, "expected_url": expected,
+                                     "native_clipboard_exact_match": true, "copied_feedback_visible": true]
+        let path = URL(fileURLWithPath: "/tmp/harbor-package-ui-native-logs/project-url-clipboard.json")
+        try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]).write(to: path)
     }
 
     private func awaitWindow() throws {

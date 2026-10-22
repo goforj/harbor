@@ -1,5 +1,13 @@
 # Development Handoff
 
+## Native folder and clipboard follow-up accepted (2026-10-21)
+
+The folder button and project URL copy action pass through the actual installed native apps on macOS `39697961860`, Ubuntu XFCE/X11 `39697966458`, and restricted Windows `39698222931`. Tests now require native Cancel to preserve the entered directory, native selection to produce the eventual registered destination, and an exact system-clipboard match to the Ready project's published application URL with copied feedback. Full existing lifecycle, cleanup/uninstall, and three retained-file checks pass. No product correction was needed.
+
+The reviewed harness checkpoint is `aca1ffc95dd3be7d6e9ed63d5f08bb7131e557a8` on `test/native-dialog-clipboard-20261021`, built in `/tmp/harbor-native-dialog-clipboard-20261021`; canonical main integrates its seven-file test/workflow diff plus these notes. Mac/Linux ran the identical relevant drivers at `97a38b30627367f2d49c9a4e54ae2dab8d5ce2cb`. Strict product matching against `1b3e305558708bcd3be485765c91253aca99310a` passes. The Unix producer remains `39626985336`; Windows uses fresh disposable-signed producer `39695723910`, installer SHA-256 `45fb9e7e45f7ea214978b255cb9250edfcd9607bbd8fbf7ca3035b70518ef67a`. Do not reuse an expired disposable signature or infer public publication from its dev.40 filename.
+
+Downloaded evidence roots are `/tmp/harbor-native-{macos,linux,windows}-<run>-evidence`; `/tmp/harbor-native-dialog-clipboard-acceptance-audit.json` records verified receipt hashes and matching project identities. Test-driver corrections cover macOS canonical paths, GTK's empty Recent view and text roles, and Windows native shell controls absent from the managed automation provider. Windows fallback checks retained process lifetime, dialog membership, fixed IDs and native classes. Focused driver/admission tests pass, and the Windows worker compiles its actual .NET Framework harness. Broader native matrix HARBOR-16 remains open. Next work should address a remaining named native assertion or available additional profile without repeating these accepted runs. No Harbor tag, release, project restart, or installation on the active development host was performed.
+
 ## Overnight integration accepted (2026-10-21)
 
 [PR #19](https://github.com/goforj/harbor/pull/19) is merged at `8d7e81f08ccd79b4c31225dd9d9077c5dbe41185`, with a tree identical to fully tested `1706ab6b7fe647b2fad74a116c0acae3b03c5710`. Product source is `1b3e305558708bcd3be485765c91253aca99310a`; later changes are tests/drivers/workflows/docs only, admitted by strict immutable product-tree matching. No Harbor tag or release was created. Public beta.1 is unchanged.

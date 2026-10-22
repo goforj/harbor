@@ -100,6 +100,72 @@ def fill(label, value):
     wait('field value ' + label, lambda: node.queryText().getText(0, -1) == value)
 
 
+def native_folder_dialog():
+    """native_folder_dialog selects only the installed process's titled native chooser."""
+    return find('Choose a location for the new project', ['file chooser', 'dialog', 'frame'])
+
+
+def dialog_button(dialog, label):
+    """dialog_button keeps native dialog actions out of the underlying web form."""
+    matches = [node for node in nodes(dialog) if node.getRoleName() == 'push button'
+               and node.name.replace('_', '') == label]
+    if len(matches) != 1 or not matches[0].getState().contains(pyatspi.STATE_ENABLED):
+        raise RuntimeError('native folder dialog requires exactly one enabled ' + label)
+    button = matches[0]
+    if not button.queryAction().doAction(0):
+        raise RuntimeError('native folder dialog rejected ' + label)
+
+
+def choose_project_location(parent, expected):
+    """choose_project_location verifies cancellation and selection through the actual GTK chooser."""
+    previous = str(parent / 'unchanged-before-picker')
+    fill('Project directory', previous)
+    click('Choose project location')
+    dialog = wait('native folder chooser', native_folder_dialog)
+    dialog_button(dialog, 'Cancel')
+    wait('native picker cancellation preserves the directory', lambda: native_folder_dialog() is None
+         and element('Project directory', ['entry']).queryText().getText(0, -1) == previous)
+    click('Choose project location')
+    dialog = wait('native folder chooser', native_folder_dialog)
+    if command('xdotool', 'getwindowpid', command('xdotool', 'getactivewindow')) != str(process.pid):
+        raise RuntimeError('native chooser is not the foreground installed process')
+    # GTK's empty Recent view cannot accept a folder, even after typing a location.
+    key('alt+Home')
+    wait('native chooser has a selectable current folder', lambda: any(
+        node.getRoleName() == 'push button' and node.name.replace('_', '') == 'Open'
+        and node.getState().contains(pyatspi.STATE_ENABLED) for node in nodes(dialog)))
+    key('ctrl+l')
+    location = wait('native folder location field', lambda: next((node for node in nodes(dialog)
+        if node.getRoleName() in ['entry', 'text'] and node.getState().contains(pyatspi.STATE_EDITABLE)
+        and node.getState().contains(pyatspi.STATE_FOCUSED)), None))
+    key('ctrl+a')
+    command('xdotool', 'type', '--clearmodifiers', '--delay', '1', str(parent) + '/')
+    wait('native folder location matches the owned directory', lambda:
+         location.queryText().getText(0, -1) == str(parent) + '/')
+    key('Return')
+    wait('selected project directory returned', lambda: native_folder_dialog() is None
+         and element('Project directory', ['entry']).queryText().getText(0, -1) == str(expected))
+    capture('native-directory-picker-selected')
+
+
+def assert_project_url_clipboard():
+    """assert_project_url_clipboard checks the system clipboard without recording unexpected text."""
+    selected = project()
+    urls = [row['url'] for row in selected.get('resources', []) if row['kind'] == 'application']
+    if len(urls) != 1 or selected['state'] != 'ready':
+        raise RuntimeError('copy requires one ready published application URL')
+    subprocess.run(['xclip', '-selection', 'clipboard', '-in'], input='Harbor clipboard probe cleared',
+                   text=True, check=True, timeout=5)
+    click('Copy project URL')
+    wait('native clipboard receives the published URL', lambda:
+         command('xclip', '-selection', 'clipboard', '-out', '-target', 'UTF8_STRING') == urls[0])
+    element('Project URL copied', ['push button'])
+    (EVIDENCE / 'project-url-clipboard.json').write_text(json.dumps({
+        'project_id': selected['id'], 'expected_url': urls[0],
+        'native_clipboard_exact_match': True, 'copied_feedback_visible': True,
+    }, indent=2) + '\n')
+
+
 def checkbox(label, selected):
     node = element(label, ['check box'])
     if node.getState().contains(pyatspi.STATE_CHECKED) != selected:
@@ -395,9 +461,10 @@ try:
         click('Set up secure networking')
     wait('configured networking', lambda: snapshot().get('network_setup', {}).get('configured'), 90)
     click('New project')
+    fill('Project name', 'Project')
+    choose_project_location(root, directory)
     fill('Project name', 'Harbor Installed Linux UI')
     fill('Go module', 'example.com/harbor-installed-linux-ui')
-    fill('Project directory', str(directory))
     click('Continue')
     for label in ['CLI', 'Docker', 'Mail', 'Auth', 'OAuth', 'Web API', 'Web UI', 'Metrics', 'Observability', 'Grafana', 'Database (MySQL)', 'Database (Postgres)', 'Database (SQLite)', 'Scheduler', 'Cache', 'Events', 'File Storage', 'Background Jobs']:
         checkbox(label, label in ['CLI', 'Web API', 'Web UI'])
@@ -468,6 +535,7 @@ try:
     wait('graphical client reconnected with live project controls', lambda:
          find('Stop project') and find('Stop project').getState().contains(pyatspi.STATE_ENABLED), 60)
     capture('daemon-crash-recovered-live-ui')
+    assert_project_url_clipboard()
     click('Stop project')
     state('stopped')
     quit_ui()
@@ -476,6 +544,8 @@ try:
         'application': APP, 'project_directory': str(directory), 'project_id': row['id'],
         'fixture': 'Ubuntu 24.04 x86_64, XFCE X11 desktop on Xvfb, AT-SPI, GTK/WebKit',
         'creation': 'production graphical wizard', 'start': 'ready and system-trusted HTTPS 200',
+        'directory_picker': 'native GTK cancellation preserves choices; selected parent produces the registered destination',
+        'clipboard': 'system clipboard exactly matches the daemon-published application URL',
         'onboarding': 'installed first-project guide, native tool recheck, and published App opening completed',
         'browser': browser,
         'close': 'hidden with project ready', 'reopen': 'original process restored',

@@ -42,6 +42,49 @@ def browser_reader(*, executable='/usr/bin/epiphany', address='https://project.t
     return opened, key, command
 
 
+class NativeControlTests(unittest.TestCase):
+    def test_native_dialog_rejects_missing_ambiguous_disabled_and_rejected_buttons(self):
+        def button(enabled=True, accepted=True):
+            return SimpleNamespace(name='_Open', getRoleName=lambda: 'push button',
+                getState=lambda: SimpleNamespace(contains=lambda _: enabled),
+                queryAction=lambda: SimpleNamespace(doAction=Mock(return_value=accepted)))
+        first, second = button(), button()
+        for buttons in [[], [first, second], [button(enabled=False)], [button(accepted=False)]]:
+            with self.subTest(count=len(buttons)):
+                act = load_function('dialog_button', nodes=lambda _: buttons,
+                    pyatspi=SimpleNamespace(STATE_ENABLED=1))
+                with self.assertRaises(RuntimeError):
+                    act(object(), 'Open')
+        first.queryAction().doAction.assert_not_called()
+
+    def test_clipboard_requires_a_ready_single_authoritative_application_resource(self):
+        for selected in [{'id': 'p', 'state': 'stopped', 'resources': []},
+                         {'id': 'p', 'state': 'ready', 'resources': []},
+                         {'id': 'p', 'state': 'ready', 'resources': [
+                             {'kind': 'application', 'url': 'https://one.test'},
+                             {'kind': 'application', 'url': 'https://two.test'}]}]:
+            run = Mock()
+            check = load_function('assert_project_url_clipboard', project=lambda: selected,
+                subprocess=SimpleNamespace(run=run))
+            with self.assertRaisesRegex(RuntimeError, 'one ready published'):
+                check()
+            run.assert_not_called()
+
+    def test_stale_clipboard_never_produces_a_success_receipt(self):
+        selected = {'id': 'p', 'state': 'ready', 'resources': [
+            {'kind': 'application', 'url': 'https://fixture.test'}]}
+        def wait(_, condition):
+            if not condition():
+                raise RuntimeError('clipboard does not match')
+        evidence = unittest.mock.MagicMock()
+        check = load_function('assert_project_url_clipboard', project=lambda: selected,
+            subprocess=SimpleNamespace(run=Mock()), command=Mock(return_value='private-unexpected-value'),
+            click=Mock(), wait=wait, EVIDENCE=evidence)
+        with self.assertRaisesRegex(RuntimeError, 'does not match'):
+            check()
+        evidence.__truediv__.assert_not_called()
+
+
 class CreationDiagnosticsTests(unittest.TestCase):
     def test_document_selection_requires_exact_displayed_progress_after_clearing_the_clipboard(self):
         for text, expected in [('4 of 4 steps complete', True), ('4of 4 steps complete', True),
