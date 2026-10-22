@@ -17,6 +17,10 @@ public static class HarborUIProfile {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr child);
+    [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr control);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int maximum);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr parameter, string text, uint flags, uint timeout, out UIntPtr result);
     [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll", SetLastError=true)] static extern uint SendInput(uint count, Input[] inputs, int size);
     [StructLayout(LayoutKind.Sequential)] struct MouseInput {
@@ -322,6 +326,34 @@ public static class HarborUIProfile {
     public static void ActivateRetainedProductWindow(int pid, IntPtr window) {
         if (IsRetainedProductWindowForeground(pid, window)) return;
         SetForegroundWindow(window);
+    }
+    // NativeFolderControl admits only standard controls inside the live product's exact folder dialog.
+    static void NativeFolderControl(int pid, IntPtr dialog, IntPtr control, int identifier, string expectedClass) {
+        if (!IsRetainedProductWindowVisible(pid, dialog) || !IsChild(dialog, control) || GetDlgCtrlID(control) != identifier)
+            throw new Exception("native folder control is outside its admitted dialog");
+        uint owner;
+        if (GetWindowThreadProcessId(control, out owner) == 0 || owner != (uint)pid)
+            throw new Exception("native folder control belongs to another process");
+        StringBuilder name = new StringBuilder(256);
+        if (GetClassName(control, name, name.Capacity) == 0 || name.ToString() != expectedClass)
+            throw new Exception("native folder control has an unexpected window class");
+    }
+    // ClickNativeFolderButton uses the native Button message when managed UI Automation omits its Invoke provider.
+    public static void ClickNativeFolderButton(int pid, IntPtr dialog, IntPtr control, int identifier) {
+        if (identifier != 1 && identifier != 2) throw new Exception("unsupported native folder button");
+        NativeFolderControl(pid, dialog, control, identifier, "Button");
+        ActivateRetainedProductWindow(pid, dialog);
+        if (!IsRetainedProductWindowForeground(pid, dialog)) throw new Exception("native folder dialog is not foreground");
+        UIntPtr result;
+        if (SendMessageTimeout(control, 0xF5, UIntPtr.Zero, null, 2, 5000, out result) == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "native folder button did not respond");
+    }
+    // SetNativeFolderLocation keeps WM_SETTEXT confined to the dialog's fixed folder-name Edit control.
+    public static void SetNativeFolderLocation(int pid, IntPtr dialog, IntPtr control, string path) {
+        NativeFolderControl(pid, dialog, control, 1152, "Edit");
+        UIntPtr result;
+        if (SendMessageTimeout(control, 0xC, UIntPtr.Zero, path, 2, 5000, out result) == IntPtr.Zero || result == UIntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "native folder location did not accept its value");
     }
     public static bool IsRetainedProductWindowVisible(int pid, IntPtr window) {
         bool live=false;

@@ -354,7 +354,11 @@ jobs:
           if (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\GoForjHarbor') { throw 'package receipt remains' }
           if (Test-Path "$env:ProgramData\GoForj\Harbor") { throw 'Harbor machine state remains' }
           if (@(Get-DnsClientNrptRule | Where-Object { $_.DisplayName -like 'GoForj Harbor Resolver *' -or $_.Comment -like 'goforj.harbor.resolver *' }).Count -ne 0) { throw 'Harbor resolver projection remains' }
-          if (@(Get-ChildItem -LiteralPath $env:HARBOR_INSTALL_ROOT -Force).Count -ne 1) { throw 'owned installed files remain' }
+          $remaining = @(Get-ChildItem -LiteralPath $env:HARBOR_INSTALL_ROOT -Force)
+          if ($remaining.Count -ne 1) {
+            @($remaining | Select-Object Name, Length, Attributes) | ConvertTo-Json | Set-Content "$evidence\uninstall-remaining-files.json"
+            throw 'owned installed files remain'
+          }
           if (Get-ScheduledTask -TaskName "GoForjHarborDaemon-$($selection.user_sid)" -ErrorAction SilentlyContinue) { throw 'owned daemon task remains' }
           foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher')) {
             if (-not (Test-Path (Join-Path $store $signerThumbprint))) { throw 'product removal changed explicitly preauthorized signer trust' }

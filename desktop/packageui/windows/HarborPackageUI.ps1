@@ -112,21 +112,21 @@ function Find-DialogControl($Dialog, [ValidateSet("1","2","1152")][string]$Ident
     }
     return $control
 }
-# Invoke-DialogButton supports the legacy accessibility provider used by the native shell dialog.
+# Invoke-DialogButton keeps a missing managed Invoke provider on the admitted native Button window.
 function Invoke-DialogButton($Dialog, [ValidateSet("1","2")][string]$Identifier) {
     $control = Find-DialogControl $Dialog $Identifier
     $pattern = $null
     if ($control.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) { $pattern.Invoke(); return }
-    if ($control.TryGetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern, [ref]$pattern)) { $pattern.DoDefaultAction(); return }
-    throw "native folder button $Identifier has no accessible action"
+    [HarborUIProfile]::ClickNativeFolderButton($script:window.Current.ProcessId,
+        [IntPtr]$Dialog.Current.NativeWindowHandle, [IntPtr]$control.Current.NativeWindowHandle, [int]$Identifier)
 }
 # Set-DialogLocation targets the shell's folder-name edit through its supported native accessibility provider.
 function Set-DialogLocation($Dialog, [string]$Path) {
     $control = Find-DialogControl $Dialog '1152'
     $pattern = $null
     if ($control.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { $pattern.SetValue($Path); return }
-    if ($control.TryGetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern, [ref]$pattern)) { $pattern.SetValue($Path); return }
-    throw 'native folder location has no accessible value provider'
+    [HarborUIProfile]::SetNativeFolderLocation($script:window.Current.ProcessId,
+        [IntPtr]$Dialog.Current.NativeWindowHandle, [IntPtr]$control.Current.NativeWindowHandle, $Path)
 }
 # Select-ProjectLocation checks Cancel and Select using the native folder dialog before graphical creation.
 function Select-ProjectLocation {
